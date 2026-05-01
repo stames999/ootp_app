@@ -7,11 +7,22 @@ from config import (
     MINIMUM_STARTER_PITCHES,
     MINIMUM_RELIEVER_PITCHES,
     MINIMUM_STARTER_STAMINA,
+    PITCHER_RATING_FLOOR,
     RUNS_PER_GAME_PITCHING_COEFF,
     RUNS_PER_GAME_PITCHING_CONST,
     RUNS_PER_WIN,
-    RELIEVER_VS_STARTER_AVERAGE_IP
+    RELIEVER_VS_STARTER_AVERAGE_IP,
+    SP_WAR_MIN_STAMINA,
 )
+
+
+# Skill rating columns checked against PITCHER_RATING_FLOOR. Stamina is its
+# own dimension (governs SP/RP role identification, not skill quality).
+PITCHER_SKILL_COLS_CURRENT = [
+    "ctrlR", "ctrlL", "pbabipR", "pbabipL",
+    "hraR", "hraL", "stuffR", "stuffL",
+]
+PITCHER_SKILL_COLS_POTENTIAL = ["ctrlP", "pbabipP", "hraP", "stuffP"]
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
@@ -47,20 +58,24 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
             keys = list(map(int, table.keys()))
             min_key = min(keys)
             max_key = max(keys)
-            str_value = str(value)
 
             if category == "Stamina":
+                # Stamina table is keyed by exact rating, not a continuous range;
+                # skip if no entry for this player's stamina value.
+                str_value = str(value)
                 if str_value not in table:
                     continue
                 adj = table[str_value]
             else:
-                if pd.isna(value) or int(value) < min_key:
-                    min_adj = table[str(min_key)]
-                    adj = {k: 10 * v for k, v in min_adj.items()}
-                elif int(value) > max_key:
-                    adj = table[str(max_key)]
+                # Clamp to [min_key, max_key]. Mirrors metrics_hitting.py and
+                # avoids the previous sub-floor x10 amplification, which
+                # produced mathematically impossible pwOBA (>1.0) for low-rated
+                # pitchers and absurdly-negative rp_war.
+                if pd.isna(value):
+                    clamped = min_key
                 else:
-                    adj = table[str_value]
+                    clamped = max(min_key, min(int(value), max_key))
+                adj = table[str(clamped)]
 
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
@@ -79,36 +94,75 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     rates_l = df.apply(lambda row: adjust_rates(row, "L"), axis=1)
     df = pd.concat([df, rates_r, rates_l], axis=1)
 
-    # Only calculate pWOBA for valid pitchers
-    valid_pitcher = df["sprp"].isin(["sp", "rp"])
+    # Compute pwOBA for any "pitcher-capable" player — anyone with at least
+    # one rated pitch type now OR projected (pitches >= 1 or pitchesP >= 1).
+    # Catches pitcher prospects whose individual pitch types haven't yet
+    # crossed PITCH_MINIMUM_RATING (e.g. very young arms with 0 current
+    # pitches but 3-4 projected). Position players have pitches == pitchesP
+    # == 0 and stay NaN (their emergency-pitcher ratings are uniformly 20
+    # and aren't meaningful).
+    pitcher_capable = (
+        (df["pitches"].fillna(0) >= 1)
+        | (df["pitchesP"].fillna(0) >= 1)
+    )
 
     df["pwOBAR"] = (
         PITCHING_WOBA_WEIGHTS["hr_vs_wOBA_weight"] * df["hr_vsR"] +
         PITCHING_WOBA_WEIGHTS["bb_vs_wOBA_weight"] * df["bb_vsR"] +
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vsR"]
-    ).where(valid_pitcher)
+    ).where(pitcher_capable)
 
     df["pwOBAL"] = (
         PITCHING_WOBA_WEIGHTS["hr_vs_wOBA_weight"] * df["hr_vsL"] +
         PITCHING_WOBA_WEIGHTS["bb_vs_wOBA_weight"] * df["bb_vsL"] +
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vsL"]
-    ).where(valid_pitcher)
+    ).where(pitcher_capable)
 
     df["pwOBA"] = (
         df["pwOBAR"] * HANDEDNESS_WEIGHTS["R"] +
         df["pwOBAL"] * HANDEDNESS_WEIGHTS["L"]
-    ).where(valid_pitcher)
+    ).where(pitcher_capable)
 
-    # convert pitcher wOBA to pitcher WAR (relievers earn less WAR than starters due to fewer IP)
-    df["war_pitching"] = -((df["pwOBA"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST) / RUNS_PER_WIN
-    df["war_pitching"] = df["war_pitching"].round(1)
+    # Base WAR at full-season (SP) IP. Both sp_war and rp_war are populated
+    # for every eligible pitcher so users can compare role-fit: an SP with
+    # rp_war higher than the marginal RP's rp_war might be better suited for
+    # the pen, and an RP with high sp_war might be a stretch-out candidate.
+    #
+    # pwOBA / pwOBAR / pwOBAL are intentionally NOT gated by PITCHER_RATING_FLOOR
+    # — they're bounded (post-clamp-fix) and useful as raw skill-quality
+    # metrics for minor league system planning, where ratings <35 are common.
+    base_war = (
+        -((df["pwOBA"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST)
+        / RUNS_PER_WIN
+    ).round(1)
+
+    df["sp_war"] = base_war
+    df["rp_war"] = (base_war * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
+
+    # Apply PITCHER_RATING_FLOOR to the WAR columns only. Sub-floor current WAR
+    # isn't meaningful (the table extrapolation in 20-34 is unreliable for
+    # ranking against MLB-tier pitchers), but pwOBA stays visible so analysts
+    # can still rank minor leaguers on raw skill.
+    existing_skill_cols = [c for c in PITCHER_SKILL_COLS_CURRENT if c in df.columns]
+    if existing_skill_cols:
+        sub_floor = (df[existing_skill_cols].fillna(0) < PITCHER_RATING_FLOOR).any(axis=1)
+        df.loc[sub_floor, ["sp_war", "rp_war"]] = pd.NA
+
+    # NaN sp_war for pitchers who physically can't be stretched out.
+    # Stamina <= 35 means "if used as SP" is implausible regardless of skill.
+    if "stamina" in df.columns:
+        too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
+        df.loc[too_short, "sp_war"] = pd.NA
+
+    # Primary-role WAR: sp_war if classified SP, rp_war if classified RP.
+    # Used by org_report.build_pitching_staff for rotation/bullpen ordering.
     df["is_sp"] = (df["sprp"] == "sp").astype(int)
     df["is_rp"] = (df["sprp"] == "rp").astype(int)
-    df["war_pitching"] = df["war_pitching"] * (df["is_sp"] + (df["is_rp"] * RELIEVER_VS_STARTER_AVERAGE_IP))
-    df.loc[~df["sprp"].isin(["sp", "rp"]), "war_pitching"] = pd.NA
-    df["sp_war"] = df["war_pitching"] * df["is_sp"]
-    df["rp_war"] = df["war_pitching"] * df["is_rp"]
-    df.loc[df["war_pitching"].isna(), ["sp_war", "rp_war"]] = pd.NA
+    df["war_pitching"] = pd.NA
+    sp_mask = df["sprp"] == "sp"
+    rp_mask = df["sprp"] == "rp"
+    df.loc[sp_mask, "war_pitching"] = df.loc[sp_mask, "sp_war"]
+    df.loc[rp_mask, "war_pitching"] = df.loc[rp_mask, "rp_war"]
 
     return df
 
@@ -148,20 +202,20 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
             keys = list(map(int, table.keys()))
             min_key = min(keys)
             max_key = max(keys)
-            str_value = str(value)
 
             if category == "Stamina":
+                str_value = str(value)
                 if str_value not in table:
                     continue
                 adj = table[str_value]
             else:
-                if pd.isna(value) or int(value) < min_key:
-                    min_adj = table[str(min_key)]
-                    adj = {k: 10 * v for k, v in min_adj.items()}
-                elif int(value) > max_key:
-                    adj = table[str(max_key)]
+                # Clamp to [min_key, max_key]. See calc_pitching_metrics for
+                # why the prior x10 sub-floor amplification was removed.
+                if pd.isna(value):
+                    clamped = min_key
                 else:
-                    adj = table[str_value]
+                    clamped = max(min_key, min(int(value), max_key))
+                adj = table[str(clamped)]
 
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
@@ -183,14 +237,37 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vs"]
     ).where(valid_pitcher)
 
-    df["war_pitchingP"] = -((df["pwOBAP"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST) / RUNS_PER_WIN
-    df["war_pitchingP"] = df["war_pitchingP"].round(1)
+    # Base potential WAR at full-season (SP) IP. No PITCHER_RATING_FLOOR
+    # applied — potential is meant to show development upside, so even
+    # currently-sub-floor pitchers get a meaningful potential projection
+    # (sub-floor potentials are clamped to min_key in adjust_rates above).
+    base_warP = (
+        -((df["pwOBAP"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST)
+        / RUNS_PER_WIN
+    ).round(1)
+
+    # Both sp_warP and rp_warP populated for every eligible pitcher (same
+    # reasoning as current: lets users compare role-fit). Primary-role
+    # war_pitchingP picks based on potential role classification (sprpP).
+    df["sp_warP"] = base_warP
+    df["rp_warP"] = (base_warP * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
+
+    # Same stamina gate as sp_war — OOTP has one stamina rating shared by
+    # current and potential, so a permanently-stamina-30 pitcher can't be
+    # an SP regardless of skill. NaN'd values render as blank in the HTML
+    # via exporter's value_formatter (not as the literal string "nan").
+    if "stamina" in df.columns:
+        too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
+        df.loc[too_short, "sp_warP"] = pd.NA
 
     df["is_spP"] = (df["sprpP"] == "sp").astype(int)
     df["is_rpP"] = (df["sprpP"] == "rp").astype(int)
-    df["war_pitchingP"] = df["war_pitchingP"] * (df["is_spP"] + (df["is_rpP"] * RELIEVER_VS_STARTER_AVERAGE_IP))
-    df.loc[~df["sprpP"].isin(["sp", "rp"]), "war_pitchingP"] = pd.NA
-    df["sp_warP"] = df["war_pitchingP"] * df["is_spP"]
-    df["rp_warP"] = df["war_pitchingP"] * df["is_rpP"]
+    df["war_pitchingP"] = (
+        df["sp_warP"].fillna(0) * df["is_spP"]
+        + df["rp_warP"].fillna(0) * df["is_rpP"]
+    ).where(df["sp_warP"].notna())
+
+    non_pitcher = ~df["sprpP"].isin(["sp", "rp"])
+    df.loc[non_pitcher, ["war_pitchingP", "sp_warP", "rp_warP"]] = pd.NA
 
     return df

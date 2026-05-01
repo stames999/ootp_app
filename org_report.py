@@ -47,13 +47,15 @@ from config import (
     team_managed,
 )
 
-# Premium-position priority (earlier = more important).
+# Premium-position priority. Order is empirical scarcity (descending) from
+# the current FIELDING_RUN_VALUES_VS_REPLACEMENT tables — re-derive via
+# calibration/compare_adjustments.py if the tables are recalibrated.
 DEFAULT_POSITION_PRIORITY: List[str] = [
+    "C",
     "SS",
     "CF",
-    "2B",
-    "C",
     "3B",
+    "2B",
     "RF",
     "LF",
     "1B",
@@ -193,11 +195,19 @@ def _build_side_columns(df: pd.DataFrame, side: str) -> pd.DataFrame:
         out[f"wOBA_vs_{side}"] * (1 - DH_PENALTY)
     )
 
-    # Position scores for this side.
+    # Position scores for this side. Use <pos>_fld (scarcity-adjusted fielding
+    # WAR from metrics_war.calc_war) so the org report inherits the same
+    # positional adjustments as the hitters export. Fall back to <pos>_def for
+    # ineligible players (where _fld is NaN) so the fallback ranking paths
+    # still have a number to sort by.
     for pos in ["C", "SS", "2B", "3B", "LF", "CF", "RF", "1B"]:
-        out[f"{pos}_score_vs_{side}"] = (
-            out.get(f"{pos}_def", 0) + out[f"war_hitting_vs_{side}"]
-        )
+        fld_col = f"{pos}_fld"
+        def_col = f"{pos}_def"
+        if fld_col in out.columns:
+            fielding = out[fld_col].fillna(out.get(def_col, 0))
+        else:
+            fielding = out.get(def_col, 0)
+        out[f"{pos}_score_vs_{side}"] = fielding + out[f"war_hitting_vs_{side}"]
     out[f"DH_score_vs_{side}"] = out[f"DH_hitting_vs_{side}"]
 
     # Convenience: best score vs this side (for ranking bench candidates).

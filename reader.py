@@ -8,7 +8,6 @@ from config import (
     PITCHING_STATS_COLUMNS,
     PLAYERS_COLUMN_RENAMES,
     PLAYERS_COLUMNS,
-    POSITION_THRESHOLDS,
     POTENTIAL_PITCH_RATING_COLUMNS,
     SCOUTED_RATINGS_COLUMNS,
     SCOUTED_RATINGS_RENAMES,
@@ -104,17 +103,10 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# determine whether a player 'can field' at a given position based on minimum threshold ratings
-def can_field(df: pd.DataFrame) -> pd.DataFrame:
-    def evaluate_row(row):
-        positions = []
-        for pos, checks in POSITION_THRESHOLDS.items():
-            if all(row.get(col, 0) >= threshold for col, threshold in checks):
-                positions.append(pos)
-        return ", ".join(positions)
-
-    df["field"] = df.apply(evaluate_row, axis=1)
-    return df
+# Note: position eligibility (the `field` column) is now produced by
+# metrics_war.calc_war() using POSITION_VIABILITY_GAP — a position is feasible
+# iff its WAR is within POSITION_VIABILITY_GAP of the player's best position.
+# This replaces the old rating-threshold approach.
 
 
 # Add a flag column for names listed in flagged.txt

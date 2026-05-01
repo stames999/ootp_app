@@ -21,9 +21,16 @@ def export_advanced_html(
     clean_cols = [c for c in COLUMNS_TO_BLANK_BEFORE_EXPORT if c in working_df.columns]
     working_df[clean_cols] = working_df[clean_cols].fillna("")
 
-    # Define a safe formatter that leaves non-numeric values unchanged
+    # Define a safe formatter that leaves non-numeric values unchanged and
+    # renders NaN as blank (not the literal "nan" — which "{:.1f}".format
+    # produces for float('nan') without raising).
     def safe_format(fmt_func):
         def wrapped(val):
+            try:
+                if pd.isna(val):
+                    return ""
+            except (TypeError, ValueError):
+                pass
             try:
                 return fmt_func(val)
             except Exception:
@@ -60,9 +67,17 @@ def export_advanced_html(
             "CFP",
             "RFP",
             "CP",
+            "best_adj",
+            "bestP_adj",
         ):
             fmt[col] = safe_format("{:.1f}".format)
         elif col.endswith("_def"):
+            fmt[col] = safe_format("{:.1f}".format)
+        elif col.endswith("_adj"):
+            fmt[col] = safe_format("{:.1f}".format)
+        elif col.endswith("_fld"):
+            fmt[col] = safe_format("{:.1f}".format)
+        elif col in ("war_hitting", "war_hittingP", "DH_hitting", "DH_hittingP"):
             fmt[col] = safe_format("{:.1f}".format)
         elif "wOBA" in col:
             fmt[col] = safe_format("{:.3f}".format)
@@ -71,7 +86,9 @@ def export_advanced_html(
         elif "wRC+" in col:
             fmt[col] = safe_format("{:.0f}".format)
 
-    styled = working_df.style.format(fmt)
+    # na_rep="" catches any NaN cell (including columns without an explicit
+    # formatter, e.g. `org` for free agents) so nothing renders as "nan".
+    styled = working_df.style.format(fmt, na_rep="")
     html_table = styled.to_html(index=False, escape=False)
     # Ensure the table has the id DataTables expects:
     html_table = html_table.replace("<table ", '<table id="data" ', 1)
@@ -131,6 +148,8 @@ EXPORT_PAGES = [
             "minor",
             "age",
             "pa",
+            "best_adj",
+            "pos_adj",
             "best",
             "bestP",
             "pos",
@@ -140,6 +159,21 @@ EXPORT_PAGES = [
             "wOBAR",
             "wOBAL",
             "wOBAP",
+            # Bat-only WAR (additive with any *_fld below to compose totals)
+            "war_hitting",
+            "war_hittingP",
+            "DH_hitting",
+            # Fielding-only WAR per position (with scarcity adjustment baked in).
+            # Same value for current and potential — fielding ratings are static.
+            "1B_fld",
+            "2B_fld",
+            "3B_fld",
+            "SS_fld",
+            "LF_fld",
+            "CF_fld",
+            "RF_fld",
+            "C_fld",
+            # Combined per-position totals (bat + fld). Kept for ranking convenience.
             "DH",
             "1B",
             "2B",
@@ -149,6 +183,16 @@ EXPORT_PAGES = [
             "CF",
             "RF",
             "C",
+            # Scarcity-adjusted counterparts (1B is anchor → 1B_adj == 1B)
+            "DH_adj",
+            "1B_adj",
+            "2B_adj",
+            "3B_adj",
+            "SS_adj",
+            "LF_adj",
+            "CF_adj",
+            "RF_adj",
+            "C_adj",
             "flag",
         ],
         "filter": lambda df: df["wOBAP"] > 0.200,
@@ -185,6 +229,8 @@ EXPORT_PAGES = [
             "minor",
             "age",
             "pa",
+            "bestP_adj",
+            "posP_adj",
             "best",
             "bestP",
             "posP",
@@ -193,6 +239,19 @@ EXPORT_PAGES = [
             "wOBAR",
             "wOBAL",
             "wOBAP",
+            # Bat-only potential WAR
+            "war_hittingP",
+            "DH_hittingP",
+            # Fielding-only WAR per position (same as current — fielding static)
+            "1B_fld",
+            "2B_fld",
+            "3B_fld",
+            "SS_fld",
+            "LF_fld",
+            "CF_fld",
+            "RF_fld",
+            "C_fld",
+            # Combined potential per-position totals (bat_potential + fld)
             "DHP",
             "1BP",
             "2BP",
@@ -202,6 +261,16 @@ EXPORT_PAGES = [
             "CFP",
             "RFP",
             "CP",
+            # Scarcity-adjusted counterparts
+            "DHP_adj",
+            "1BP_adj",
+            "2BP_adj",
+            "3BP_adj",
+            "SSP_adj",
+            "LFP_adj",
+            "CFP_adj",
+            "RFP_adj",
+            "CP_adj",
             "Cfram",
             "flag",
         ],
@@ -226,6 +295,69 @@ def export_html_pages(df):
             row_filter=filt,
             page_len=page.get("page_len", 100),
         )
+
+
+def export_json_pages(df):
+    """
+    Mirror of export_html_pages that writes the same per-page slices as JSON.
+
+    Each EXPORT_PAGES entry produces a sibling file with the .json extension
+    (e.g. hitters.html → hitters.json). The JSON shape is:
+
+        {
+            "title": "Hitters",
+            "n_rows": 245,
+            "columns": [...column order...],
+            "rows": [ {col: value, ...}, ... ]
+        }
+
+    Designed for downstream programmatic analysis (e.g. feeding to Claude)
+    rather than for human reading. NaN values become null. Numeric columns
+    keep full precision (no rounding to display format) so an analyst can
+    do their own aggregations without re-deriving values.
+    """
+    import json
+
+    for page in EXPORT_PAGES:
+        working = df.copy()
+        try:
+            filt = page["filter"](working) if page.get("filter") else None
+        except KeyError as e:
+            print(f"Skipping {page['title']} JSON — filter references missing column {e}")
+            continue
+        if filt is not None:
+            working = working[filt].copy()
+
+        cols_present = [c for c in page["columns"] if c in working.columns]
+        working = working[cols_present]
+
+        # Convert NaN → None so JSON serializes them as null. Build the dict
+        # manually rather than using df.to_json so we can wrap with metadata.
+        rows = []
+        for _, row in working.iterrows():
+            record = {}
+            for c in cols_present:
+                v = row[c]
+                if pd.isna(v):
+                    record[c] = None
+                elif hasattr(v, "item"):  # numpy scalars → native Python
+                    record[c] = v.item()
+                else:
+                    record[c] = v
+            rows.append(record)
+
+        payload = {
+            "title": page["title"],
+            "n_rows": len(rows),
+            "columns": cols_present,
+            "rows": rows,
+        }
+
+        out_name = page["filename"].rsplit(".", 1)[0] + ".json"
+        path = export_filepath / out_name
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)
+        print(f"Exported {page['title']} → {path} ({len(rows)} rows)")
 
 
 # ------------------------------------------------------------------
@@ -276,7 +408,9 @@ def _df_to_report_table(df: pd.DataFrame, table_id: str) -> str:
         elif col in ("age", "pa", "ip", "minor", "slot"):
             fmt[col] = _safe_format("{:.0f}".format)
 
-    styled = working_df.style.format(fmt)
+    # na_rep="" catches any NaN cell (including columns without an explicit
+    # formatter, e.g. `org` for free agents) so nothing renders as "nan".
+    styled = working_df.style.format(fmt, na_rep="")
     html_table = styled.to_html(index=False, escape=False)
     html_table = html_table.replace(
         "<table ", f'<table id="{table_id}" class="report-table" ', 1
@@ -681,7 +815,18 @@ $.fn.dataTable.ext.order['numeric-empty-last-desc'] = function(settings, col) {{
 }};
 $(document).ready(function(){{
     var ascCols = ['pwOBA','pwOBAR','pwOBAL'];
-    var descCols = ['sp_war','rp_war'];
+    // Columns that can contain blanks (position WARs NaN'd by the
+    // POSITION_VIABILITY_GAP filter in calc_war). Use the empty-last-desc
+    // sorter so blanks sink to the bottom regardless of sort direction.
+    var descCols = ['sp_war','rp_war',
+        'C_def','CF_def','RF_def','LF_def','SS_def','2B_def','3B_def',
+        'C','CF','RF','LF','SS','2B','3B','1B','DH',
+        'CP','CFP','RFP','LFP','SSP','2BP','3BP','1BP','DHP',
+        'C_adj','CF_adj','RF_adj','LF_adj','SS_adj','2B_adj','3B_adj','1B_adj','DH_adj',
+        'CP_adj','CFP_adj','RFP_adj','LFP_adj','SSP_adj','2BP_adj','3BP_adj','1BP_adj','DHP_adj',
+        'C_fld','CF_fld','RF_fld','LF_fld','SS_fld','2B_fld','3B_fld','1B_fld','DH_fld',
+        'war_hitting','war_hittingP','DH_hitting','DH_hittingP',
+        'best_adj','bestP_adj'];
     var numDefs = ascCols.map(function(name) {{
         return {{
             targets: $('#data thead th').filter(function() {{ return $(this).text() === name; }}).index(),
