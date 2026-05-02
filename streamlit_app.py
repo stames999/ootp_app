@@ -180,9 +180,14 @@ with st.sidebar:
     st.title('⚾ Pistachio')
     st.caption('OOTP roster construction')
 
-    if not has_cached_data():
+    # Session-scoped gate: every new session must upload fresh CSVs before
+    # the app renders any data. We don't trust the on-disk JSONs from a
+    # prior session because they may be stale or from a different OOTP
+    # save than what the user wants to look at this time.
+    if not st.session_state.get('data_loaded'):
         st.warning('No data loaded yet. Upload the OOTP CSVs to begin.')
         if render_upload_widget(expanded=True):
+            st.session_state.data_loaded = True
             st.cache_data.clear()
             st.rerun()
         st.stop()  # nothing else makes sense without data
