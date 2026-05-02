@@ -78,13 +78,20 @@ def _load_injured_names():
     names = set()
     # Auto: OOTP CSV. Reference config.filepath at call time so the
     # Streamlit uploader's monkey-patched temp dir is honoured.
+    # Day-to-day (DTD) injuries — flagged by `injury_dtd_injury == 1` —
+    # are NOT exclusions. Those guys are still playing; OOTP just rests
+    # them a game or two. Only `injury_is_injured == 1` AND no DTD flag
+    # counts as a proper IL stint that pulls them out of placement.
     try:
         import config
         import csv
         with open(config.filepath / 'players.csv', encoding='utf-8') as f:
             for row in csv.DictReader(f):
-                if row.get('injury_is_injured') == '1':
-                    names.add(f"{row['first_name']} {row['last_name']}")
+                if row.get('injury_is_injured') != '1':
+                    continue
+                if row.get('injury_dtd_injury') == '1':
+                    continue
+                names.add(f"{row['first_name']} {row['last_name']}")
     except (FileNotFoundError, ImportError, KeyError):
         pass
     # Manual: injured.txt
