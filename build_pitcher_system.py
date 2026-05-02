@@ -137,6 +137,27 @@ def is_rp_viable(p):
     return p.get('rp_warP') is not None
 
 
+# HP pitcher = young minor-league arm whose projected current-stuff caps at
+# MLB-quality or better. Mirrors the hitter HP idea: minor=1, age ≤ 23,
+# projection clears the MLB threshold. We use pwOBAP (potential allowed
+# wOBA) ≤ PWOBA_MAX['MLB'] = .345 — i.e. they project to hold MLB hitters
+# below the level threshold. Tweak HP_PITCHER_MAX_PWOBAP if you want a
+# tighter / looser bar.
+HP_PITCHER_MAX_AGE = 23
+HP_PITCHER_MAX_PWOBAP = PWOBA_MAX['MLB']  # 0.345
+
+
+def is_high_potential_pitcher(p):
+    if p.get('minor') != 1:
+        return False
+    if p['age'] > HP_PITCHER_MAX_AGE:
+        return False
+    pwobap = p.get('pwOBAP')
+    if pwobap is None:
+        return False
+    return pwobap <= HP_PITCHER_MAX_PWOBAP
+
+
 def _cascade(pool, slots_per_level):
     """Initial placement at each pitcher's `_top`, then cascade-down: while a
     level holds more than `slots_per_level`, pop the worst-blend pitcher and

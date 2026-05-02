@@ -25,7 +25,7 @@ import streamlit as st
 
 import config
 from build_system import main as build_hitters, LEVELS, is_high_potential
-from build_pitcher_system import main as build_pitchers
+from build_pitcher_system import main as build_pitchers, is_high_potential_pitcher
 from build_excel import main_build, _platoon_lineup_extras
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
@@ -233,7 +233,7 @@ with tab_overview:
             st.dataframe(df, hide_index=True, width='stretch')
 
     with col_hps:
-        st.subheader('High-potential prospects')
+        st.subheader('HP hitters')
         if hps:
             hp_rows = []
             for lvl in LEVELS:
@@ -248,9 +248,58 @@ with tab_overview:
                             'wOBAP': round(p.get('wOBAP') or 0, 3),
                         })
             hp_df = pd.DataFrame(hp_rows).sort_values('wOBAP', ascending=False)
-            st.dataframe(hp_df, hide_index=True, width='stretch', height=600)
+            st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
         else:
-            st.info(f'No high-potential prospects in {team}.')
+            st.info(f'No high-potential hitters in {team}.')
+
+    # Second row: HP pitchers + currently unavailable players.
+    col_hpp, col_inj = st.columns(2)
+
+    with col_hpp:
+        st.subheader('HP pitchers')
+        hp_pitchers = []
+        for lvl in LEVELS:
+            for p in rp[lvl]['all']:
+                if is_high_potential_pitcher(p):
+                    hp_pitchers.append({
+                        'Player': p['name'],
+                        'Lvl': lvl,
+                        'Age': p['age'],
+                        'Role': p.get('_role', '?'),
+                        'pwOBA': round(p.get('pwOBA') or 0, 3),
+                        'pwOBAP': round(p.get('pwOBAP') or 0, 3),
+                    })
+        if hp_pitchers:
+            hpp_df = pd.DataFrame(hp_pitchers).sort_values('pwOBAP')
+            st.dataframe(hpp_df, hide_index=True, width='stretch', height=400)
+        else:
+            st.info(f'No high-potential pitchers in {team}.')
+
+    with col_inj:
+        st.subheader('Currently unavailable')
+        st.caption('Pulled out of placement via OOTP injury flag or `injured.txt`. Re-runs include them once the flag clears.')
+        inj_rows = []
+        for p in fh:
+            inj_rows.append({
+                'Player': p['name'],
+                'Type': 'Hitter',
+                'Age': p['age'],
+                'Pos / Role': p.get('pos_adj') or '',
+                'wOBA / pwOBA': round(p.get('wOBA') or 0, 3),
+            })
+        for p in fp:
+            inj_rows.append({
+                'Player': p['name'],
+                'Type': 'Pitcher',
+                'Age': p['age'],
+                'Pos / Role': p.get('_role') or 'P',
+                'wOBA / pwOBA': round(p.get('pwOBA') or 0, 3),
+            })
+        if inj_rows:
+            inj_df = pd.DataFrame(inj_rows).sort_values(['Type', 'Player'])
+            st.dataframe(inj_df, hide_index=True, width='stretch', height=400)
+        else:
+            st.success(f'No flagged players in {team}.')
 
 
 # ---------- Rosters tab ----------
