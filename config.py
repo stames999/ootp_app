@@ -6,7 +6,12 @@ from pathlib import Path
 
 filepath = Path(
     "C:/Users/sfwea/OneDrive/Documents/Out of the Park Developments/OOTP Baseball 27/saved_games/New Game 6.lg/import_export/csv")
-pistachio_filepath = Path("C:/Users/sfwea/OneDrive/Documents/Antigravity/pistachio")
+# Derive the project root from config.py's own location so the pipeline writes
+# outputs/ alongside this file regardless of whether we're running from the
+# main repo or a git worktree. Previously hardcoded to the main repo, which
+# meant a pipeline run from a worktree wrote JSONs into the main repo while
+# the worktree's UI kept reading its own (stale) outputs/.
+pistachio_filepath = Path(__file__).resolve().parent
 export_filepath = pistachio_filepath / "outputs"
 
 # ========================
