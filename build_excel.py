@@ -4,7 +4,7 @@ from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVE
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-OUTFILE = 'outputs/LAA_roster_system.xlsx'
+OUTFILE_TEMPLATE = 'outputs/{org}_roster_system.xlsx'
 
 # Styles
 HEADER_FONT = Font(name='Arial', bold=True, color='FFFFFF', size=11)
@@ -176,8 +176,8 @@ def write_level_sheet(ws, lvl, roster):
     row += 1
     ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} players (target {ROSTER_SIZES[lvl]})').font = Font(name='Arial', italic=True, size=9, color='666666')
 
-def write_summary(ws, rosters, overflow):
-    ws['A1'] = 'LAA Hitter System - Summary'
+def write_summary(ws, rosters, overflow, org='LAA'):
+    ws['A1'] = f'{org} Hitter System - Summary'
     ws['A1'].font = Font(name='Arial', bold=True, size=14)
     ws.merge_cells('A1:F1')
     
@@ -441,15 +441,18 @@ def write_flagged(ws, players, kind):
         ws.column_dimensions[chr(64+i)].width = w
 
 
-def main_build():
-    rosters, overflow, flagged = main()
-    pitcher_rosters, pitcher_overflow, pitcher_flagged = pitcher_main()
+def main_build(org=None):
+    if org is None:
+        from config import team_managed
+        org = team_managed
+    rosters, overflow, flagged = main(org=org)
+    pitcher_rosters, pitcher_overflow, pitcher_flagged = pitcher_main(org=org)
     wb = Workbook()
     wb.remove(wb.active)
 
     # Summary first
     ws = wb.create_sheet('Summary')
-    write_summary(ws, rosters, overflow)
+    write_summary(ws, rosters, overflow, org=org)
 
     # Hitter level sheets
     for lvl in LEVELS:
@@ -476,8 +479,9 @@ def main_build():
         ws = wb.create_sheet('Flagged_P')
         write_flagged(ws, pitcher_flagged, 'Pitchers')
 
-    wb.save(OUTFILE)
-    print(f'Saved: {OUTFILE}')
+    outfile = OUTFILE_TEMPLATE.format(org=org)
+    wb.save(outfile)
+    print(f'Saved: {outfile}')
 
 if __name__ == '__main__':
     main_build()

@@ -56,9 +56,17 @@ PREMIUM_WOBA_RELAX = {
 HITTERS_JSON = 'outputs/hitters.json'
 INJURED_FILE = 'injured.txt'
 
-def load_laa():
+def load_team(org=None):
+    """Load hitters for a single org. Defaults to config.team_managed."""
+    if org is None:
+        from config import team_managed
+        org = team_managed
     d = json.load(open(HITTERS_JSON))
-    return [r for r in d['rows'] if r['org'] == 'LAA']
+    return [r for r in d['rows'] if r['org'] == org]
+
+# Back-compat alias for any code still calling load_laa().
+def load_laa():
+    return load_team('LAA')
 
 def _load_injured_names():
     """Return the set of currently-injured player names. Sources:
@@ -397,9 +405,9 @@ def is_high_potential(p):
         threshold = 0.320
     return wobap >= threshold
 
-def main():
-    laa = load_laa()
-    # Strip transient flags from any prior run on cached dicts (load_laa
+def main(org=None):
+    laa = load_team(org)
+    # Strip transient flags from any prior run on cached dicts (load_team
     # currently re-reads from disk, but this guards against future callers
     # that hand us already-processed players).
     for p in laa:

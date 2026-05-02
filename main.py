@@ -14,7 +14,11 @@ from reader import (
 )
 
 
-def main():
+def compute_df():
+    """Run the full metrics pipeline and return the player DataFrame.
+    Stops short of any export so callers can reuse the df for different
+    downstream artifacts (e.g. an org-report for an arbitrary team)
+    without re-running the pipeline."""
     df = load_players()
     df = add_pitching_career_stats(df)
     df = add_hitting_career_stats(df)
@@ -31,8 +35,11 @@ def main():
     # Sort by scarcity-adjusted WAR — that's the player's "true value"
     # accounting for positional difficulty (see metrics_war.calc_war).
     df = df.sort_values(by="best_adj", ascending=False)
-    # print(df.head(10))  # Preview in terminal
-    # export_hitters(df)
+    return df
+
+
+def main():
+    df = compute_df()
     export_html_pages(df)
     export_json_pages(df)
     export_org_report(df)

@@ -60,9 +60,17 @@ PWOBA_MAX = {
 }
 
 
-def load_laa_pitchers():
+def load_team_pitchers(org=None):
+    """Load pitchers for a single org. Defaults to config.team_managed."""
+    if org is None:
+        from config import team_managed
+        org = team_managed
     d = json.load(open(PITCHERS_JSON))
-    return [r for r in d['rows'] if r['org'] == 'LAA']
+    return [r for r in d['rows'] if r['org'] == org]
+
+# Back-compat alias.
+def load_laa_pitchers():
+    return load_team_pitchers('LAA')
 
 
 def pitcher_priority(p):
@@ -178,8 +186,8 @@ def _pull_up(by_level, slots_per_level):
             by_level[lvl].sort(key=pitcher_priority)
 
 
-def main():
-    laa = load_laa_pitchers()
+def main(org=None):
+    laa = load_team_pitchers(org)
     for p in laa:
         p.pop('_role', None)
 
