@@ -318,13 +318,13 @@ def classify_bench(bench):
     follow the user's bench design:
       1. Backup C  - best non-starting catcher by catcher_alloc_score
                       (current wOBA + glove + small older-player tiebreak)
-      2. Utility IF - non-starter with the most viable IF positions among
-                      {2B, 3B, SS}; tiebreak by sum of their position WAR.
-                      Single-position IFs are still acceptable here when no
-                      multi-position option exists.
-      3. Utility OF - same logic over {LF, CF, RF}, with a +1 score bump
-                      for CF eligibility (CF range is the closest proxy we
-                      have for "speed / pinch-runner" potential).
+      2. Utility IF - glove-first non-starter: max IF positions among
+                      {2B, 3B, SS} they can play, tiebreak by sum of
+                      fielding-only WAR across those positions, then
+                      wOBA. Picks the best leather among viable bats —
+                      not the best bat among viable leather.
+      3. Utility OF - same shape over {LF, CF, RF}, with a +1 position-
+                      count bump for CF eligibility (range as speed proxy).
       4. Best bat  - highest priority(p) among whoever's left.
     Subsequent slots are labelled 'Depth' in priority order. If no player
     fits a role (e.g. no catcher on the bench), that slot's player is None
@@ -350,23 +350,35 @@ def classify_bench(bench):
     bc = take(lambda p: catcher_alloc_score(p) if is_catcher(p) else None)
     ordered.append(('Backup C', bc))
 
-    # 2. Utility IF
+    # 2. Utility IF — glove-first among viable bats. Real utility IFs are
+    #    defensive-replacement profiles (multi-position glove, modest bat),
+    #    not bench bats who happen to play one IF spot. The bat is already
+    #    "viable" by virtue of the player being on this level's bench (his
+    #    wOBA passed the level's threshold via Step 2 cascade). So we rank
+    #    by fielding-only WAR (not pos_adj, which folds the bat back in)
+    #    and only use wOBA as a final tiebreak.
     def if_score(p):
-        vals = [p.get(f'{pos}_adj') for pos in IF_POSITIONS]
-        valid = [v for v in vals if v is not None]
+        fld_vals = [p.get(f'{pos}_fld') for pos in IF_POSITIONS]
+        valid = [v for v in fld_vals if v is not None]
         if not valid:
             return None
-        return (len(valid), sum(valid))
+        return (len(valid), sum(valid), p.get('wOBA') or 0)
     ordered.append(('Utility IF', take(if_score)))
 
-    # 3. Utility OF (CF eligibility = +1 effective position, as speed proxy)
+    # 3. Utility OF — same glove-first logic. CF eligibility still adds
+    #    +1 to the position count: it's a speed/range proxy as well as a
+    #    position, so a CF-capable OF beats a same-fielding LF/RF-only.
     def of_score(p):
-        vals = {pos: p.get(f'{pos}_adj') for pos in OF_POSITIONS}
-        valid_pos = [pos for pos, v in vals.items() if v is not None]
+        fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
+        valid_pos = [pos for pos, v in fld_vals.items() if v is not None]
         if not valid_pos:
             return None
         cf_bonus = 1 if 'CF' in valid_pos else 0
-        return (len(valid_pos) + cf_bonus, sum(vals[pos] for pos in valid_pos))
+        return (
+            len(valid_pos) + cf_bonus,
+            sum(fld_vals[pos] for pos in valid_pos),
+            p.get('wOBA') or 0,
+        )
     ordered.append(('Utility OF', take(of_score)))
 
     # 4. Best bat

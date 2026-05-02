@@ -192,8 +192,8 @@ def score(p, pos):
 After Hungarian picks 9 starters, the bench is ordered by `classify_bench()` into four named roles, then any remaining players are labelled `Depth`:
 
 1. **Backup C** — best non-starting catcher by `catcher_alloc_score` (the same wOBA + glove + age formula used for Step 1 level allocation, so the "best available catcher for the higher slot" notion is consistent across the system).
-2. **Utility IF** — non-starter with the most viable IF positions among {2B, 3B, SS}; tiebreak by sum of those `_adj` values. Falls back to single-position IF if no multi-position option exists; if no bench player has any IF capability the slot is left empty (`(none)`).
-3. **Utility OF** — same logic over {LF, CF, RF}, with a +1 score bonus for CF eligibility (CF range is the closest proxy in the data for "speed / pinch-runner" potential — there is no dedicated speed field).
+2. **Utility IF** — glove-first among viable bats. Score is `(positions_playable, sum_of_fielding_only_WAR, wOBA_tiebreak)` over {2B, 3B, SS} using `_fld` values (not `_adj`, which folds the bat in). Picks the best leather among players whose bat is already viable for the level — the real-life utility-IF profile. Falls back to single-position IF if no multi-position option exists; if no bench player has any IF capability the slot is left empty (`(none)`).
+3. **Utility OF** — same shape over {LF, CF, RF}, with a +1 position-count bump for CF eligibility (CF range is the closest proxy in the data for "speed / pinch-runner" potential — there is no dedicated speed field).
 4. **Best bat** — highest `priority(p)` among whoever's left.
 
 The result is exposed as `rosters[lvl]['bench_roles']`, a list of `(role_label, player)` tuples that the Excel writer renders one per row with the role label in the leftmost column. At the 13-roster levels (MLB through A) the four named slots fill the bench exactly; at R/R(DLR) (15-roster) the remaining slots are labelled `Depth`.
