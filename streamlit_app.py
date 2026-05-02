@@ -271,13 +271,15 @@ n_h_placed = sum(len(rh[l]['all']) for l in LEVELS)
 n_p_placed = sum(len(rp[l]['all']) for l in LEVELS)
 n_overflow = len(oh) + len(op)
 hps = [p for l in LEVELS for p in rh[l]['all'] if is_high_potential(p)]
+hps_pitchers = [p for l in LEVELS for p in rp[l]['all'] if is_high_potential_pitcher(p)]
 
 st.title(f'{team} organisation')
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric('Hitters placed', n_h_placed)
 c2.metric('Pitchers placed', n_p_placed)
-c3.metric('High-potential prospects', len(hps))
+c3.metric('High-potential prospects', len(hps) + len(hps_pitchers),
+          help=f'{len(hps)} hitters + {len(hps_pitchers)} pitchers')
 c4.metric('Release pool', n_overflow)
 
 tab_overview, tab_rosters = st.tabs(['Overview', 'Rosters by level'])
