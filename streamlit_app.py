@@ -3,20 +3,27 @@
 Run with:
     streamlit run streamlit_app.py
 
+The app is fully self-contained — it does not need any files at a
+specific local path. Drop the four OOTP CSVs into the sidebar uploader
+and click "Process upload"; the pipeline writes hitters.json and
+pitchers.json in the project's outputs/ folder and the rosters render.
+
 Talks to the same functions as the CLI (`app.py`):
-- compute_df()                       — full pipeline (slow, ~30s)
+- main.compute_df()                  — full pipeline (slow, ~30s)
 - build_system.main(org)             — hitter rosters from cached JSON
 - build_pitcher_system.main(org)     — pitcher rosters from cached JSON
 - build_excel.main_build(org)        — write the team xlsx
 """
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+import config
 from build_system import main as build_hitters, LEVELS, is_high_potential
 from build_pitcher_system import main as build_pitchers
 from build_excel import main_build, _platoon_lineup_extras
@@ -24,6 +31,13 @@ from build_excel import main_build, _platoon_lineup_extras
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 HITTERS_JSON = 'outputs/hitters.json'
 PITCHERS_JSON = 'outputs/pitchers.json'
+
+REQUIRED_CSVS = {
+    'players.csv',
+    'players_career_pitching_stats.csv',
+    'players_career_batting_stats.csv',
+    'players_scouted_ratings.csv',
+}
 
 st.set_page_config(page_title='Pistachio', layout='wide', page_icon='⚾')
 
@@ -59,11 +73,68 @@ def data_age_str() -> str:
     return humanise_age((datetime.now() - datetime.fromtimestamp(mtime)).total_seconds())
 
 
+def has_cached_data() -> bool:
+    return os.path.exists(HITTERS_JSON) and os.path.exists(PITCHERS_JSON)
+
+
+def process_uploaded(uploaded_files):
+    """Save the uploads to a temp dir, point config.filepath at it, and run
+    the full metrics pipeline. Outputs (hitters.json, pitchers.json, etc.)
+    land in the normal outputs/ dir."""
+    tmpdir = Path(tempfile.mkdtemp(prefix='pistachio_'))
+    for f in uploaded_files:
+        if f.name in REQUIRED_CSVS:
+            (tmpdir / f.name).write_bytes(f.getbuffer())
+    config.filepath = tmpdir
+    from main import main as pipeline_main
+    pipeline_main()
+
+
+def render_upload_widget(*, expanded: bool):
+    """Sidebar block: file uploader + Process button. Returns True if the
+    pipeline ran (caller should clear cache + rerun)."""
+    with st.expander('🔄 Upload OOTP CSVs', expanded=expanded):
+        st.caption('Drop in the four CSVs OOTP exports from your save game. The pipeline runs once on upload and the results are cached until the next upload.')
+        uploaded = st.file_uploader(
+            'CSV files',
+            accept_multiple_files=True,
+            type='csv',
+            label_visibility='collapsed',
+        )
+        if not uploaded:
+            st.caption('Required: ' + ', '.join(sorted(REQUIRED_CSVS)))
+            return False
+
+        names = {f.name for f in uploaded}
+        missing = REQUIRED_CSVS - names
+        if missing:
+            st.warning('Missing: ' + ', '.join(sorted(missing)))
+            return False
+
+        extra = names - REQUIRED_CSVS
+        if extra:
+            st.info('Will ignore: ' + ', '.join(sorted(extra)))
+
+        if st.button('Process upload (~30s)', width='stretch', type='primary'):
+            with st.spinner('Running pipeline…'):
+                process_uploaded(uploaded)
+            st.success('Pipeline finished. Refreshing…')
+            return True
+    return False
+
+
 # ---------- Sidebar ----------
 
 with st.sidebar:
     st.title('⚾ Pistachio')
     st.caption('OOTP roster construction')
+
+    if not has_cached_data():
+        st.warning('No data loaded yet. Upload the OOTP CSVs to begin.')
+        if render_upload_widget(expanded=True):
+            st.cache_data.clear()
+            st.rerun()
+        st.stop()  # nothing else makes sense without data
 
     orgs = get_orgs()
     default_team = 'LAA' if 'LAA' in orgs else orgs[0]
@@ -72,11 +143,7 @@ with st.sidebar:
     st.markdown('---')
     st.caption(f'Data refreshed {data_age_str()}')
 
-    if st.button('🔄 Refresh data', width='stretch',
-                 help='Rerun the full metrics pipeline. Takes ~30 seconds.'):
-        with st.spinner('Running pipeline (~30s)…'):
-            from main import main as pipeline_main
-            pipeline_main()
+    if render_upload_widget(expanded=False):
         st.cache_data.clear()
         st.rerun()
 
@@ -221,7 +288,6 @@ with tab_rosters:
             with col_p:
                 st.markdown('**Pitchers**')
                 prows = []
-                # rp[lvl]['all'] holds the placed pitchers; sort by role then pwOBA
                 for p in rp[lvl]['all']:
                     role = p.get('_role', '?')
                     metric = p.get('pwOBA')
@@ -232,6 +298,5 @@ with tab_rosters:
                         'pwOBA': round(metric, 3) if metric is not None else None,
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3) if p.get('pwOBAP') is not None else None,
                     })
-                # SP first, then RP
                 prows.sort(key=lambda r: (r['Role'] != 'SP', r.get('pwOBA') or 9))
                 st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')

@@ -76,11 +76,12 @@ def _load_injured_names():
        reason — additive to the OOTP list.
     Both sources are optional; missing files just mean no one is flagged."""
     names = set()
-    # Auto: OOTP CSV
+    # Auto: OOTP CSV. Reference config.filepath at call time so the
+    # Streamlit uploader's monkey-patched temp dir is honoured.
     try:
-        from config import filepath as ootp_csv_dir
+        import config
         import csv
-        with open(ootp_csv_dir / 'players.csv', encoding='utf-8') as f:
+        with open(config.filepath / 'players.csv', encoding='utf-8') as f:
             for row in csv.DictReader(f):
                 if row.get('injury_is_injured') == '1':
                     names.add(f"{row['first_name']} {row['last_name']}")

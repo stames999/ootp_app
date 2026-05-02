@@ -1,5 +1,10 @@
 import pandas as pd
 
+# Note: filepath / pistachio_filepath are referenced as `config.filepath`
+# inline (rather than imported here) so callers can monkey-patch
+# `config.filepath = some_temp_dir` at runtime — used by the Streamlit
+# uploader so the user doesn't need files in any specific local location.
+import config
 from config import (
     HITTING_STATS_COLUMNS,
     ID,
@@ -12,14 +17,12 @@ from config import (
     SCOUTED_RATINGS_COLUMNS,
     SCOUTED_RATINGS_RENAMES,
     club_lookup,
-    filepath,
-    pistachio_filepath,
     rename_columns,
 )
 
 
 def load_players() -> pd.DataFrame:
-    file = filepath / "players.csv"
+    file = config.filepath / "players.csv"
     df = pd.read_csv(file, usecols=PLAYERS_COLUMNS, low_memory=False)
     # Remove retired players
     df = df[df.retired != 1]
@@ -39,7 +42,7 @@ def load_players() -> pd.DataFrame:
 
 
 def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / "players_career_pitching_stats.csv"
+    file = config.filepath / "players_career_pitching_stats.csv"
     pitching_stats_df = pd.read_csv(
         file, usecols=PITCHING_STATS_COLUMNS, low_memory=False
     )
@@ -59,7 +62,7 @@ def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / "players_career_batting_stats.csv"
+    file = config.filepath / "players_career_batting_stats.csv"
     hitting_stats_df = pd.read_csv(
         file, usecols=HITTING_STATS_COLUMNS, low_memory=False
     )
@@ -77,7 +80,7 @@ def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / "players_scouted_ratings.csv"
+    file = config.filepath / "players_scouted_ratings.csv"
     all_rating_columns = (
         SCOUTED_RATINGS_COLUMNS + PITCH_RATING_COLUMNS + POTENTIAL_PITCH_RATING_COLUMNS
     )
@@ -114,9 +117,15 @@ import numpy as np
 
 
 def is_flagged(df: pd.DataFrame) -> pd.DataFrame:
-    # Read player_ids from text file and convert to integers
-    with open(pistachio_filepath / "flagged.txt", "r") as f:
-        flagged_ids = [int(line.strip()) for line in f if line.strip().isdigit()]
+    # Read player_ids from text file and convert to integers. Missing
+    # flagged.txt is fine — it's just a display marker for the HTML
+    # exporter, not roster-affecting.
+    flagged_path = config.pistachio_filepath / "flagged.txt"
+    if flagged_path.exists():
+        with open(flagged_path, "r") as f:
+            flagged_ids = [int(line.strip()) for line in f if line.strip().isdigit()]
+    else:
+        flagged_ids = []
 
     # Add 'flag' column based on player_id match
     df["flag"] = np.where(df["player_id"].isin(flagged_ids), "flag", "")
