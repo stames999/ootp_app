@@ -282,7 +282,24 @@ c3.metric('High-potential prospects', len(hps) + len(hps_pitchers),
           help=f'{len(hps)} hitters + {len(hps_pitchers)} pitchers')
 c4.metric('Release pool', n_overflow)
 
-tab_overview, tab_rosters, tab_release = st.tabs(['Overview', 'Rosters by level', 'Release pool'])
+tab_overview, tab_rosters, tab_release, tab_scout_h, tab_scout_p = st.tabs(
+    ['Overview', 'Rosters by level', 'Release pool', 'Scout hitters', 'Scout pitchers']
+)
+
+
+# ---------- Cached loaders for the scouting tabs ----------
+# Cached on the JSON mtime so they auto-invalidate after a refresh.
+
+@st.cache_data
+def load_all_hitters_df(_sig: tuple) -> pd.DataFrame:
+    rows = json.load(open(HITTERS_JSON))['rows']
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def load_all_pitchers_df(_sig: tuple) -> pd.DataFrame:
+    rows = json.load(open(PITCHERS_JSON))['rows']
+    return pd.DataFrame(rows)
 
 # ---------- Overview tab ----------
 
@@ -509,6 +526,36 @@ with tab_rosters:
                 prows.sort(key=lambda r: (r['Role'] != 'SP', r.get('pwOBA') or 9))
                 st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
 
+            # Per-level platoon batting orders + R/G — same logic as the
+            # Overview tab's MLB block, applied to whichever level we're
+            # rendering. Useful at lower levels too: shows which prospect
+            # gets the leadoff / cleanup spot in each matchup.
+            st.markdown('**Batting orders**')
+            sub_r, sub_l = st.columns(2)
+            for sub_col, (label, vs_key) in zip(
+                [sub_r, sub_l],
+                [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')],
+            ):
+                with sub_col:
+                    split_starters = rh[lvl].get(f'starters_vs{vs_key[-1]}', {})
+                    name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
+                    order_rows = []
+                    for pos in POSITIONS:
+                        p = split_starters.get(pos)
+                        if not p:
+                            continue
+                        order_rows.append({
+                            'Slot': name_to_slot.get(p['name']),
+                            'Pos': pos,
+                            'Player': p['name'],
+                            vs_key: round(p.get(vs_key) or 0, 3),
+                        })
+                    if order_rows:
+                        df_order = pd.DataFrame(order_rows).sort_values('Slot')
+                        rpg_str = f'{rpg:.2f}' if not (isinstance(rpg, float) and rpg != rpg) else 'n/a'
+                        st.markdown(f'**{label}** — R/G **{rpg_str}**')
+                        st.dataframe(df_order, hide_index=True, width='stretch')
+
 
 # ---------- Release pool tab ----------
 
@@ -555,3 +602,124 @@ with tab_release:
             st.dataframe(p_df, hide_index=True, width='stretch', height=600)
         else:
             st.success('No pitcher overflow.')
+
+
+# ---------- Scout hitters tab ----------
+# Cross-org searchable / filterable view, mirroring the old hitters.html.
+
+with tab_scout_h:
+    st.subheader('All hitters — scouting view')
+    st.caption('Cross-org search across the full pipeline output. Filters compose with each other; the table is sortable on every column.')
+
+    df_h_all = load_all_hitters_df(sig)
+
+    f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+    with f1:
+        name_q_h = st.text_input('Name contains', '', key='scout_h_name')
+    with f2:
+        org_opts_h = sorted(df_h_all['org'].dropna().unique().tolist())
+        org_filter_h = st.multiselect('Org', org_opts_h, key='scout_h_org')
+    with f3:
+        pos_opts_h = sorted(df_h_all['pos_adj'].dropna().unique().tolist())
+        pos_filter_h = st.multiselect('Primary pos', pos_opts_h, key='scout_h_pos')
+    with f4:
+        only_minor_h = st.checkbox('Minors only', value=False, key='scout_h_minor')
+
+    age_min_h = int(df_h_all['age'].min())
+    age_max_h = int(df_h_all['age'].max())
+    age_range_h = st.slider('Age', age_min_h, age_max_h, (age_min_h, age_max_h), key='scout_h_age')
+
+    mask_h = pd.Series(True, index=df_h_all.index)
+    if name_q_h:
+        mask_h &= df_h_all['name'].str.contains(name_q_h, case=False, na=False)
+    if org_filter_h:
+        mask_h &= df_h_all['org'].isin(org_filter_h)
+    if pos_filter_h:
+        mask_h &= df_h_all['pos_adj'].isin(pos_filter_h)
+    if only_minor_h:
+        mask_h &= df_h_all['minor'] == 1
+    mask_h &= df_h_all['age'].between(age_range_h[0], age_range_h[1])
+
+    filtered_h = df_h_all[mask_h]
+
+    # Curated columns — pos_adj as primary; current and projected splits;
+    # WAR-relevant fielding for each position. Mirrors the old hitters.html
+    # but compact enough to fit on screen.
+    h_display_cols = [
+        c for c in [
+            'name', 'org', 'minor', 'age', 'pa', 'pos_adj', 'field',
+            'wOBA', 'wOBAR', 'wOBAL', 'wOBAP',
+            'best', 'bestP', 'best_adj',
+            'C_fld', 'SS_fld', '2B_fld', '3B_fld', 'CF_fld', 'LF_fld', 'RF_fld', '1B_fld',
+        ] if c in filtered_h.columns
+    ]
+    st.caption(f'{len(filtered_h)} of {len(df_h_all)} hitters match.')
+    st.dataframe(
+        filtered_h[h_display_cols].sort_values('bestP', ascending=False, na_position='last'),
+        hide_index=True,
+        width='stretch',
+        height=600,
+    )
+
+
+# ---------- Scout pitchers tab ----------
+
+with tab_scout_p:
+    st.subheader('All pitchers — scouting view')
+    st.caption('Cross-org search across the full pipeline output. Same filter pattern as Scout hitters.')
+
+    df_p_all = load_all_pitchers_df(sig).copy()
+    # Derive a role tag from sp_warP / rp_warP presence — pwoba-viable arms
+    # land in one of these buckets.
+    def _role_tag(row):
+        sp = row.get('sp_warP') is not None and not pd.isna(row.get('sp_warP'))
+        rp = row.get('rp_warP') is not None and not pd.isna(row.get('rp_warP'))
+        if sp and rp: return 'SP+RP'
+        if sp:        return 'SP'
+        if rp:        return 'RP'
+        return '—'
+    df_p_all['Role'] = df_p_all.apply(_role_tag, axis=1)
+
+    f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+    with f1:
+        name_q_p = st.text_input('Name contains', '', key='scout_p_name')
+    with f2:
+        org_opts_p = sorted(df_p_all['org'].dropna().unique().tolist())
+        org_filter_p = st.multiselect('Org', org_opts_p, key='scout_p_org')
+    with f3:
+        role_opts_p = ['SP', 'RP', 'SP+RP', '—']
+        role_filter_p = st.multiselect('Role', role_opts_p, key='scout_p_role')
+    with f4:
+        only_minor_p = st.checkbox('Minors only', value=False, key='scout_p_minor')
+
+    age_min_p = int(df_p_all['age'].min())
+    age_max_p = int(df_p_all['age'].max())
+    age_range_p = st.slider('Age', age_min_p, age_max_p, (age_min_p, age_max_p), key='scout_p_age')
+
+    mask_p = pd.Series(True, index=df_p_all.index)
+    if name_q_p:
+        mask_p &= df_p_all['name'].str.contains(name_q_p, case=False, na=False)
+    if org_filter_p:
+        mask_p &= df_p_all['org'].isin(org_filter_p)
+    if role_filter_p:
+        mask_p &= df_p_all['Role'].isin(role_filter_p)
+    if only_minor_p:
+        mask_p &= df_p_all['minor'] == 1
+    mask_p &= df_p_all['age'].between(age_range_p[0], age_range_p[1])
+
+    filtered_p = df_p_all[mask_p]
+
+    p_display_cols = [
+        c for c in [
+            'name', 'org', 'minor', 'age', 'ip', 'Role',
+            'pwOBA', 'pwOBAR', 'pwOBAL', 'pwOBAP',
+            'sp_war', 'sp_warP', 'rp_war', 'rp_warP',
+        ] if c in filtered_p.columns
+    ]
+    st.caption(f'{len(filtered_p)} of {len(df_p_all)} pitchers match.')
+    st.dataframe(
+        filtered_p[p_display_cols].sort_values('rp_warP', ascending=False, na_position='last'),
+        hide_index=True,
+        width='stretch',
+        height=600,
+    )
