@@ -1,10 +1,32 @@
 """Build Excel output and markdown summary."""
 import pandas as pd
-from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential
-from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE
+from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential, woba_max_level
+from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE, pwoba_top_level, age_top_level_pitcher
 from org_report import build_batting_order, estimate_runs_per_game
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+
+def _hitter_top_level(p):
+    """Highest level a hitter could play given current wOBA (with the
+    PREMIUM_WOBA_RELAX rule applied via woba_max_level). Returned as the
+    level abbreviation. Used on the Release Pool to show what slot would
+    fit this player if one were available."""
+    try:
+        return LEVELS[woba_max_level(p)]
+    except Exception:
+        return '?'
+
+
+def _pitcher_top_level(p):
+    """Highest level for a pitcher = the more restrictive of pwOBA ceiling
+    and age cap (mirrors the _top calculation used in build_pitcher_system).
+    Pitchers with no pwOBA data default to R(DLR)."""
+    try:
+        idx = max(pwoba_top_level(p), age_top_level_pitcher(p))
+        return LEVELS[min(idx, len(LEVELS) - 1)]
+    except Exception:
+        return '?'
 
 
 def _platoon_lineup_extras(split_starters, vs_key):
@@ -294,31 +316,32 @@ def write_overflow(ws, overflow):
     ws['A1'] = 'Release / Overflow Pool'
     ws['A1'].font = Font(name='Arial', bold=True, size=14, color='FFFFFF')
     ws['A1'].fill = PatternFill('solid', start_color='595959')
-    ws.merge_cells('A1:E1')
+    ws.merge_cells('A1:F1')
     ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 22
-    
-    headers = ['Name', 'Age', 'Pos', 'Best', 'BestP']
+
+    headers = ['Name', 'Age', 'Pos', 'Top level', 'Best', 'BestP']
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col, value=h)
         c.font = HEADER_FONT
         c.fill = HEADER_FILL
         c.border = BORDER
-    
+
     row = 4
     overflow_sorted = sorted(overflow, key=lambda p: (p['bestP'] or -99), reverse=True)
     for p in overflow_sorted:
         ws.cell(row=row, column=1, value=p['name'])
         ws.cell(row=row, column=2, value=p['age'])
         ws.cell(row=row, column=3, value=p['pos_adj'])
-        ws.cell(row=row, column=4, value=round(p['best'], 1))
-        ws.cell(row=row, column=5, value=round(p['bestP'], 1))
-        for col in range(1, 6):
+        ws.cell(row=row, column=4, value=_hitter_top_level(p))
+        ws.cell(row=row, column=5, value=round(p['best'], 1))
+        ws.cell(row=row, column=6, value=round(p['bestP'], 1))
+        for col in range(1, 7):
             ws.cell(row=row, column=col).border = BORDER
             ws.cell(row=row, column=col).font = DEFAULT_FONT
         row += 1
-    
-    widths = [26, 6, 8, 10, 10]
+
+    widths = [26, 6, 8, 10, 10, 10]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[chr(64+i)].width = w
 
@@ -413,11 +436,11 @@ def write_pitcher_overflow(ws, overflow):
     ws['A1'] = 'Pitcher Release / Overflow Pool'
     ws['A1'].font = Font(name='Arial', bold=True, size=14, color='FFFFFF')
     ws['A1'].fill = PatternFill('solid', start_color='595959')
-    ws.merge_cells('A1:F1')
+    ws.merge_cells('A1:G1')
     ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 22
 
-    headers = ['Name', 'Age', 'pwOBA', 'sp_warP', 'rp_warP', 'IP']
+    headers = ['Name', 'Age', 'Top level', 'pwOBA', 'sp_warP', 'rp_warP', 'IP']
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col, value=h)
         c.font = HEADER_FONT
@@ -429,18 +452,19 @@ def write_pitcher_overflow(ws, overflow):
     for p in overflow_sorted:
         ws.cell(row=row, column=1, value=p['name'])
         ws.cell(row=row, column=2, value=p['age'])
-        ws.cell(row=row, column=3, value=round(p.get('pwOBA') or 0, 3))
+        ws.cell(row=row, column=3, value=_pitcher_top_level(p))
+        ws.cell(row=row, column=4, value=round(p.get('pwOBA') or 0, 3))
         sp = p.get('sp_warP')
-        ws.cell(row=row, column=4, value=round(sp, 2) if sp is not None else '')
+        ws.cell(row=row, column=5, value=round(sp, 2) if sp is not None else '')
         rp = p.get('rp_warP')
-        ws.cell(row=row, column=5, value=round(rp, 2) if rp is not None else '')
-        ws.cell(row=row, column=6, value=p.get('ip', 0))
-        for col in range(1, 7):
+        ws.cell(row=row, column=6, value=round(rp, 2) if rp is not None else '')
+        ws.cell(row=row, column=7, value=p.get('ip', 0))
+        for col in range(1, 8):
             ws.cell(row=row, column=col).border = BORDER
             ws.cell(row=row, column=col).font = DEFAULT_FONT
         row += 1
 
-    widths = [26, 6, 9, 10, 10, 7]
+    widths = [26, 6, 10, 9, 10, 10, 7]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[chr(64+i)].width = w
 

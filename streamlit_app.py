@@ -26,7 +26,7 @@ import streamlit as st
 import config
 from build_system import main as build_hitters, LEVELS, is_high_potential
 from build_pitcher_system import main as build_pitchers, is_high_potential_pitcher, SP_PER_LEVEL, RP_PER_LEVEL
-from build_excel import main_build, _platoon_lineup_extras
+from build_excel import main_build, _platoon_lineup_extras, _hitter_top_level, _pitcher_top_level
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 HITTERS_JSON = 'outputs/hitters.json'
@@ -282,7 +282,7 @@ c3.metric('High-potential prospects', len(hps) + len(hps_pitchers),
           help=f'{len(hps)} hitters + {len(hps_pitchers)} pitchers')
 c4.metric('Release pool', n_overflow)
 
-tab_overview, tab_rosters = st.tabs(['Overview', 'Rosters by level'])
+tab_overview, tab_rosters, tab_release = st.tabs(['Overview', 'Rosters by level', 'Release pool'])
 
 # ---------- Overview tab ----------
 
@@ -508,3 +508,50 @@ with tab_rosters:
                     })
                 prows.sort(key=lambda r: (r['Role'] != 'SP', r.get('pwOBA') or 9))
                 st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
+
+
+# ---------- Release pool tab ----------
+
+with tab_release:
+    st.subheader(f'{team} release / overflow pool')
+    st.caption("Players who didn't fit any level in this run. The 'Top level' column shows where their bat / stuff would project if a slot were available — useful when backfilling roster gaps.")
+
+    col_h_rel, col_p_rel = st.columns(2)
+
+    with col_h_rel:
+        st.markdown(f'**Hitters ({len(oh)})**')
+        if oh:
+            h_rows = []
+            for p in oh:
+                h_rows.append({
+                    'Player': p['name'],
+                    'Age': p['age'],
+                    'Pos': p.get('pos_adj') or '',
+                    'Top level': _hitter_top_level(p),
+                    'wOBA': round(p.get('wOBA') or 0, 3),
+                    'wOBAP': round(p.get('wOBAP') or 0, 3),
+                    'BestP': round(p.get('bestP') or 0, 1),
+                })
+            h_df = pd.DataFrame(h_rows).sort_values('BestP', ascending=False)
+            st.dataframe(h_df, hide_index=True, width='stretch', height=600)
+        else:
+            st.success('No hitter overflow.')
+
+    with col_p_rel:
+        st.markdown(f'**Pitchers ({len(op)})**')
+        if op:
+            p_rows = []
+            for p in op:
+                p_rows.append({
+                    'Player': p['name'],
+                    'Age': p['age'],
+                    'Top level': _pitcher_top_level(p),
+                    'pwOBA': round(p.get('pwOBA') or 0, 3),
+                    'pwOBAP': round(p.get('pwOBAP') or 0, 3),
+                    'sp_warP': round(p.get('sp_warP') or 0, 2) if p.get('sp_warP') is not None else None,
+                    'rp_warP': round(p.get('rp_warP') or 0, 2) if p.get('rp_warP') is not None else None,
+                })
+            p_df = pd.DataFrame(p_rows).sort_values('rp_warP', ascending=False, na_position='last')
+            st.dataframe(p_df, hide_index=True, width='stretch', height=600)
+        else:
+            st.success('No pitcher overflow.')
