@@ -7,7 +7,6 @@ import pandas as pd
 import config
 from config import (
     HITTING_STATS_COLUMNS,
-    ID,
     PITCH_MINIMUM_RATING,
     PITCH_RATING_COLUMNS,
     PITCHING_STATS_COLUMNS,
@@ -98,7 +97,9 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     )
     ratings_df = pd.read_csv(file, usecols=all_rating_columns, low_memory=False)
     # Keep only ratings from your scouting director
-    ratings_df = ratings_df[ratings_df["scouting_coach_id"] == ID]
+    # Read config.ID at call time so the Streamlit ratings-source toggle
+    # (Head Scout vs OSA) can monkey-patch it before invoking the pipeline.
+    ratings_df = ratings_df[ratings_df["scouting_coach_id"] == config.ID]
     ratings_df = ratings_df.drop(columns=["scouting_coach_id"])
     # Rename the column for clarity
     for old, new in SCOUTED_RATINGS_RENAMES.items():

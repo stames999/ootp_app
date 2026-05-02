@@ -95,15 +95,47 @@ def has_cached_data() -> bool:
     return os.path.exists(HITTERS_JSON) and os.path.exists(PITCHERS_JSON)
 
 
+@st.cache_data(show_spinner=False)
+def detect_head_scout_id(csv_dir_str: str) -> int | None:
+    """Scan players_scouted_ratings.csv and return the scouting_coach_id with
+    the most ratings rows excluding -1 (OSA). That's the user's head scout
+    in OOTP. Returns None if the CSV is missing or has no non-OSA scouts."""
+    import csv as csv_mod
+    from collections import Counter
+    f = Path(csv_dir_str) / 'players_scouted_ratings.csv'
+    if not f.exists():
+        return None
+    counts = Counter()
+    with open(f) as fh:
+        rdr = csv_mod.DictReader(fh)
+        for r in rdr:
+            cid = r.get('scouting_coach_id') or ''
+            if cid and cid != '-1':
+                counts[cid] += 1
+    if not counts:
+        return None
+    return int(counts.most_common(1)[0][0])
+
+
 def process_uploaded(uploaded_files):
-    """Save the uploads to a temp dir, point config.filepath at it, and run
-    the full metrics pipeline. Outputs (hitters.json, pitchers.json, etc.)
-    land in the normal outputs/ dir."""
+    """Save the uploads to a temp dir, point config.filepath at it, set
+    config.ID to the detected head scout (or -1 for OSA based on the
+    session toggle), and run the full metrics pipeline. Outputs land in
+    the normal outputs/ dir."""
     tmpdir = Path(tempfile.mkdtemp(prefix='pistachio_'))
     for f in uploaded_files:
         if f.name in ACCEPTED_CSVS:
             (tmpdir / f.name).write_bytes(f.getbuffer())
     config.filepath = tmpdir
+    # Apply the user's ratings-source preference to this pipeline run, so
+    # the first build for a new uploader doesn't accidentally use the
+    # config.py default coach_id (which is whatever the repo shipped with).
+    detected = detect_head_scout_id(str(tmpdir))
+    source = st.session_state.get('rating_source', 'Head Scout')
+    if source == 'OSA':
+        config.ID = -1
+    elif detected is not None:
+        config.ID = detected
     from main import main as pipeline_main
     pipeline_main()
 
@@ -161,9 +193,49 @@ with st.sidebar:
     team = st.selectbox('Team', orgs, index=orgs.index(default_team))
 
     st.markdown('---')
+
+    # Ratings source toggle. Pipeline runs only against config.ID, so we
+    # apply the user's selection to config every render and offer a Recalc
+    # button that re-runs the pipeline if the selection differs from
+    # whatever produced the cached JSONs.
+    head_scout = detect_head_scout_id(str(config.filepath))
+    if head_scout is None:
+        st.caption('Ratings source: head-scout id not detectable from CSV')
+    else:
+        if 'rating_source' not in st.session_state:
+            st.session_state.rating_source = 'Head Scout'
+        rating_source = st.radio(
+            'Ratings',
+            options=['Head Scout', 'OSA'],
+            captions=[f'coach_id = {head_scout}', 'coach_id = -1 (OSA)'],
+            key='rating_source',
+            horizontal=True,
+        )
+        # Apply selection to config immediately so any subsequent pipeline
+        # call this session uses it. Cached JSONs may still reflect the
+        # OLD config.ID — Recalc updates them.
+        config.ID = head_scout if rating_source == 'Head Scout' else -1
+        # Track which ID produced the JSON so we can show "(stale)" when
+        # the user toggles before recalcing.
+        active_id = st.session_state.get('active_rating_id', config.ID)
+        if active_id != config.ID:
+            st.warning(f'Ratings switched. Click Recalc to refresh data.')
+            if st.button('🔁 Recalc (~30s)', width='stretch', type='primary'):
+                with st.spinner('Recalculating with new ratings…'):
+                    from main import main as pipeline_main
+                    pipeline_main()
+                st.session_state.active_rating_id = config.ID
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            # First load: remember which ID is active
+            st.session_state.active_rating_id = config.ID
+
+    st.markdown('---')
     st.caption(f'Data refreshed {data_age_str()}')
 
     if render_upload_widget(expanded=False):
+        st.session_state.active_rating_id = config.ID
         st.cache_data.clear()
         st.rerun()
 
@@ -242,25 +314,32 @@ with tab_overview:
                 brows.append({'Role': role, 'Player': '(Sign FA)', 'Age': None, 'wOBA': None})
         st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
 
-        # Platoon batting orders + R/G — the migrated org-report bits
-        for label, vs_key in [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')]:
-            split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
-            name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
-            order_rows = []
-            for pos in POSITIONS:
-                p = split_starters.get(pos)
-                if not p:
-                    continue
-                slot = name_to_slot.get(p['name'])
-                order_rows.append({
-                    'Slot': slot,
-                    'Pos': pos,
-                    'Player': p['name'],
-                    vs_key: round(p.get(vs_key) or 0, 3),
-                })
-            df = pd.DataFrame(order_rows).sort_values('Slot')
-            st.markdown(f'**Batting order {label}** — Est. R/G **{rpg:.2f}**')
-            st.dataframe(df, hide_index=True, width='stretch')
+        # Platoon batting orders + R/G — the migrated org-report bits.
+        # vs RHP / vs LHP rendered side-by-side for easy comparison.
+        st.markdown('**Batting orders**')
+        sub_r, sub_l = st.columns(2)
+        for sub_col, (label, vs_key) in zip(
+            [sub_r, sub_l],
+            [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')],
+        ):
+            with sub_col:
+                split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
+                name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
+                order_rows = []
+                for pos in POSITIONS:
+                    p = split_starters.get(pos)
+                    if not p:
+                        continue
+                    slot = name_to_slot.get(p['name'])
+                    order_rows.append({
+                        'Slot': slot,
+                        'Pos': pos,
+                        'Player': p['name'],
+                        vs_key: round(p.get(vs_key) or 0, 3),
+                    })
+                df = pd.DataFrame(order_rows).sort_values('Slot')
+                st.markdown(f'**{label}** — R/G **{rpg:.2f}**')
+                st.dataframe(df, hide_index=True, width='stretch')
 
     with col_arms:
         st.subheader('MLB pitching staff')
