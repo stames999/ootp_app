@@ -51076,7 +51076,7 @@
     },
     {
       "name": "Ronny Cruz",
-      "org": "WSH",
+      "org": "LAA",
       "minor": 1,
       "age": 20,
       "pa": 0,
@@ -67877,7 +67877,7 @@
     {
       "name": "Gustavo Campero",
       "org": "LAA",
-      "minor": 1,
+      "minor": 0,
       "age": 29,
       "pa": 0,
       "best_adj": 0.15191645966986744,
@@ -86212,7 +86212,7 @@
     },
     {
       "name": "Gavin Fien",
-      "org": "WSH",
+      "org": "LAA",
       "minor": 1,
       "age": 20,
       "pa": 0,
@@ -162293,7 +162293,7 @@
     {
       "name": "Brody Hopkins",
       "org": "LAA",
-      "minor": 0,
+      "minor": 1,
       "age": 25,
       "pa": 0,
       "best_adj": -3.03264226313286,
@@ -308164,8 +308164,8 @@
     },
     {
       "name": "Alec Patino",
-      "org": "LAA",
-      "minor": 1,
+      "org": "Free",
+      "minor": 0,
       "age": 25,
       "pa": 0,
       "best_adj": -9.805154317558713,

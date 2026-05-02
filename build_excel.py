@@ -1,9 +1,10 @@
 """Build Excel output and markdown summary."""
-from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj
+from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential
+from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-OUTFILE = 'outputs/LAA_hitter_system.xlsx'
+OUTFILE = 'outputs/LAA_roster_system.xlsx'
 
 # Styles
 HEADER_FONT = Font(name='Arial', bold=True, color='FFFFFF', size=11)
@@ -59,8 +60,13 @@ def write_level_sheet(ws, lvl, roster):
             woba = p.get('wOBA') or 0
             wobap = p.get('wOBAP') or 0
             gap = wobap - woba
+            # Prospect labelling tracks is_high_potential() (minor=1, age ≤ HP_MAX_AGE,
+            # wOBAP above the position-specific HP threshold) rather than raw gap.
+            # A big wOBA→wOBAP gap on a player whose wOBAP is still below the HP
+            # floor doesn't make them a prospect — just a weak bat with some upside.
             note = ''
-            if gap >= 0.10: note = 'High dev gap (prospect)'
+            is_hp = is_high_potential(p)
+            if is_hp: note = 'High-potential prospect'
             elif woba >= 0.320: note = 'Above-avg MLB bat'
             ws.cell(row=row, column=1, value=slot_label)
             ws.cell(row=row, column=2, value=p['name'])
@@ -77,7 +83,7 @@ def write_level_sheet(ws, lvl, roster):
                 pos_val = p.get('best_adj') or 0
             ws.cell(row=row, column=8, value=round(pos_val, 2))
             ws.cell(row=row, column=9, value=note)
-            if gap >= 0.10:
+            if is_hp:
                 for col in range(1, 10):
                     ws.cell(row=row, column=col).fill = PROSPECT_FILL
             elif woba >= 0.320:
@@ -95,23 +101,72 @@ def write_level_sheet(ws, lvl, roster):
     for pos in POSITIONS:
         write_player_row(row, starters.get(pos), pos)
         row += 1
-    
+
+    # vs RHP and vs LHP lineup variants on the same roster.
+    # Compact rendering: position / name / age / vs-handedness wOBA / overall
+    # wOBA / platoon delta / [Δ vs standard]. The last column flags positions
+    # where the platoon optimum differs from the standard starting nine.
+    def write_platoon_block(row, label, split_starters, vs_key):
+        sec = ws.cell(row=row, column=1, value=label)
+        sec.font = SECTION_FONT
+        sec.fill = SECTION_FILL
+        sec.alignment = Alignment(horizontal='center')
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+        row += 1
+        # mini-header
+        headers = ['Pos', 'Name', 'Age', vs_key, 'wOBA', 'Δ', '', '', 'Note']
+        for col, h in enumerate(headers, 1):
+            c = ws.cell(row=row, column=col, value=h)
+            c.font = Font(name='Arial', bold=True, size=9, color='666666')
+            c.alignment = Alignment(horizontal='center')
+            c.border = BORDER
+        row += 1
+        for pos in POSITIONS:
+            p = split_starters.get(pos)
+            std = starters.get(pos)
+            ws.cell(row=row, column=1, value=pos).font = Font(name='Arial', bold=True, size=10)
+            if p is None:
+                ws.cell(row=row, column=2, value='-- empty --').font = Font(name='Arial', italic=True, color='999999')
+            else:
+                woba = p.get('wOBA') or 0
+                split_woba = p.get(vs_key) or 0
+                delta = split_woba - woba
+                ws.cell(row=row, column=2, value=p['name'])
+                ws.cell(row=row, column=3, value=p['age'])
+                ws.cell(row=row, column=4, value=round(split_woba, 3))
+                ws.cell(row=row, column=5, value=round(woba, 3))
+                ws.cell(row=row, column=6, value=round(delta, 3))
+                if std is None or std['name'] != p['name']:
+                    ws.cell(row=row, column=9, value=f'swap from {std["name"] if std else "(empty)"}').font = Font(name='Arial', italic=True, size=9, color='C00000')
+            for col in range(1, 10):
+                ws.cell(row=row, column=col).border = BORDER
+                if not ws.cell(row=row, column=col).font.bold:
+                    ws.cell(row=row, column=col).font = DEFAULT_FONT
+            row += 1
+        return row
+
+    row = write_platoon_block(row, 'VS RHP', roster.get('starters_vsR', {}), 'wOBAR')
+    row = write_platoon_block(row, 'VS LHP', roster.get('starters_vsL', {}), 'wOBAL')
+
     sec = ws.cell(row=row, column=1, value='BENCH / DEPTH')
     sec.font = SECTION_FONT
     sec.fill = SECTION_FILL
     sec.alignment = Alignment(horizontal='center')
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
     row += 1
-    
-    for p in bench:
-        write_player_row(row, p, '—')
-        gap = (p.get('wOBAP') or 0) - (p.get('wOBA') or 0)
-        if gap >= 0.10:
-            ws.cell(row=row, column=9, value='Prospect (depth)')
-        elif is_catcher(p):
-            ws.cell(row=row, column=9, value='Backup C')
+
+    # Bench is now ordered by named role: Backup C, Utility IF, Utility OF,
+    # Best bat, then depth. Use the slot label as both the leftmost column
+    # and the Notes column for clarity.
+    for role, p in roster['bench_roles']:
+        write_player_row(row, p, role)
+        if p is None:
+            ws.cell(row=row, column=9, value=f'(no {role.lower()} candidate)')
         else:
-            ws.cell(row=row, column=9, value='Depth')
+            if role == 'Depth' and is_high_potential(p):
+                ws.cell(row=row, column=9, value='Prospect (depth)')
+            else:
+                ws.cell(row=row, column=9, value=role)
         row += 1
     
     widths = [8, 26, 6, 7, 8, 9, 7, 8, 22]
@@ -228,25 +283,199 @@ def write_overflow(ws, overflow):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[chr(64+i)].width = w
 
+def write_pitcher_sheet(ws, lvl, roster):
+    """One sheet per level for pitchers: 5-man rotation, 8-man bullpen."""
+    ws['A1'] = f'{lvl} Pitching Staff'
+    ws['A1'].font = Font(name='Arial', bold=True, size=14, color='FFFFFF')
+    ws['A1'].fill = PatternFill('solid', start_color=LEVEL_COLORS[lvl])
+    ws.merge_cells('A1:H1')
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 24
+
+    headers = ['Slot', 'Name', 'Age', 'pwOBA', 'pwOBAP', 'Role WAR', 'IP', 'Notes']
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=3, column=col, value=h)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+
+    def sp_note(spp):
+        if spp >= 2.0: return 'Front-of-rotation'
+        if spp >= 0.5: return 'Mid-rotation'
+        if spp >= 0.0: return 'Back-end starter'
+        return 'Innings eater'
+
+    def rp_note(rpp):
+        if rpp >= 0.8: return 'High leverage'
+        if rpp >= 0.0: return 'Mid leverage'
+        return 'Low leverage / depth'
+
+    def write_pitcher_row(row, p, slot_label, war_key, note_fn):
+        ws.cell(row=row, column=1, value=slot_label).font = Font(name='Arial', bold=True, size=10)
+        ws.cell(row=row, column=2, value=p['name'])
+        ws.cell(row=row, column=3, value=p['age'])
+        ws.cell(row=row, column=4, value=round(p.get('pwOBA') or 0, 3))
+        ws.cell(row=row, column=5, value=round(p.get('pwOBAP') or 0, 3))
+        war = p.get(war_key)
+        ws.cell(row=row, column=6, value=round(war, 2) if war is not None else '')
+        ws.cell(row=row, column=7, value=p.get('ip', 0))
+        ws.cell(row=row, column=8, value=note_fn(war if war is not None else -99))
+        for col in range(1, 9):
+            ws.cell(row=row, column=col).border = BORDER
+            if not ws.cell(row=row, column=col).font.bold:
+                ws.cell(row=row, column=col).font = DEFAULT_FONT
+
+    row = 4
+    sec = ws.cell(row=row, column=1, value='STARTING ROTATION')
+    sec.font = SECTION_FONT
+    sec.fill = SECTION_FILL
+    sec.alignment = Alignment(horizontal='center')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    row += 1
+
+    for i in range(SP_PER_LEVEL):
+        if i < len(roster['starters']):
+            write_pitcher_row(row, roster['starters'][i], f'SP{i+1}', 'sp_warP', sp_note)
+        else:
+            ws.cell(row=row, column=1, value=f'SP{i+1}').font = Font(name='Arial', bold=True, size=10)
+            ws.cell(row=row, column=2, value='-- empty --').font = Font(name='Arial', italic=True, color='999999')
+            for col in range(1, 9):
+                ws.cell(row=row, column=col).border = BORDER
+        row += 1
+
+    sec = ws.cell(row=row, column=1, value='BULLPEN')
+    sec.font = SECTION_FONT
+    sec.fill = SECTION_FILL
+    sec.alignment = Alignment(horizontal='center')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    row += 1
+
+    for i in range(RP_PER_LEVEL):
+        if i < len(roster['bullpen']):
+            write_pitcher_row(row, roster['bullpen'][i], f'RP{i+1}', 'rp_warP', rp_note)
+        else:
+            ws.cell(row=row, column=1, value=f'RP{i+1}').font = Font(name='Arial', bold=True, size=10)
+            ws.cell(row=row, column=2, value='-- empty --').font = Font(name='Arial', italic=True, color='999999')
+            ws.cell(row=row, column=8, value='Sign FA').font = Font(name='Arial', italic=True, size=9, color='C00000')
+            for col in range(1, 9):
+                ws.cell(row=row, column=col).border = BORDER
+        row += 1
+
+    widths = [8, 26, 6, 9, 10, 11, 7, 22]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+    row += 1
+    ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} pitchers (target {PITCHER_ROSTER_SIZE})').font = Font(name='Arial', italic=True, size=9, color='666666')
+
+
+def write_pitcher_overflow(ws, overflow):
+    ws['A1'] = 'Pitcher Release / Overflow Pool'
+    ws['A1'].font = Font(name='Arial', bold=True, size=14, color='FFFFFF')
+    ws['A1'].fill = PatternFill('solid', start_color='595959')
+    ws.merge_cells('A1:F1')
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 22
+
+    headers = ['Name', 'Age', 'pwOBA', 'sp_warP', 'rp_warP', 'IP']
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=3, column=col, value=h)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.border = BORDER
+
+    row = 4
+    overflow_sorted = sorted(overflow, key=lambda p: -(p.get('rp_warP') or -99))
+    for p in overflow_sorted:
+        ws.cell(row=row, column=1, value=p['name'])
+        ws.cell(row=row, column=2, value=p['age'])
+        ws.cell(row=row, column=3, value=round(p.get('pwOBA') or 0, 3))
+        sp = p.get('sp_warP')
+        ws.cell(row=row, column=4, value=round(sp, 2) if sp is not None else '')
+        rp = p.get('rp_warP')
+        ws.cell(row=row, column=5, value=round(rp, 2) if rp is not None else '')
+        ws.cell(row=row, column=6, value=p.get('ip', 0))
+        for col in range(1, 7):
+            ws.cell(row=row, column=col).border = BORDER
+            ws.cell(row=row, column=col).font = DEFAULT_FONT
+        row += 1
+
+    widths = [26, 6, 9, 10, 10, 7]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+
+def write_flagged(ws, players, kind):
+    """Render players pulled out of active placement via flagged.txt — typically
+    injuries. Re-run the system once they're cleared from flagged.txt."""
+    ws['A1'] = f'Flagged / Unavailable {kind}'
+    ws['A1'].font = Font(name='Arial', bold=True, size=14, color='FFFFFF')
+    ws['A1'].fill = PatternFill('solid', start_color='8B0000')
+    ws.merge_cells('A1:D1')
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 22
+
+    ws['A3'] = 'Name'
+    ws['B3'] = 'Age'
+    ws['C3'] = 'Pos'
+    ws['D3'] = 'Note'
+    for col in range(1, 5):
+        ws.cell(row=3, column=col).font = HEADER_FONT
+        ws.cell(row=3, column=col).fill = HEADER_FILL
+        ws.cell(row=3, column=col).border = BORDER
+
+    row = 4
+    for p in sorted(players, key=lambda x: x['name']):
+        ws.cell(row=row, column=1, value=p['name'])
+        ws.cell(row=row, column=2, value=p['age'])
+        ws.cell(row=row, column=3, value=p.get('pos_adj') or p.get('pos') or '')
+        ws.cell(row=row, column=4, value='Flagged in flagged.txt — rerun once cleared')
+        for col in range(1, 5):
+            ws.cell(row=row, column=col).border = BORDER
+            ws.cell(row=row, column=col).font = DEFAULT_FONT
+        row += 1
+
+    widths = [26, 6, 6, 48]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64+i)].width = w
+
+
 def main_build():
-    rosters, overflow = main()
+    rosters, overflow, flagged = main()
+    pitcher_rosters, pitcher_overflow, pitcher_flagged = pitcher_main()
     wb = Workbook()
     wb.remove(wb.active)
-    
+
     # Summary first
     ws = wb.create_sheet('Summary')
     write_summary(ws, rosters, overflow)
-    
-    # Each level
+
+    # Hitter level sheets
     for lvl in LEVELS:
         sheet_name = lvl.replace('(', '_').replace(')', '')
         ws = wb.create_sheet(sheet_name)
         write_level_sheet(ws, lvl, rosters[lvl])
-    
-    # Overflow
+
+    # Pitcher level sheets — same level order, suffix _P to keep names short
+    # (sheet names are capped at 31 chars by Excel; with _P we stay well under).
+    for lvl in LEVELS:
+        sheet_name = lvl.replace('(', '_').replace(')', '') + '_P'
+        ws = wb.create_sheet(sheet_name)
+        write_pitcher_sheet(ws, lvl, pitcher_rosters[lvl])
+
+    # Overflow + flagged pools
     ws = wb.create_sheet('Release_Pool')
     write_overflow(ws, overflow)
-    
+    ws = wb.create_sheet('Release_Pool_P')
+    write_pitcher_overflow(ws, pitcher_overflow)
+    if flagged:
+        ws = wb.create_sheet('Flagged')
+        write_flagged(ws, flagged, 'Hitters')
+    if pitcher_flagged:
+        ws = wb.create_sheet('Flagged_P')
+        write_flagged(ws, pitcher_flagged, 'Pitchers')
+
     wb.save(OUTFILE)
     print(f'Saved: {OUTFILE}')
 

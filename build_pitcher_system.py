@@ -1,0 +1,259 @@
+"""LAA pitcher assignment - 5 SP + 8 RP per level.
+
+Mirrors the hitter system: a current-ability ceiling (`PWOBA_MAX`,
+analogous to hitter `WOBA_MIN`) determines each pitcher's `_top` level,
+and an age-weighted blend of current and projected pwOBA (`pitcher_priority`,
+analogous to hitter `priority`) drives cascade ordering. The blend lets a
+young high-projection arm (Fana, age 18, pwOBA .401 / pwOBAP .307) outrank
+an older same-pwOBA arm with no projection upside. The threshold prevents
+over-promotion: a prospect's projection can't push them above the level
+their current stuff supports.
+
+Algorithm:
+  Step 0  Filter international complex (minor=0 + age<20).
+  Step 1  Compute `_top` (best level by current pwOBA, gated by PWOBA_MAX)
+          and `_bot` (oldest level by age cap, reusing hitter MAX_AGE). If
+          `_top > _bot` the pitcher has nowhere to fit → overflow.
+  Step 2  SP cascade. Place each SP-viable pitcher at their `_top` initially.
+          For each level top-down, while over `SP_PER_LEVEL`, pop the
+          worst-blend pitcher and cascade to the next level (or overflow if
+          age cap blocks the next level).
+  Step 3  SP pull-up. Walk levels top-down; if a level is under
+          `SP_PER_LEVEL`, pull the best-blend pitcher from below who is
+          age-eligible. Pull-up does NOT enforce `_top` (accepts sub-
+          threshold filler) because under-filled rotations are worse than
+          a marginal pitcher one level above their nominal ceiling.
+  Step 4  RP cascade + pull-up — same shape with `RP_PER_LEVEL` slots over
+          RP-viable pitchers minus those placed as SPs.
+  Step 5  Anyone unplaced → overflow.
+
+Notes / limitations:
+- No SP↔RP comparative override (a 6th-best MLB SP cascades to AAA SP
+  rather than possibly being a better fit as MLB RP).
+- No platoon (vs RHB / vs LHB) staff variants — `pwOBAR` / `pwOBAL` are
+  available and could power that later.
+- No bullpen role tagging (closer / setup / LOOGY).
+"""
+import json
+
+from build_system import LEVELS, MAX_AGE, age_lowest_level, _load_injured_names
+
+PITCHERS_JSON = 'outputs/pitchers.json'
+
+SP_PER_LEVEL = 5
+RP_PER_LEVEL = 8
+PITCHER_ROSTER_SIZE = SP_PER_LEVEL + RP_PER_LEVEL
+
+# Maximum pwOBA a pitcher can allow and still belong at a given level.
+# Lower = better stuff, so this is a CEILING (analogous to WOBA_MIN being a
+# floor for hitters). Calibrated against league wOBA ≈ .320: MLB pitchers
+# cluster .280-.340; AAA fringe to .365; lower minors more permissive. Tune
+# if rosters look over- or under-matched at any level.
+PWOBA_MAX = {
+    'MLB':    0.345,
+    'AAA':    0.370,
+    'AA':     0.385,
+    'A+':     0.395,
+    'A':      0.405,
+    'R':      0.420,
+    'R(DLR)': 1.000,  # no upper limit — accepts whatever's left
+}
+
+
+def load_laa_pitchers():
+    d = json.load(open(PITCHERS_JSON))
+    return [r for r in d['rows'] if r['org'] == 'LAA']
+
+
+def pitcher_priority(p):
+    """Age-weighted blend of current and projected pwOBA. Lower = better
+    (matches the pwOBA convention where lower-allowed-wOBA is the goal).
+    Mirrors the hitter `priority` weights:
+      ≤19  : 30% current + 70% projected (raw projection bias)
+      20-21: 50/50
+      22-23: 70/30
+      24+  : 90/10 (mature, projection nearly realised)"""
+    age = p['age']
+    pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
+    pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
+    if age <= 19:
+        return 0.3 * pwoba + 0.7 * pwobap
+    if age <= 21:
+        return 0.5 * pwoba + 0.5 * pwobap
+    if age <= 23:
+        return 0.7 * pwoba + 0.3 * pwobap
+    return 0.9 * pwoba + 0.1 * pwobap
+
+
+def pwoba_top_level(p):
+    """Highest level (smallest LEVELS index) the pitcher's CURRENT pwOBA
+    qualifies for. Threshold is a hard ceiling on placement — a prospect
+    with great projection but currently-poor stuff can't be promoted past
+    the level their current pwOBA supports."""
+    pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
+    for lvl in LEVELS:
+        if pwoba <= PWOBA_MAX[lvl]:
+            return LEVELS.index(lvl)
+    return len(LEVELS) - 1
+
+
+# Age-based ceiling on `_top` for pitchers. The pipeline's pwOBA calc caps
+# out around .403 because the underlying linear-weights conversion is
+# clamp-extrapolated below the lowest rating with sim data — a 17-year-old
+# whose true ability would be .500 still shows .403, indistinguishable from
+# a stable 22-year-old at .403. Age is the only signal we have to break
+# that tie, so very young arms get capped at developmental levels regardless
+# of their (probably-floored) pwOBA. Mature pitchers (23+) get no age cap;
+# pwOBA alone gates them.
+PITCHER_AGE_TOP = {
+    17: 6,  # R(DLR) only
+    18: 5,  # R or below
+    19: 5,  # R or below (still rookie ball — pwOBA cap hides true ceiling)
+    20: 3,  # A+ or below
+    21: 2,  # AA or below
+    22: 1,  # AAA or below
+}
+
+
+def age_top_level_pitcher(p):
+    """Highest level a pitcher can be at given age alone. Returns 0 (MLB) for
+    age 23+ — no age-based restriction once the rating floor is reliable."""
+    return PITCHER_AGE_TOP.get(p['age'], 0)
+
+
+def is_sp_viable(p):
+    return p.get('sp_warP') is not None
+
+
+def is_rp_viable(p):
+    return p.get('rp_warP') is not None
+
+
+def _cascade(pool, slots_per_level):
+    """Initial placement at each pitcher's `_top`, then cascade-down: while a
+    level holds more than `slots_per_level`, pop the worst-blend pitcher and
+    push to the next level (or to leftovers if age cap blocks). Returns
+    (by_level, leftovers)."""
+    by_level = {lvl: [] for lvl in LEVELS}
+    leftovers = []
+    for p in pool:
+        by_level[LEVELS[p['_top']]].append(p)
+    for lvl in LEVELS:
+        by_level[lvl].sort(key=pitcher_priority)
+    for i, lvl in enumerate(LEVELS):
+        while len(by_level[lvl]) > slots_per_level:
+            cascaded = by_level[lvl].pop()  # last = worst blend
+            next_idx = i + 1
+            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
+                by_level[LEVELS[next_idx]].append(cascaded)
+                by_level[LEVELS[next_idx]].sort(key=pitcher_priority)
+            else:
+                leftovers.append(cascaded)
+    return by_level, leftovers
+
+
+def _pull_up(by_level, slots_per_level):
+    """Top-down fill: if a level is under target, pull the best-blend pitcher
+    from below who is BOTH age-eligible AND `_top`-eligible at this level
+    (i.e. their current pwOBA / age ceiling already qualifies them here).
+    The `_top` check intentionally leaves sub-threshold slots empty so the
+    user can fill them with free-agent signings rather than promoting an
+    overmatched young arm into a level they won't perform at."""
+    for i, lvl in enumerate(LEVELS):
+        while len(by_level[lvl]) < slots_per_level:
+            best = None
+            best_j = None
+            for j in range(i + 1, len(LEVELS)):
+                for p in by_level[LEVELS[j]]:
+                    if i > p['_bot']:
+                        continue
+                    if p['_top'] > i:  # sub-threshold for this level — leave the slot open
+                        continue
+                    if best is None or pitcher_priority(p) < pitcher_priority(best):
+                        best, best_j = p, j
+            if best is None:
+                break
+            by_level[LEVELS[best_j]].remove(best)
+            by_level[lvl].append(best)
+            by_level[lvl].sort(key=pitcher_priority)
+
+
+def main():
+    laa = load_laa_pitchers()
+    for p in laa:
+        p.pop('_role', None)
+
+    # Step 0: filter international complex + injured-list (see injured.txt)
+    laa = [p for p in laa if not (p.get('minor') == 0 and p['age'] < 20)]
+    injured_names = _load_injured_names()
+    flagged_players = [p for p in laa if p['name'] in injured_names]
+    laa = [p for p in laa if p['name'] not in injured_names]
+
+    # Step 1: eligibility window. `_top` is the more restrictive of the
+    # pwOBA ceiling and the age-based ceiling — a young arm whose pwOBA is
+    # at the floor extrapolation can't be over-promoted by the data limit.
+    overflow = []
+    valid = []
+    for p in laa:
+        p['_top'] = max(pwoba_top_level(p), age_top_level_pitcher(p))
+        p['_bot'] = age_lowest_level(p)
+        if p['_top'] > p['_bot']:
+            overflow.append(p)
+        else:
+            valid.append(p)
+
+    # Step 2-3: SP cascade + pull-up
+    sp_pool = [p for p in valid if is_sp_viable(p)]
+    sp_by, _sp_leftover = _cascade(sp_pool, SP_PER_LEVEL)
+    _pull_up(sp_by, SP_PER_LEVEL)
+    sp_assigned = {p['name'] for lvl in LEVELS for p in sp_by[lvl]}
+
+    # Step 4: RP cascade + pull-up
+    rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
+    rp_by, rp_leftover = _cascade(rp_pool, RP_PER_LEVEL)
+    _pull_up(rp_by, RP_PER_LEVEL)
+    rp_assigned = {p['name'] for lvl in LEVELS for p in rp_by[lvl]}
+
+    # Step 5: overflow
+    overflow.extend(rp_leftover)
+    overflow_names = {p['name'] for p in overflow}
+    for p in valid:
+        if (p['name'] not in sp_assigned
+                and p['name'] not in rp_assigned
+                and p['name'] not in overflow_names):
+            overflow.append(p)
+            overflow_names.add(p['name'])
+
+    # Tag roles + present each level's lists in blend order (best first)
+    rosters = {}
+    for lvl in LEVELS:
+        sp_by[lvl].sort(key=pitcher_priority)
+        rp_by[lvl].sort(key=pitcher_priority)
+        for p in sp_by[lvl]:
+            p['_role'] = 'SP'
+        for p in rp_by[lvl]:
+            p['_role'] = 'RP'
+        rosters[lvl] = {
+            'starters': sp_by[lvl],
+            'bullpen': rp_by[lvl],
+            'all': sp_by[lvl] + rp_by[lvl],
+        }
+
+    return rosters, overflow, flagged_players
+
+
+if __name__ == '__main__':
+    rosters, overflow, flagged = main()
+    for lvl in LEVELS:
+        r = rosters[lvl]
+        print(f"\n=== {lvl} ({len(r['all'])}) ===")
+        print('  STARTING ROTATION:')
+        for p in r['starters']:
+            blend = pitcher_priority(p)
+            print(f"    {p['name']:25} age={p['age']:2} pwOBA={p.get('pwOBA') or 0:.3f} pwOBAP={p.get('pwOBAP') or 0:.3f} blend={blend:.3f}")
+        print('  BULLPEN:')
+        for p in r['bullpen']:
+            blend = pitcher_priority(p)
+            print(f"    {p['name']:25} age={p['age']:2} pwOBA={p.get('pwOBA') or 0:.3f} pwOBAP={p.get('pwOBAP') or 0:.3f} blend={blend:.3f}")
+    print(f'\nOverflow: {len(overflow)}')
+    print(f'Flagged (unavailable): {len(flagged)}')
