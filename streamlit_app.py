@@ -25,7 +25,7 @@ import streamlit as st
 
 import config
 from build_system import main as build_hitters, LEVELS, is_high_potential
-from build_pitcher_system import main as build_pitchers, is_high_potential_pitcher
+from build_pitcher_system import main as build_pitchers, is_high_potential_pitcher, SP_PER_LEVEL, RP_PER_LEVEL
 from build_excel import main_build, _platoon_lineup_extras
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
@@ -49,16 +49,29 @@ st.set_page_config(page_title='Pistachio', layout='wide', page_icon='⚾')
 
 # ---------- Cached data layer ----------
 
+def _data_signature() -> tuple:
+    """A cheap key that changes whenever the cached JSONs change. Used to
+    auto-invalidate get_orgs / get_rosters when a fresh upload lands."""
+    h = os.path.getmtime(HITTERS_JSON) if os.path.exists(HITTERS_JSON) else 0
+    p = os.path.getmtime(PITCHERS_JSON) if os.path.exists(PITCHERS_JSON) else 0
+    return (h, p)
+
+
 @st.cache_data
-def get_orgs():
+def get_orgs(_sig: tuple):
     """All org abbreviations present in the cached hitters.json."""
     rows = json.load(open(HITTERS_JSON))['rows']
     return sorted({r['org'] for r in rows if r.get('org')})
 
 
 @st.cache_data(show_spinner='Building rosters…')
-def get_rosters(team: str):
-    """Build hitter + pitcher rosters for a team. Cheap once cached."""
+def get_rosters(team: str, _sig: tuple):
+    """Build hitter + pitcher rosters for a team. Cheap once cached.
+    The _sig tuple (file mtimes) is part of the cache key so the cache
+    automatically invalidates whenever the underlying JSONs change —
+    important because the hitter/pitcher builders also re-detect injuries
+    from the OOTP players.csv on every call, and that detection has to
+    line up with the JSON content."""
     rh, oh, fh = build_hitters(org=team)
     rp, op, fp = build_pitchers(org=team)
     return rh, oh, fh, rp, op, fp
@@ -142,7 +155,8 @@ with st.sidebar:
             st.rerun()
         st.stop()  # nothing else makes sense without data
 
-    orgs = get_orgs()
+    sig = _data_signature()
+    orgs = get_orgs(sig)
     default_team = 'LAA' if 'LAA' in orgs else orgs[0]
     team = st.selectbox('Team', orgs, index=orgs.index(default_team))
 
@@ -173,7 +187,7 @@ with st.sidebar:
 
 # ---------- Main panel ----------
 
-rh, oh, fh, rp, op, fp = get_rosters(team)
+rh, oh, fh, rp, op, fp = get_rosters(team, sig)
 
 # KPI cards
 n_h_placed = sum(len(rh[l]['all']) for l in LEVELS)
@@ -194,10 +208,13 @@ tab_overview, tab_rosters = st.tabs(['Overview', 'Rosters by level'])
 # ---------- Overview tab ----------
 
 with tab_overview:
-    col_lineup, col_hps = st.columns([3, 2])
+    # Row 1: MLB position players (left, wide) | MLB pitching staff (right)
+    col_pos, col_arms = st.columns([3, 2])
 
-    with col_lineup:
-        st.subheader('MLB starting nine')
+    with col_pos:
+        st.subheader('MLB position players')
+
+        st.markdown('**Starting nine**')
         rows = []
         for pos in POSITIONS:
             p = rh['MLB']['starters'].get(pos)
@@ -211,8 +228,21 @@ with tab_overview:
                 })
         st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
 
+        st.markdown('**Bench (named roles)**')
+        brows = []
+        for role, p in rh['MLB']['bench_roles']:
+            if p:
+                brows.append({
+                    'Role': role,
+                    'Player': p['name'],
+                    'Age': p['age'],
+                    'wOBA': round(p.get('wOBA') or 0, 3),
+                })
+            else:
+                brows.append({'Role': role, 'Player': '(Sign FA)', 'Age': None, 'wOBA': None})
+        st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
+
         # Platoon batting orders + R/G — the migrated org-report bits
-        st.markdown('**Batting orders**')
         for label, vs_key in [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')]:
             split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
             name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
@@ -229,10 +259,50 @@ with tab_overview:
                     vs_key: round(p.get(vs_key) or 0, 3),
                 })
             df = pd.DataFrame(order_rows).sort_values('Slot')
-            st.markdown(f'**{label}** — Est. R/G **{rpg:.2f}**')
+            st.markdown(f'**Batting order {label}** — Est. R/G **{rpg:.2f}**')
             st.dataframe(df, hide_index=True, width='stretch')
 
-    with col_hps:
+    with col_arms:
+        st.subheader('MLB pitching staff')
+
+        rotation = rp['MLB']['starters']
+        st.markdown(f'**Rotation** ({len(rotation)} of {SP_PER_LEVEL} filled)')
+        rrows = []
+        for i in range(SP_PER_LEVEL):
+            if i < len(rotation):
+                p = rotation[i]
+                rrows.append({
+                    'Slot': f'SP{i+1}',
+                    'Player': p['name'],
+                    'Age': p['age'],
+                    'pwOBA': round(p.get('pwOBA') or 0, 3),
+                    'pwOBAP': round(p.get('pwOBAP') or 0, 3),
+                })
+            else:
+                rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'pwOBA': None, 'pwOBAP': None})
+        st.dataframe(pd.DataFrame(rrows), hide_index=True, width='stretch')
+
+        bullpen = rp['MLB']['bullpen']
+        st.markdown(f'**Bullpen** ({len(bullpen)} of {RP_PER_LEVEL} filled)')
+        prows = []
+        for i in range(RP_PER_LEVEL):
+            if i < len(bullpen):
+                p = bullpen[i]
+                prows.append({
+                    'Slot': f'RP{i+1}',
+                    'Player': p['name'],
+                    'Age': p['age'],
+                    'pwOBA': round(p.get('pwOBA') or 0, 3),
+                    'pwOBAP': round(p.get('pwOBAP') or 0, 3),
+                })
+            else:
+                prows.append({'Slot': f'RP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'pwOBA': None, 'pwOBAP': None})
+        st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
+
+    # Row 2: development pipeline — HP hitters | HP pitchers
+    col_hph, col_hpp = st.columns(2)
+
+    with col_hph:
         st.subheader('HP hitters')
         if hps:
             hp_rows = []
@@ -251,9 +321,6 @@ with tab_overview:
             st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential hitters in {team}.')
-
-    # Second row: HP pitchers + currently unavailable players.
-    col_hpp, col_inj = st.columns(2)
 
     with col_hpp:
         st.subheader('HP pitchers')
@@ -275,31 +342,31 @@ with tab_overview:
         else:
             st.info(f'No high-potential pitchers in {team}.')
 
-    with col_inj:
-        st.subheader('Currently unavailable')
-        st.caption('Pulled out of placement via OOTP injury flag or `injured.txt`. Re-runs include them once the flag clears.')
-        inj_rows = []
-        for p in fh:
-            inj_rows.append({
-                'Player': p['name'],
-                'Type': 'Hitter',
-                'Age': p['age'],
-                'Pos / Role': p.get('pos_adj') or '',
-                'wOBA / pwOBA': round(p.get('wOBA') or 0, 3),
-            })
-        for p in fp:
-            inj_rows.append({
-                'Player': p['name'],
-                'Type': 'Pitcher',
-                'Age': p['age'],
-                'Pos / Role': p.get('_role') or 'P',
-                'wOBA / pwOBA': round(p.get('pwOBA') or 0, 3),
-            })
-        if inj_rows:
-            inj_df = pd.DataFrame(inj_rows).sort_values(['Type', 'Player'])
-            st.dataframe(inj_df, hide_index=True, width='stretch', height=400)
-        else:
-            st.success(f'No flagged players in {team}.')
+    # Row 3: who's out
+    st.subheader('Currently unavailable')
+    st.caption('Pulled out of placement via OOTP injury flag or `injured.txt`. They re-enter the system once the flag clears.')
+    inj_rows = []
+    for p in fh:
+        inj_rows.append({
+            'Player': p['name'],
+            'Type': 'Hitter',
+            'Age': p['age'],
+            'Pos / Role': p.get('pos_adj') or '',
+            'wOBA / pwOBA': round(p.get('wOBA') or 0, 3),
+        })
+    for p in fp:
+        inj_rows.append({
+            'Player': p['name'],
+            'Type': 'Pitcher',
+            'Age': p['age'],
+            'Pos / Role': p.get('_role') or 'P',
+            'wOBA / pwOBA': round(p.get('pwOBA') or 0, 3),
+        })
+    if inj_rows:
+        inj_df = pd.DataFrame(inj_rows).sort_values(['Type', 'Player'])
+        st.dataframe(inj_df, hide_index=True, width='stretch')
+    else:
+        st.success(f'No flagged players in {team}.')
 
 
 # ---------- Rosters tab ----------
