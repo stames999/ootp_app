@@ -42,7 +42,13 @@ def load_players() -> pd.DataFrame:
 
 
 def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
+    # The `ip` column this adds is purely cosmetic (display in pitcher
+    # tables). The hitter/pitcher classifier in metrics_war now uses
+    # `pitches` instead, so this CSV is fully optional.
     file = config.filepath / "players_career_pitching_stats.csv"
+    if not file.exists():
+        df["ip"] = 0
+        return df
     pitching_stats_df = pd.read_csv(
         file, usecols=PITCHING_STATS_COLUMNS, low_memory=False
     )
@@ -62,7 +68,13 @@ def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
+    # The `pa` column this adds is purely cosmetic (display in hitter
+    # tables). No projection or gate uses it, so this CSV is fully
+    # optional — when missing we just default pa to 0.
     file = config.filepath / "players_career_batting_stats.csv"
+    if not file.exists():
+        df["pa"] = 0
+        return df
     hitting_stats_df = pd.read_csv(
         file, usecols=HITTING_STATS_COLUMNS, low_memory=False
     )

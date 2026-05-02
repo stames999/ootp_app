@@ -34,10 +34,15 @@ PITCHERS_JSON = 'outputs/pitchers.json'
 
 REQUIRED_CSVS = {
     'players.csv',
-    'players_career_pitching_stats.csv',
-    'players_career_batting_stats.csv',
     'players_scouted_ratings.csv',
 }
+# These two are accepted but optional — they only populate the IP / PA
+# display columns in pitcher / hitter tables. No projection uses them.
+OPTIONAL_CSVS = {
+    'players_career_pitching_stats.csv',
+    'players_career_batting_stats.csv',
+}
+ACCEPTED_CSVS = REQUIRED_CSVS | OPTIONAL_CSVS
 
 st.set_page_config(page_title='Pistachio', layout='wide', page_icon='⚾')
 
@@ -83,7 +88,7 @@ def process_uploaded(uploaded_files):
     land in the normal outputs/ dir."""
     tmpdir = Path(tempfile.mkdtemp(prefix='pistachio_'))
     for f in uploaded_files:
-        if f.name in REQUIRED_CSVS:
+        if f.name in ACCEPTED_CSVS:
             (tmpdir / f.name).write_bytes(f.getbuffer())
     config.filepath = tmpdir
     from main import main as pipeline_main
@@ -94,7 +99,7 @@ def render_upload_widget(*, expanded: bool):
     """Sidebar block: file uploader + Process button. Returns True if the
     pipeline ran (caller should clear cache + rerun)."""
     with st.expander('🔄 Upload OOTP CSVs', expanded=expanded):
-        st.caption('Drop in the four CSVs OOTP exports from your save game. The pipeline runs once on upload and the results are cached until the next upload.')
+        st.caption('Drop in the OOTP CSVs from your save game. Pipeline runs once on upload; results are cached until the next upload.')
         uploaded = st.file_uploader(
             'CSV files',
             accept_multiple_files=True,
@@ -102,16 +107,17 @@ def render_upload_widget(*, expanded: bool):
             label_visibility='collapsed',
         )
         if not uploaded:
-            st.caption('Required: ' + ', '.join(sorted(REQUIRED_CSVS)))
+            st.caption('**Required**: ' + ', '.join(sorted(REQUIRED_CSVS)))
+            st.caption('**Optional** (adds IP / PA display columns only): ' + ', '.join(sorted(OPTIONAL_CSVS)))
             return False
 
         names = {f.name for f in uploaded}
         missing = REQUIRED_CSVS - names
         if missing:
-            st.warning('Missing: ' + ', '.join(sorted(missing)))
+            st.warning('Missing required CSV(s): ' + ', '.join(sorted(missing)))
             return False
 
-        extra = names - REQUIRED_CSVS
+        extra = names - ACCEPTED_CSVS
         if extra:
             st.info('Will ignore: ' + ', '.join(sorted(extra)))
 

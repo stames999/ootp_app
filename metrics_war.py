@@ -12,6 +12,21 @@ from config import (
 )
 
 
+def _hitter_mask(df):
+    """Boolean mask: True for players treated as hitters in scarcity-pool
+    construction. Anyone with no current pitch types above PITCH_MINIMUM_RATING
+    is a hitter; pitchers (any pitch above floor) are excluded so they don't
+    dilute the per-position fielding distribution. Falls back to all-True
+    when neither `pitches` nor `ip` is in the frame (e.g. very early
+    pre-pipeline calls during testing). Prefers `pitches` because it removes
+    the dependency on the career_pitching_stats CSV."""
+    if "pitches" in df.columns:
+        return df["pitches"].fillna(0) == 0
+    if "ip" in df.columns:
+        return df["ip"].fillna(0) == 0
+    return pd.Series(True, index=df.index)
+
+
 # Positions listed in the displayed `field` column. DH is excluded (not a
 # fielding position); 1B is included so a player who's a feasible 1B as a
 # secondary option is correctly tagged.
@@ -99,10 +114,11 @@ def _skill_aware_bonus(df, pos, scarcity_constant, gamma):
     preserved. gamma=0 recovers the flat scheme; gamma=0.5 spreads bonuses
     from 0.5x to 1.5x scarcity_constant across the percentile range.
 
-    The reference distribution is hitters-only (ip == 0) so the percentile
-    isn't diluted by pitchers who happen to clear the floor; bonuses are then
-    interpolated for any non-hitter who passes the floor (rarely matters
-    since pitcher <pos>_fld isn't consumed downstream).
+    The reference distribution is hitters-only (no current pitch types
+    above the rating floor) so the percentile isn't diluted by pitchers
+    who happen to clear the floor; bonuses are then interpolated for any
+    non-hitter who passes the floor (rarely matters since pitcher
+    <pos>_fld isn't consumed downstream).
 
     Returns a Series indexed like df: bonus for floor-passing players, NaN
     elsewhere. Adding this to df[pos] / df[f"{pos}_def"] propagates NaN
@@ -114,10 +130,7 @@ def _skill_aware_bonus(df, pos, scarcity_constant, gamma):
     if len(elig_idx) == 0:
         return bonus
 
-    if "ip" in df.columns:
-        hitter_mask = df["ip"].fillna(0) == 0
-    else:
-        hitter_mask = pd.Series(True, index=df.index)
+    hitter_mask = _hitter_mask(df)
     ref_idx = df.index[df[pos].notna() & hitter_mask]
     if len(ref_idx) == 0:
         return bonus
@@ -154,11 +167,7 @@ def _compute_positional_distribution(df):
 
     Returns a dict {position: (mean_capped, stdev_eligible)}.
     """
-    if "ip" in df.columns:
-        hitter_mask = df["ip"].fillna(0) == 0
-    else:
-        hitter_mask = pd.Series(True, index=df.index)
-    hitters = df[hitter_mask]
+    hitters = df[_hitter_mask(df)]
 
     stats = {}
     for pos in ALL_POSITIONS:
