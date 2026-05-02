@@ -1,8 +1,34 @@
 """Build Excel output and markdown summary."""
+import pandas as pd
 from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential
 from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE
+from org_report import build_batting_order, estimate_runs_per_game
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+
+def _platoon_lineup_extras(split_starters, vs_key):
+    """Compute (name -> batting-order slot) and runs/game estimate for a
+    9-position starting nine dict, using the same logic as the org-report
+    HTML used to. Skips empty positions. Returns ({}, NaN) if the lineup
+    is empty."""
+    rows = []
+    for pos, p in split_starters.items():
+        if p is None:
+            continue
+        rows.append({
+            'name': p['name'],
+            'pos': pos,
+            'wOBA_vs': p.get(vs_key) or 0,
+        })
+    if not rows:
+        return {}, float('nan')
+    df = pd.DataFrame(rows)
+    side = 'R' if vs_key == 'wOBAR' else 'L'
+    order_df = build_batting_order(df, side=side)
+    name_to_slot = dict(zip(order_df['name'], order_df['slot']))
+    rpg = estimate_runs_per_game(order_df)
+    return name_to_slot, rpg
 
 OUTFILE_TEMPLATE = 'outputs/{org}_roster_system.xlsx'
 
@@ -107,14 +133,20 @@ def write_level_sheet(ws, lvl, roster):
     # wOBA / platoon delta / [Δ vs standard]. The last column flags positions
     # where the platoon optimum differs from the standard starting nine.
     def write_platoon_block(row, label, split_starters, vs_key):
+        # Compute batting order (1-9 by The-Book heuristic) and an estimated
+        # R/G for this lineup. Migrated from the old org_report.html so the
+        # xlsx is now the single source of MLB lineup detail.
+        name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
+
         sec = ws.cell(row=row, column=1, value=label)
         sec.font = SECTION_FONT
         sec.fill = SECTION_FILL
         sec.alignment = Alignment(horizontal='center')
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
         row += 1
-        # mini-header
-        headers = ['Pos', 'Name', 'Age', vs_key, 'wOBA', 'Δ', '', '', 'Note']
+        # mini-header — Order column added; rows are still position-ordered
+        # for visual continuity with the standard starters block.
+        headers = ['Order', 'Pos', 'Name', 'Age', vs_key, 'wOBA', 'Δ', '', 'Note']
         for col, h in enumerate(headers, 1):
             c = ws.cell(row=row, column=col, value=h)
             c.font = Font(name='Arial', bold=True, size=9, color='666666')
@@ -124,24 +156,31 @@ def write_level_sheet(ws, lvl, roster):
         for pos in POSITIONS:
             p = split_starters.get(pos)
             std = starters.get(pos)
-            ws.cell(row=row, column=1, value=pos).font = Font(name='Arial', bold=True, size=10)
+            slot = name_to_slot.get(p['name']) if p else None
+            ws.cell(row=row, column=1, value=slot if slot is not None else '').font = Font(name='Arial', bold=True, size=10)
+            ws.cell(row=row, column=2, value=pos).font = Font(name='Arial', bold=True, size=10)
             if p is None:
-                ws.cell(row=row, column=2, value='-- empty --').font = Font(name='Arial', italic=True, color='999999')
+                ws.cell(row=row, column=3, value='-- empty --').font = Font(name='Arial', italic=True, color='999999')
             else:
                 woba = p.get('wOBA') or 0
                 split_woba = p.get(vs_key) or 0
                 delta = split_woba - woba
-                ws.cell(row=row, column=2, value=p['name'])
-                ws.cell(row=row, column=3, value=p['age'])
-                ws.cell(row=row, column=4, value=round(split_woba, 3))
-                ws.cell(row=row, column=5, value=round(woba, 3))
-                ws.cell(row=row, column=6, value=round(delta, 3))
+                ws.cell(row=row, column=3, value=p['name'])
+                ws.cell(row=row, column=4, value=p['age'])
+                ws.cell(row=row, column=5, value=round(split_woba, 3))
+                ws.cell(row=row, column=6, value=round(woba, 3))
+                ws.cell(row=row, column=7, value=round(delta, 3))
                 if std is None or std['name'] != p['name']:
                     ws.cell(row=row, column=9, value=f'swap from {std["name"] if std else "(empty)"}').font = Font(name='Arial', italic=True, size=9, color='C00000')
             for col in range(1, 10):
                 ws.cell(row=row, column=col).border = BORDER
                 if not ws.cell(row=row, column=col).font.bold:
                     ws.cell(row=row, column=col).font = DEFAULT_FONT
+            row += 1
+        # R/G footer — italic, spans the block.
+        if not (isinstance(rpg, float) and (rpg != rpg)):  # not NaN
+            ws.cell(row=row, column=1, value=f'Est. R/G: {rpg:.2f}').font = Font(name='Arial', italic=True, size=9, color='666666')
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
             row += 1
         return row
 

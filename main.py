@@ -1,5 +1,9 @@
 # from exporter import export_hitters
-from exporter import export_html_pages, export_json_pages, export_org_report
+# Note: export_org_report (the old standalone HTML report) has been retired —
+# its unique features (batting order, R/G estimate) are now rendered directly
+# in the xlsx by build_excel.py. The function still lives in exporter.py and
+# can be called manually if needed.
+from exporter import export_html_pages, export_json_pages
 from metrics_fielding import calc_fielding_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
 from metrics_pitching import calc_pitching_metrics, calc_potential_pitching_metrics
@@ -42,7 +46,6 @@ def main():
     df = compute_df()
     export_html_pages(df)
     export_json_pages(df)
-    export_org_report(df)
 
 
 if __name__ == "__main__":
