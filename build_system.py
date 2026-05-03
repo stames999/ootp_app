@@ -724,6 +724,58 @@ def main(org=None):
                     hp['_force_start'] = lvl
         if not changed: break
 
+    # === STEP 3.5: Re-balance after HP cascade ===
+    # HP demote-alone (no swap target) grows the destination level. With
+    # service-time constraints there are often no eligible swap targets,
+    # so AA / A+ etc. can balloon over their ROSTER_SIZES cap. Walk
+    # top-down again and pop the lowest-priority non-HP, non-force-start
+    # player from any over-target level — they cascade down if their _bot
+    # allows, otherwise to the release pool. This honours the user's
+    # service-time framing: lower levels just see a thinner pool, with
+    # the spillover going to overflow rather than crowding the upper
+    # levels.
+    for i, lvl in enumerate(LEVELS):
+        while len(by_level[lvl]) > ROSTER_SIZES[lvl]:
+            poppable = [p for p in by_level[lvl]
+                        if not is_high_potential(p)
+                        and p.get('_force_start') != lvl]
+            if not poppable:
+                break  # everyone here is locked in — over-cap stays
+            poppable.sort(key=priority)
+            cascaded = poppable[0]
+            by_level[lvl].remove(cascaded)
+            next_idx = i + 1
+            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
+                by_level[LEVELS[next_idx]].append(cascaded)
+            else:
+                overflow.append(cascaded)
+
+    # === STEP 3.6: Backfill from overflow ===
+    # The Step-2 cascade pushes worst-priority players DOWN through the
+    # levels until they hit overflow, but it doesn't reach back UP to
+    # fill gaps that emerge later (HP demotions, service-locked players
+    # that couldn't fit lower, etc.). After Step 3 + 3.5, any level under
+    # ROSTER_SIZES gets one more sweep: pull the highest-priority
+    # eligible player out of `overflow` whose [_top, _bot] window
+    # includes this level. Catchers stay out of this pool — Step 1
+    # already handled their allocation.
+    for i, lvl in enumerate(LEVELS):
+        target = ROSTER_SIZES[lvl]
+        while len(by_level[lvl]) < target:
+            candidates = [
+                p for p in overflow
+                if not is_catcher(p)
+                and p.get('_top') is not None
+                and p.get('_bot') is not None
+                and p['_top'] <= i <= p['_bot']
+            ]
+            if not candidates:
+                break
+            candidates.sort(key=priority, reverse=True)
+            best = candidates[0]
+            overflow.remove(best)
+            by_level[lvl].append(best)
+
     # === STEP 4: Bench-role refinement ===
     # The priority cascade picks rosters by bat alone, so a level can end
     # up with a "Utility IF" who only plays one IF position (e.g. Meckler
