@@ -182,13 +182,18 @@ def _cascade(pool, slots_per_level):
 
 
 def _pull_up(by_level, slots_per_level):
-    """Top-down fill: if a level is under target, pull the best-blend pitcher
-    from below who is BOTH age-eligible AND `_top`-eligible at this level
-    (i.e. their current pwOBA / age ceiling already qualifies them here).
-    The `_top` check intentionally leaves sub-threshold slots empty so the
-    user can fill them with free-agent signings rather than promoting an
-    overmatched young arm into a level they won't perform at."""
+    """Top-down fill in two passes per level:
+      1. Strict — pull the best-blend pitcher from below whose `_top` already
+         qualifies them at this level. HPs and non-HPs both compete here.
+      2. Non-HP +1 stretch — if gaps remain, pull up non-HPs whose `_top` is
+         exactly one level below this one. The veteran-arm stretch lets a
+         steady AA reliever backfill an empty AAA bullpen slot rather than
+         leaving a "Sign FA" gap. HPs are excluded from the stretch — we
+         don't want to over-promote young arms whose pwOBA is unreliable
+         anyway. Strict pass runs first so the best fits land in their
+         natural level before any stretching happens."""
     for i, lvl in enumerate(LEVELS):
+        # Pass 1: strict (_top <= i)
         while len(by_level[lvl]) < slots_per_level:
             best = None
             best_j = None
@@ -196,7 +201,27 @@ def _pull_up(by_level, slots_per_level):
                 for p in by_level[LEVELS[j]]:
                     if i > p['_bot']:
                         continue
-                    if p['_top'] > i:  # sub-threshold for this level — leave the slot open
+                    if p['_top'] > i:
+                        continue
+                    if best is None or pitcher_priority(p) < pitcher_priority(best):
+                        best, best_j = p, j
+            if best is None:
+                break
+            by_level[LEVELS[best_j]].remove(best)
+            by_level[lvl].append(best)
+            by_level[lvl].sort(key=pitcher_priority)
+
+        # Pass 2: non-HP +1 stretch (_top == i + 1)
+        while len(by_level[lvl]) < slots_per_level:
+            best = None
+            best_j = None
+            for j in range(i + 1, len(LEVELS)):
+                for p in by_level[LEVELS[j]]:
+                    if i > p['_bot']:
+                        continue
+                    if p['_top'] != i + 1:
+                        continue
+                    if is_high_potential_pitcher(p):
                         continue
                     if best is None or pitcher_priority(p) < pitcher_priority(best):
                         best, best_j = p, j
