@@ -37,6 +37,17 @@ C_FLD_WEIGHT = 0.05
 # get an unbounded boost over a 28-year-old.
 AGE_WEIGHT = 0.002
 AGE_CAP = 30
+# Maximum gap (in fielding-WAR units) between a player's BEST non-C
+# fielding rating and their C_fld for them to still be considered a
+# Step-1 catcher candidate. Without this, a good-bat / bad-glove utility
+# player whose pos_adj is RF/SS/etc. but who has a fallback C rating
+# (e.g. Jared Thomas: wOBA .300, RF_fld +3.4, C_fld -0.2) can outscore
+# real backup catchers on the bat-driven catcher_alloc_score, claim a
+# Step-1 catcher slot at a low level, then get reassigned off C by
+# Hungarian — leaving them stuck at Rookie ball with an MLB-grade bat.
+# 1.5 WAR is "significantly worse at C than elsewhere" — they're a
+# fallback, not a real dual-position catcher.
+C_FLD_GAP_MAX = 1.5
 
 # Premium-position bat relaxation: the wOBA threshold for a level is lowered
 # by this many points when the player's primary position is C, SS, or CF.
@@ -107,6 +118,27 @@ def _load_injured_names():
 
 def is_catcher(p):
     return p.get('C_adj') is not None
+
+def is_catcher_candidate(p):
+    """True if the player is a viable Step-1 catcher allocation candidate.
+    Either:
+      - primary catcher (pos_adj == 'C'), OR
+      - multi-position player whose C glove is competitive with their best
+        other position fielding rating (best_other_fld - C_fld <= C_FLD_GAP_MAX).
+    Excludes utility players whose C rating is a defensive fallback only —
+    their bat would otherwise let them outscore real backup catchers and
+    claim a Step-1 catcher slot at a low level, only to be moved off C by
+    Hungarian and end up stuck at the wrong level."""
+    if not is_catcher(p):
+        return False
+    if p.get('pos_adj') == 'C':
+        return True
+    cfld = p.get('C_fld') or 0
+    other_flds = [p.get(f'{pos}_fld') for pos in ('1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF')]
+    other_flds = [v for v in other_flds if v is not None]
+    if not other_flds:
+        return True
+    return (max(other_flds) - cfld) <= C_FLD_GAP_MAX
 
 def catcher_alloc_score(p):
     """Catcher level/bench score: current bat + glove + small older-player
@@ -458,12 +490,22 @@ def main(org=None):
         valid_players.append(p)
     
     # === STEP 1: Catchers (2/level) ===
-    # Score-driven greedy allocation: rank all catchers by `catcher_alloc_score`
-    # (current wOBA + small C_fld component + small age tiebreak), then assign
-    # two per level top-down. wOBA-eligibility (`_top`) and age-eligibility
-    # (`_bot`) are both enforced strictly — no overmatched bats anywhere in
-    # the system. If a level can't fill 2 catcher slots from strict-eligible
-    # arms, it stays short (sign-FA gap, same convention as the bullpen).
+    # Score-driven greedy allocation: rank `is_catcher_candidate` players
+    # by `catcher_alloc_score` (current wOBA + small C_fld component + small
+    # age tiebreak), then assign two per level top-down. is_catcher_candidate
+    # filters out utility players whose C rating is a defensive fallback —
+    # if their best non-C fielding is significantly above their C_fld
+    # (gap > C_FLD_GAP_MAX), they're not really a catcher and shouldn't
+    # win Step-1 slots on bat alone (else an RF with wOBA .300 and a
+    # negative C_fld can claim a Rookie-level catcher slot, get moved
+    # off C by Hungarian, and stay stuck at the wrong level). Such
+    # players still flow through Step 2 as non-catchers.
+    #
+    # wOBA-eligibility (`_top`) and age-eligibility (`_bot`) are both
+    # enforced strictly — no overmatched bats anywhere in the system. If
+    # a level can't fill 2 catcher slots from strict-eligible candidates,
+    # it stays short (sign-FA gap, same convention as the bullpen).
+    #
     # Score uses CURRENT wOBA, not age-weighted `priority`: priority would
     # let a young high-projection catcher (e.g. Davalillo, age 19, wOBA .246 /
     # wOBAP .337) outrank a more mature catcher with a better current bat
@@ -476,7 +518,7 @@ def main(org=None):
     # older players have less developmental runway, so when scores are
     # close they get the higher level.
     catchers = sorted(
-        [p for p in valid_players if is_catcher(p)],
+        [p for p in valid_players if is_catcher_candidate(p)],
         key=catcher_alloc_score,
         reverse=True
     )
@@ -493,14 +535,19 @@ def main(org=None):
             if picked is None: break
             cby[lvl].append(unassigned_c.pop(picked))
 
-    # === STEP 2: Non-catchers (plus catchers not picked as primary C) ===
-    # A catcher whose bat is good but whose glove is below the 14 primary-C
-    # slots gets a second chance here — they may earn a bench spot via their
-    # secondary positions (OF/1B/DH) rather than being released. is_catcher()
-    # still returns True for them downstream (so HP swaps pair like-with-like
-    # and sheets label them correctly), but they go through the regular
-    # cascade as if they were any other non-catcher.
-    noncatchers = [p for p in valid_players if not is_catcher(p)] + list(unassigned_c)
+    # === STEP 2: Non-catchers (plus catchers not picked at Step 1) ===
+    # Anyone who failed `is_catcher_candidate` goes through the cascade
+    # here — including utility players who have a fallback C rating but
+    # whose C glove is significantly below their best other position
+    # (the "good-bat utility-C ends up at Rookie ball" pathology guarded
+    # against at Step 1).
+    # A Step-1 catcher candidate who didn't make any of the 14 catcher
+    # slots also falls through here — they may earn a bench spot via
+    # their secondary positions rather than being released. is_catcher()
+    # still returns True for all of them downstream (so HP swaps pair
+    # like-with-like and sheets label them correctly), but they go through
+    # the regular cascade as if they were any other non-catcher.
+    noncatchers = [p for p in valid_players if not is_catcher_candidate(p)] + list(unassigned_c)
     nc_by = {lvl: [] for lvl in LEVELS}
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
