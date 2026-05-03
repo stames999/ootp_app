@@ -128,7 +128,12 @@ SCARCITY_SKILL_GAMMA = 0.5
 PITCH_MINIMUM_RATING = 45  # used to establish 'how many pitches' a pitcher has
 MINIMUM_STARTER_STAMINA = 40
 MINIMUM_STARTER_PITCHES = 3
-MINIMUM_RELIEVER_PITCHES = 2
+# 1-pitch specialists are a real reliever role — sidearm sinker guys, ROOGY/
+# LOOGY types whose entire MLB value is one elite pitch (e.g. Ryan Thompson's
+# AZ profile: stuff 45/35, hra 65/45, ctrl 65/55 → only one pitch type above
+# PITCH_MINIMUM_RATING but a viable RHP specialist). Threshold 1 admits them;
+# their pwOBA will naturally place them at the right level (.345 = MLB-eligible).
+MINIMUM_RELIEVER_PITCHES = 1
 
 # ============================
 # Pitcher skill rating floor
