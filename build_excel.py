@@ -1,7 +1,7 @@
 """Build Excel output and markdown summary."""
 import pandas as pd
 from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential, woba_max_level
-from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE, pwoba_top_level, age_top_level_pitcher
+from build_pitcher_system import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE, pwoba_top_level
 from org_report import build_batting_order, estimate_runs_per_game
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -19,12 +19,12 @@ def _hitter_top_level(p):
 
 
 def _pitcher_top_level(p):
-    """Highest level for a pitcher = the more restrictive of pwOBA ceiling
-    and age cap (mirrors the _top calculation used in build_pitcher_system).
-    Pitchers with no pwOBA data default to R(DLR)."""
+    """Highest level for a pitcher = current pwOBA ceiling (mirrors the
+    _top calculation used in build_pitcher_system, which is now pwOBA-only
+    after the age-cap removal). Pitchers with no pwOBA data default to
+    R(DLR)."""
     try:
-        idx = max(pwoba_top_level(p), age_top_level_pitcher(p))
-        return LEVELS[min(idx, len(LEVELS) - 1)]
+        return LEVELS[min(pwoba_top_level(p), len(LEVELS) - 1)]
     except Exception:
         return '?'
 

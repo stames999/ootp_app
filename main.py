@@ -12,6 +12,7 @@ from reader import (
     add_hitting_career_stats,
     add_pitching_career_stats,
     add_scouted_ratings,
+    add_years_at_level,
     count_pitches,
     is_flagged,
     load_players,
@@ -26,6 +27,10 @@ def compute_df():
     df = load_players()
     df = add_pitching_career_stats(df)
     df = add_hitting_career_stats(df)
+    # Years-at-level breakdown is derived from the same career-stats CSVs;
+    # surfaces yrs_MLB / yrs_AAA / ... / yrs_R(DLR) columns. Optional —
+    # zero-fills if the career CSVs aren't uploaded.
+    df = add_years_at_level(df)
     df = add_scouted_ratings(df)
     df = count_pitches(df)
     df = is_flagged(df)

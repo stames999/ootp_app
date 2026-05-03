@@ -66,6 +66,71 @@ def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# level_id mapping verified against LAA's 2026 farm trajectory (Trout 1=MLB,
+# Cooper Ingle 4→3→2 = A+→AA→AAA, Davalillo 6→4 = R→A+, Laverde 6→4 = R→A+).
+# May need re-verification on saves where league_id structure differs.
+LEVEL_ID_TO_LEVEL = {
+    1: 'MLB',
+    2: 'AAA',
+    3: 'AA',
+    4: 'A+',
+    5: 'A',
+    6: 'R',
+    7: 'R(DLR)',
+}
+
+
+def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `yrs_<LEVEL>` columns counting how many distinct seasons each
+    player has appeared at each level. Sources both career-stats CSVs
+    (hitter and pitcher) so it covers the whole pool. Level mapping uses
+    LEVEL_ID_TO_LEVEL above; rows with unknown level_ids are ignored.
+
+    No-op (zeros) if neither career-stats CSV is uploaded — the column
+    set is still created so downstream code can rely on it."""
+    levels = list(LEVEL_ID_TO_LEVEL.values())
+    cols = [f'yrs_{lvl}' for lvl in levels]
+
+    pieces = []
+    for fn in ('players_career_batting_stats.csv',
+               'players_career_pitching_stats.csv'):
+        path = config.filepath / fn
+        if not path.exists():
+            continue
+        sub = pd.read_csv(
+            path,
+            usecols=['player_id', 'year', 'level_id'],
+            low_memory=False,
+        )
+        sub = sub[sub['level_id'].isin(LEVEL_ID_TO_LEVEL.keys())]
+        pieces.append(sub)
+
+    if not pieces:
+        for c in cols:
+            df[c] = 0
+        return df
+
+    combined = pd.concat(pieces, ignore_index=True)
+    # One row per (player_id, level_id, year) — duplicates across batting/
+    # pitching stats collapse to one season at that level.
+    combined = combined.drop_duplicates(['player_id', 'level_id', 'year'])
+    counts = (
+        combined.groupby(['player_id', 'level_id'])
+        .size()
+        .unstack(fill_value=0)
+    )
+    counts.columns = [f'yrs_{LEVEL_ID_TO_LEVEL[c]}' for c in counts.columns]
+    # Ensure all level columns exist in the result, even if unseen
+    for c in cols:
+        if c not in counts.columns:
+            counts[c] = 0
+    counts = counts[cols].reset_index()
+    df = pd.merge(df, counts, on='player_id', how='left')
+    for c in cols:
+        df[c] = df[c].fillna(0).astype(int)
+    return df
+
+
 def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
     # The `pa` column this adds is purely cosmetic (display in hitter
     # tables). No projection or gate uses it, so this CSV is fully

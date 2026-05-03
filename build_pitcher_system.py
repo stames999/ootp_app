@@ -11,8 +11,9 @@ their current stuff supports.
 
 Algorithm:
   Step 0  Filter international complex (minor=0 + age<20).
-  Step 1  Compute `_top` (best level by current pwOBA, gated by PWOBA_MAX)
-          and `_bot` (oldest level by age cap, reusing hitter MAX_AGE). If
+  Step 1  Compute `_top` (best level by current pwOBA, gated by PWOBA_MAX —
+          no age-based extra cap; current stuff alone determines ceiling)
+          and `_bot` (oldest level by age, reusing hitter MAX_AGE). If
           `_top > _bot` the pitcher has nowhere to fit → overflow.
   Step 2  SP cascade. Place each SP-viable pitcher at their `_top` initially.
           For each level top-down, while over `SP_PER_LEVEL`, pop the
@@ -105,28 +106,16 @@ def pwoba_top_level(p):
     return len(LEVELS) - 1
 
 
-# Age-based ceiling on `_top` for pitchers. The pipeline's pwOBA calc caps
-# out around .403 because the underlying linear-weights conversion is
-# clamp-extrapolated below the lowest rating with sim data — a 17-year-old
-# whose true ability would be .500 still shows .403, indistinguishable from
-# a stable 22-year-old at .403. Age is the only signal we have to break
-# that tie, so very young arms get capped at developmental levels regardless
-# of their (probably-floored) pwOBA. Mature pitchers (23+) get no age cap;
-# pwOBA alone gates them.
-PITCHER_AGE_TOP = {
-    17: 6,  # R(DLR) only
-    18: 5,  # R or below
-    19: 5,  # R or below (still rookie ball — pwOBA cap hides true ceiling)
-    20: 3,  # A+ or below
-    21: 2,  # AA or below
-    22: 1,  # AAA or below
-}
-
-
-def age_top_level_pitcher(p):
-    """Highest level a pitcher can be at given age alone. Returns 0 (MLB) for
-    age 23+ — no age-based restriction once the rating floor is reliable."""
-    return PITCHER_AGE_TOP.get(p['age'], 0)
+# NOTE: there is no age-based `_top` cap for pitchers. An earlier version
+# had `PITCHER_AGE_TOP` to guard against the OOTP pwOBA-floor clamp (a
+# young arm with truly bad stuff still rates pwOBA ~.403 because the
+# linear-weights conversion bottoms out there). Removed because:
+#   1. pwOBA .403 only qualifies for A or below (PWOBA_MAX['A'] = .405),
+#      never MLB / AAA / AA, so the clamp wasn't actually causing
+#      over-promotion the way the cap framing suggested.
+#   2. The cap was over-conservative for legitimate young aces (e.g. a
+#      21yo HP with pwOBA .345 was AA-locked despite MLB-grade stuff).
+# `_top` is now `pwoba_top_level(p)` only — current pwOBA is the gate.
 
 
 def is_sp_viable(p):
@@ -243,13 +232,12 @@ def main(org=None):
     flagged_players = [p for p in laa if p['name'] in injured_names]
     laa = [p for p in laa if p['name'] not in injured_names]
 
-    # Step 1: eligibility window. `_top` is the more restrictive of the
-    # pwOBA ceiling and the age-based ceiling — a young arm whose pwOBA is
-    # at the floor extrapolation can't be over-promoted by the data limit.
+    # Step 1: eligibility window. `_top` = current pwOBA ceiling only;
+    # there's no age-based extra cap (see PITCHER_AGE_TOP removal note).
     overflow = []
     valid = []
     for p in laa:
-        p['_top'] = max(pwoba_top_level(p), age_top_level_pitcher(p))
+        p['_top'] = pwoba_top_level(p)
         p['_bot'] = age_lowest_level(p)
         if p['_top'] > p['_bot']:
             overflow.append(p)
