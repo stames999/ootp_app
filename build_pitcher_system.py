@@ -75,22 +75,18 @@ def load_laa_pitchers():
 
 
 def pitcher_priority(p):
-    """Age-weighted blend of current and projected pwOBA. Lower = better
-    (matches the pwOBA convention where lower-allowed-wOBA is the goal).
-    Mirrors the hitter `priority` weights:
-      ≤19  : 30% current + 70% projected (raw projection bias)
-      20-21: 50/50
-      22-23: 70/30
-      24+  : 90/10 (mature, projection nearly realised)"""
-    age = p['age']
+    """Cascade-ordering key for pitchers. Lower = better (matches the pwOBA
+    convention). Current pwOBA is the dominant signal at 90% weight;
+    projection contributes a small 10% tiebreak so a young ace-projection
+    arm still wins over an older same-pwOBA arm with no upside (e.g. Fana
+    .401 / .307 vs older .401 / .401), but a meaningful pwOBA gap
+    (anything > ~5 wOBA points) dominates the projection adjustment.
+    Without this, the previous age-tiered 30/70 → 50/50 → 70/30 → 90/10
+    blend let young projection-elite arms outrank materially-better-current
+    pitchers (e.g. Aracena .359 / .298 outranking Holman .350 / .351 at AAA
+    despite worse current stuff)."""
     pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
     pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
-    if age <= 19:
-        return 0.3 * pwoba + 0.7 * pwobap
-    if age <= 21:
-        return 0.5 * pwoba + 0.5 * pwobap
-    if age <= 23:
-        return 0.7 * pwoba + 0.3 * pwobap
     return 0.9 * pwoba + 0.1 * pwobap
 
 
