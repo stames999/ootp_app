@@ -81,9 +81,13 @@ LEVEL_ID_TO_LEVEL = {
 
 
 def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
-    """Add `yrs_<LEVEL>` columns counting how many distinct seasons each
-    player has appeared at each level. Sources both career-stats CSVs
-    (hitter and pitcher) so it covers the whole pool. Level mapping uses
+    """Add `yrs_<LEVEL>` columns counting how many distinct calendar SEASONS
+    each player has played, credited to the HIGHEST level they reached that
+    year. A year that spans multiple levels counts as 1 year of service
+    time, allocated to the topmost level reached — matching OOTP's
+    service-time semantics where promotion supersedes the lower level
+    for that year. Sources both career-stats CSVs (hitter and pitcher)
+    so the count covers the whole pool. Level mapping uses
     LEVEL_ID_TO_LEVEL above; rows with unknown level_ids are ignored.
 
     No-op (zeros) if neither career-stats CSV is uploaded — the column
@@ -111,9 +115,14 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     combined = pd.concat(pieces, ignore_index=True)
-    # One row per (player_id, level_id, year) — duplicates across batting/
-    # pitching stats collapse to one season at that level.
+    # Collapse to one row per (player_id, year) at the HIGHEST level
+    # reached. LEVEL_ID_TO_LEVEL is keyed by OOTP level_id where 1=MLB
+    # (the top), so the smallest level_id per (player_id, year) wins.
     combined = combined.drop_duplicates(['player_id', 'level_id', 'year'])
+    combined = (
+        combined.sort_values('level_id')
+                .drop_duplicates(['player_id', 'year'], keep='first')
+    )
     counts = (
         combined.groupby(['player_id', 'level_id'])
         .size()
