@@ -4,7 +4,6 @@ from config import (
     PITCHING_COMPONENTS_ADJUST_MAP,
     PITCHING_WOBA_WEIGHTS,
     HANDEDNESS_WEIGHTS,
-    MINIMUM_STARTER_PITCHES,
     MINIMUM_STARTER_STAMINA,
     PITCHER_RATING_FLOOR,
     RUNS_PER_GAME_PITCHING_COEFF,
@@ -25,15 +24,15 @@ PITCHER_SKILL_COLS_POTENTIAL = ["ctrlP", "pbabipP", "hraP", "stuffP"]
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish role using OOTP's own classification: position == 1 means
-    # pitcher. Stamina + pitch-count thresholds gate SP vs RP, but anyone
-    # OOTP labels as a pitcher gets at least RP eligibility — we don't
-    # second-guess the game's classifier. Position players who happen to
-    # have one rated emergency pitch are correctly excluded.
+    # Establish role using OOTP's classifier (position == 1) plus a single
+    # stamina threshold for SP vs RP. Pitch-count is no longer in the gate —
+    # stamina alone determines whether a pitcher can carry a starter's
+    # workload. Below MINIMUM_STARTER_STAMINA they're a reliever; at or
+    # above they're a potential starter regardless of pitch-mix breadth.
     def identify_role(row):
         if row.get("position") != 1:
             return ""
-        if row["pitches"] >= MINIMUM_STARTER_PITCHES and row["stamina"] >= MINIMUM_STARTER_STAMINA:
+        if row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"
         return "rp"
 
@@ -165,14 +164,13 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # Calculate pitching metrics based on potential ratings (no handedness)
 def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish potential role using OOTP's classifier — same shape as the
-    # current-side identify_role: position == 1 means pitcher; SP / RP
-    # split gated by potential pitch count + stamina. Anyone OOTP labels
-    # as a pitcher gets at least RP-potential eligibility.
+    # Establish potential role using OOTP's classifier (position == 1)
+    # plus stamina alone for SP vs RP. Mirrors the current-side gate —
+    # stamina is the binding constraint for rotation viability.
     def identify_role(row):
         if row.get("position") != 1:
             return ""
-        if row["pitchesP"] >= MINIMUM_STARTER_PITCHES and row["stamina"] >= MINIMUM_STARTER_STAMINA:
+        if row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"
         return "rp"
 

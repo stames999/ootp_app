@@ -125,17 +125,15 @@ SCARCITY_SKILL_GAMMA = 0.5
 # Pitcher rating thresholds used to determine if a pitcher is a starter or reliever
 # ============================
 
-PITCH_MINIMUM_RATING = 45  # used to establish 'how many pitches' a pitcher has
-MINIMUM_STARTER_STAMINA = 40
-MINIMUM_STARTER_PITCHES = 3  # rotation depth threshold (SP requires 3+ pitches)
-# RP eligibility is now gated by OOTP's `position == 1` classifier in
-# metrics_pitching.identify_role rather than a derived pitch-count threshold.
-# Anyone OOTP labels a pitcher gets at least RP eligibility — captures
-# 1-pitch specialists (sidearm sinker types) without admitting position
-# players who have one rated emergency pitch. MINIMUM_RELIEVER_PITCHES is
-# retired; left here as a constant only because some downstream notes
-# reference it, but no code reads it.
-MINIMUM_RELIEVER_PITCHES = 1  # deprecated — position == 1 is the gate
+PITCH_MINIMUM_RATING = 45  # rating floor used by count_pitches for `pitches` / `pitchesP` columns
+MINIMUM_STARTER_STAMINA = 40  # stamina ≥ 40 → SP-viable; below → RP-only
+# Pitcher classification (sprp / sprpP) now uses ONLY position == 1 (from OOTP)
+# and the stamina threshold above. The pitch-count thresholds below are
+# deprecated — kept as constants in case other notes reference them, but no
+# code path reads them. Stamina alone is the rotation-viability signal;
+# one-pitch specialists with low stamina correctly land in the RP bucket.
+MINIMUM_STARTER_PITCHES = 3  # deprecated — stamina is the SP/RP gate
+MINIMUM_RELIEVER_PITCHES = 1  # deprecated — position == 1 admits all pitchers
 
 # ============================
 # Pitcher skill rating floor
