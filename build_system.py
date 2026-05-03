@@ -186,6 +186,42 @@ def age_lowest_level(p):
             return LEVELS.index(lvl)
     return 0
 
+# OOTP service-time limits per level (cumulative pro service years).
+# The threshold is INCLUSIVE: a player with exactly 5 yrs total can still
+# play A+, but with 6 yrs they can no longer. Above the limit, that level
+# is no longer eligible — must be at a higher level. AA / AAA / MLB have
+# no service-time limit. yrs_<LEVEL> columns come from
+# reader.add_years_at_level (one year per calendar season, credited to
+# the highest level reached that year).
+SERVICE_LIMITS = {
+    'A+':     5,
+    'A':      4,
+    'R':      3,
+    'R(DLR)': 3,
+}
+
+
+def total_service_years(p):
+    """Sum of yrs_<LEVEL> across all levels — cumulative pro experience."""
+    return sum(p.get(f'yrs_{l}', 0) or 0 for l in LEVELS)
+
+
+def service_lowest_level(p):
+    """Highest LEVELS index (= lowest level) the player is still eligible
+    for given their cumulative service. > 5 yrs blocks A+ and below; > 4
+    blocks A and below; > 3 blocks R / R(DLR). Returns the deepest index
+    they can still play; combine with age_lowest_level via min() for the
+    final `_bot`."""
+    s = total_service_years(p)
+    if s > SERVICE_LIMITS['A+']:
+        return LEVELS.index('AA')      # 2 — A+ exhausted, AA-or-above only
+    if s > SERVICE_LIMITS['A']:
+        return LEVELS.index('A+')      # 3 — A exhausted
+    if s > SERVICE_LIMITS['R']:
+        return LEVELS.index('A')       # 4 — R/DSL exhausted
+    return len(LEVELS) - 1             # 6 — no service constraint
+
+
 def projected_pos_adj(p, pos):
     """Current pos_adj + bat development runway. Fielding doesn't develop."""
     cur = p.get(f'{pos}_adj')
@@ -477,11 +513,14 @@ def main(org=None):
     overflow = []
     by_level = {lvl: [] for lvl in LEVELS}
     
-    # Compute eligible range
+    # Compute eligible range. _bot combines age and service-time floors —
+    # the more restrictive (smaller index = higher level) wins. A player
+    # whose service has burned through R/A/A+ can't be sent down there,
+    # even if they're young enough.
     valid_players = []
     for p in laa:
         top = woba_max_level(p)
-        bot = age_lowest_level(p)
+        bot = min(age_lowest_level(p), service_lowest_level(p))
         if top > bot:
             overflow.append(p)
             continue

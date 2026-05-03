@@ -37,7 +37,7 @@ Notes / limitations:
 """
 import json
 
-from build_system import LEVELS, MAX_AGE, age_lowest_level, _load_injured_names
+from build_system import LEVELS, MAX_AGE, age_lowest_level, service_lowest_level, _load_injured_names
 
 PITCHERS_JSON = 'outputs/pitchers.json'
 
@@ -234,11 +234,14 @@ def main(org=None):
 
     # Step 1: eligibility window. `_top` = current pwOBA ceiling only;
     # there's no age-based extra cap (see PITCHER_AGE_TOP removal note).
+    # `_bot` combines age and service-time floors — the more restrictive
+    # wins, so a vet who's burned through A+ service time can't be sent
+    # down there even if young enough.
     overflow = []
     valid = []
     for p in laa:
         p['_top'] = pwoba_top_level(p)
-        p['_bot'] = age_lowest_level(p)
+        p['_bot'] = min(age_lowest_level(p), service_lowest_level(p))
         if p['_top'] > p['_bot']:
             overflow.append(p)
         else:
