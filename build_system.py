@@ -426,34 +426,38 @@ def classify_bench(bench):
     bc = take(lambda p: catcher_alloc_score(p) if is_catcher(p) else None)
     ordered.append(('Backup C', bc))
 
-    # 2. Utility IF — glove-first among viable bats. Real utility IFs are
-    #    defensive-replacement profiles (multi-position glove, modest bat),
-    #    not bench bats who happen to play one IF spot. The bat is already
-    #    "viable" by virtue of the player being on this level's bench (his
-    #    wOBA passed the level's threshold via Step 2 cascade). So we rank
-    #    by fielding-only WAR (not pos_adj, which folds the bat back in)
-    #    and only use wOBA as a final tiebreak.
+    # 2. Utility IF — glove-first but bat matters. Score tuple:
+    #      (positions_playable, 0.6*fld_sum + 0.4*bat_war)
+    #    Multi-position is still a hard prerequisite of utility (more
+    #    positions wins outright), but within a tied position count the
+    #    weighted glove+bat score lets a slightly-worse-glove player with
+    #    a meaningfully better bat overtake a glove-only specialist.
+    #    Both terms are in WAR units so the 60/40 split is on like-for-like.
     def if_score(p):
         fld_vals = [p.get(f'{pos}_fld') for pos in IF_POSITIONS]
         valid = [v for v in fld_vals if v is not None]
         if not valid:
             return None
-        return (len(valid), sum(valid), p.get('wOBA') or 0)
+        fld_sum = sum(valid)
+        bat_war = p.get('war_hitting') or 0
+        return (len(valid), 0.6 * fld_sum + 0.4 * bat_war)
     ordered.append(('Utility IF', take(if_score)))
 
-    # 3. Utility OF — same glove-first logic. CF eligibility still adds
-    #    +1 to the position count: it's a speed/range proxy as well as a
-    #    position, so a CF-capable OF beats a same-fielding LF/RF-only.
+    # 3. Utility OF — same shape. CF eligibility still adds +1 to the
+    #    position count (speed/range proxy as well as a position, so a
+    #    CF-capable OF beats a same-fielding LF/RF-only). Score is
+    #    weighted glove+bat in WAR units.
     def of_score(p):
         fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
         valid_pos = [pos for pos, v in fld_vals.items() if v is not None]
         if not valid_pos:
             return None
         cf_bonus = 1 if 'CF' in valid_pos else 0
+        fld_sum = sum(fld_vals[pos] for pos in valid_pos)
+        bat_war = p.get('war_hitting') or 0
         return (
             len(valid_pos) + cf_bonus,
-            sum(fld_vals[pos] for pos in valid_pos),
-            p.get('wOBA') or 0,
+            0.6 * fld_sum + 0.4 * bat_war,
         )
     ordered.append(('Utility OF', take(of_score)))
 
@@ -787,27 +791,29 @@ def main(org=None):
     # and Best bat / starters are bat-first picks the cascade gets right.
     # Refinement scoring must match classify_bench's of_score / if_score —
     # otherwise refinement only swaps on raw position-count and ignores
-    # glove quality, missing cases where a same-count candidate has
-    # genuinely better fielding (e.g. AZ: Tommy Troy and Jorge Barrosa
-    # both play LF/CF/RF, but Barrosa's fld_sum is +9.55 vs Troy's +6.37
-    # — the refinement should pull Barrosa up to the MLB bench).
+    # glove+bat quality, missing cases where a same-count candidate has
+    # genuinely better skill. 60/40 fld/bat weighting in WAR units, same
+    # as classify_bench.
     def _util_if_cap(p):
         fld_vals = [p.get(f'{pos}_fld') for pos in IF_POSITIONS]
         valid = [v for v in fld_vals if v is not None]
         if not valid:
-            return (0, 0.0, 0.0)
-        return (len(valid), sum(valid), p.get('wOBA') or 0)
+            return (0, 0.0)
+        fld_sum = sum(valid)
+        bat_war = p.get('war_hitting') or 0
+        return (len(valid), 0.6 * fld_sum + 0.4 * bat_war)
 
     def _util_of_cap(p):
         fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
         valid_pos = [pos for pos, v in fld_vals.items() if v is not None]
         if not valid_pos:
-            return (0, 0.0, 0.0)
+            return (0, 0.0)
         cf_bonus = 1 if 'CF' in valid_pos else 0
+        fld_sum = sum(fld_vals[pos] for pos in valid_pos)
+        bat_war = p.get('war_hitting') or 0
         return (
             len(valid_pos) + cf_bonus,
-            sum(fld_vals[pos] for pos in valid_pos),
-            p.get('wOBA') or 0,
+            0.6 * fld_sum + 0.4 * bat_war,
         )
 
     UTIL_ROLE_FNS = {
@@ -828,9 +834,10 @@ def main(org=None):
                 if cap_fn is None:
                     continue
                 # Sentinel for "role currently empty" — any candidate beats
-                # an empty slot. Tuple of zeros works since cap_fn returns a
-                # 3-tuple of non-negative numbers.
-                current_cap = cap_fn(current) if current else (0, 0.0, 0.0)
+                # an empty slot. cap_fn returns a 2-tuple (count, score)
+                # where score is signed; (-1, -inf) lets the smallest
+                # legitimate score still win.
+                current_cap = cap_fn(current) if current else (-1, float('-inf'))
                 # Candidate at next_lvl must be eligible upstairs by wOBA and
                 # age, not a catcher (utility roles are non-C), and not an HP
                 # (HPs need to start somewhere — even at MLB the development
