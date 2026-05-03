@@ -785,9 +785,34 @@ def main(org=None):
     # candidate eligible at this level. We only refine the multi-position
     # roles (Util IF / Util OF) — Backup C is already optimised in Step 1
     # and Best bat / starters are bat-first picks the cascade gets right.
+    # Refinement scoring must match classify_bench's of_score / if_score —
+    # otherwise refinement only swaps on raw position-count and ignores
+    # glove quality, missing cases where a same-count candidate has
+    # genuinely better fielding (e.g. AZ: Tommy Troy and Jorge Barrosa
+    # both play LF/CF/RF, but Barrosa's fld_sum is +9.55 vs Troy's +6.37
+    # — the refinement should pull Barrosa up to the MLB bench).
+    def _util_if_cap(p):
+        fld_vals = [p.get(f'{pos}_fld') for pos in IF_POSITIONS]
+        valid = [v for v in fld_vals if v is not None]
+        if not valid:
+            return (0, 0.0, 0.0)
+        return (len(valid), sum(valid), p.get('wOBA') or 0)
+
+    def _util_of_cap(p):
+        fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
+        valid_pos = [pos for pos, v in fld_vals.items() if v is not None]
+        if not valid_pos:
+            return (0, 0.0, 0.0)
+        cf_bonus = 1 if 'CF' in valid_pos else 0
+        return (
+            len(valid_pos) + cf_bonus,
+            sum(fld_vals[pos] for pos in valid_pos),
+            p.get('wOBA') or 0,
+        )
+
     UTIL_ROLE_FNS = {
-        'Utility IF': lambda p: sum(1 for pos in IF_POSITIONS if p.get(f'{pos}_adj') is not None),
-        'Utility OF': lambda p: sum(1 for pos in OF_POSITIONS if p.get(f'{pos}_adj') is not None) + (1 if p.get('CF_adj') is not None else 0),
+        'Utility IF': _util_if_cap,
+        'Utility OF': _util_of_cap,
     }
     for _iter in range(20):
         changed = False
@@ -802,7 +827,10 @@ def main(org=None):
                 cap_fn = UTIL_ROLE_FNS.get(role)
                 if cap_fn is None:
                     continue
-                current_cap = cap_fn(current) if current else -1
+                # Sentinel for "role currently empty" — any candidate beats
+                # an empty slot. Tuple of zeros works since cap_fn returns a
+                # 3-tuple of non-negative numbers.
+                current_cap = cap_fn(current) if current else (0, 0.0, 0.0)
                 # Candidate at next_lvl must be eligible upstairs by wOBA and
                 # age, not a catcher (utility roles are non-C), and not an HP
                 # (HPs need to start somewhere — even at MLB the development
