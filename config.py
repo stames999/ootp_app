@@ -127,13 +127,15 @@ SCARCITY_SKILL_GAMMA = 0.5
 
 PITCH_MINIMUM_RATING = 45  # used to establish 'how many pitches' a pitcher has
 MINIMUM_STARTER_STAMINA = 40
-MINIMUM_STARTER_PITCHES = 3
-# 1-pitch specialists are a real reliever role — sidearm sinker guys, ROOGY/
-# LOOGY types whose entire MLB value is one elite pitch (e.g. Ryan Thompson's
-# AZ profile: stuff 45/35, hra 65/45, ctrl 65/55 → only one pitch type above
-# PITCH_MINIMUM_RATING but a viable RHP specialist). Threshold 1 admits them;
-# their pwOBA will naturally place them at the right level (.345 = MLB-eligible).
-MINIMUM_RELIEVER_PITCHES = 1
+MINIMUM_STARTER_PITCHES = 3  # rotation depth threshold (SP requires 3+ pitches)
+# RP eligibility is now gated by OOTP's `position == 1` classifier in
+# metrics_pitching.identify_role rather than a derived pitch-count threshold.
+# Anyone OOTP labels a pitcher gets at least RP eligibility — captures
+# 1-pitch specialists (sidearm sinker types) without admitting position
+# players who have one rated emergency pitch. MINIMUM_RELIEVER_PITCHES is
+# retired; left here as a constant only because some downstream notes
+# reference it, but no code reads it.
+MINIMUM_RELIEVER_PITCHES = 1  # deprecated — position == 1 is the gate
 
 # ============================
 # Pitcher skill rating floor
@@ -192,6 +194,11 @@ PLAYERS_COLUMNS = [
     "team_id",
     "organization_id",
     "retired",
+    # OOTP position code (1 = pitcher; 2-10 = position players / DH).
+    # Used as the canonical "is this a pitcher?" signal in metrics_pitching
+    # — replaces the old pitch-count rating thresholds which over-filtered
+    # 1-pitch specialists.
+    "position",
 ]
 
 # —— players_career_pitching_stats.csv ——

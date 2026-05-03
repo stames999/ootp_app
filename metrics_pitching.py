@@ -5,7 +5,6 @@ from config import (
     PITCHING_WOBA_WEIGHTS,
     HANDEDNESS_WEIGHTS,
     MINIMUM_STARTER_PITCHES,
-    MINIMUM_RELIEVER_PITCHES,
     MINIMUM_STARTER_STAMINA,
     PITCHER_RATING_FLOOR,
     RUNS_PER_GAME_PITCHING_COEFF,
@@ -26,14 +25,17 @@ PITCHER_SKILL_COLS_POTENTIAL = ["ctrlP", "pbabipP", "hraP", "stuffP"]
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # establish whether a pitcher is a starter or reliever
+    # Establish role using OOTP's own classification: position == 1 means
+    # pitcher. Stamina + pitch-count thresholds gate SP vs RP, but anyone
+    # OOTP labels as a pitcher gets at least RP eligibility — we don't
+    # second-guess the game's classifier. Position players who happen to
+    # have one rated emergency pitch are correctly excluded.
     def identify_role(row):
+        if row.get("position") != 1:
+            return ""
         if row["pitches"] >= MINIMUM_STARTER_PITCHES and row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"
-        elif row["pitches"] >= MINIMUM_RELIEVER_PITCHES:
-            return "rp"
-        else:
-            return ""
+        return "rp"
 
     df["sprp"] = df.apply(identify_role, axis=1)
 
@@ -94,17 +96,10 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     rates_l = df.apply(lambda row: adjust_rates(row, "L"), axis=1)
     df = pd.concat([df, rates_r, rates_l], axis=1)
 
-    # Compute pwOBA for any "pitcher-capable" player — anyone with at least
-    # one rated pitch type now OR projected (pitches >= 1 or pitchesP >= 1).
-    # Catches pitcher prospects whose individual pitch types haven't yet
-    # crossed PITCH_MINIMUM_RATING (e.g. very young arms with 0 current
-    # pitches but 3-4 projected). Position players have pitches == pitchesP
-    # == 0 and stay NaN (their emergency-pitcher ratings are uniformly 20
-    # and aren't meaningful).
-    pitcher_capable = (
-        (df["pitches"].fillna(0) >= 1)
-        | (df["pitchesP"].fillna(0) >= 1)
-    )
+    # Compute pwOBA for any OOTP-labelled pitcher (position == 1). Position
+    # players have other position codes; their emergency-pitcher ratings
+    # are uniform low values that aren't meaningful as MLB metrics.
+    pitcher_capable = df["position"] == 1
 
     df["pwOBAR"] = (
         PITCHING_WOBA_WEIGHTS["hr_vs_wOBA_weight"] * df["hr_vsR"] +
@@ -170,14 +165,16 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # Calculate pitching metrics based on potential ratings (no handedness)
 def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # establish whether a pitcher is a starter or reliever based on potential
+    # Establish potential role using OOTP's classifier — same shape as the
+    # current-side identify_role: position == 1 means pitcher; SP / RP
+    # split gated by potential pitch count + stamina. Anyone OOTP labels
+    # as a pitcher gets at least RP-potential eligibility.
     def identify_role(row):
+        if row.get("position") != 1:
+            return ""
         if row["pitchesP"] >= MINIMUM_STARTER_PITCHES and row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"
-        elif row["pitchesP"] >= MINIMUM_RELIEVER_PITCHES:
-            return "rp"
-        else:
-            return ""
+        return "rp"
 
     df["sprpP"] = df.apply(identify_role, axis=1)
 
