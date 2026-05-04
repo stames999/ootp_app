@@ -5,6 +5,43 @@ POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 LEVELS = ['MLB', 'AAA', 'AA', 'A+', 'A', 'R', 'R(DLR)']
 ROSTER_SIZES = {'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15}
 
+# Per-org override for level capacities. Most orgs in OOTP have 2 DSL
+# affiliates (~28 of 30 in current saves) and a single complex team
+# (ACL or FCL); a couple of orgs have only 1 DSL team. We size R(DLR)
+# at 15 × #DSL_teams so two-DSL orgs (AZ, COL, etc.) don't dump a whole
+# DSL roster's worth of players into overflow.
+DSL_LEAGUE_ID = 234
+
+
+def compute_roster_sizes(org=None):
+    """Return ROSTER_SIZES with R(DLR) scaled by the org's DSL team count.
+    Reads teams.csv (in config.filepath); falls back to the base sizes if
+    the file is missing or unparseable."""
+    sizes = dict(ROSTER_SIZES)
+    if org is None:
+        from config import team_managed
+        org = team_managed
+    try:
+        import config as _config
+        import pandas as _pd
+        teams = _pd.read_csv(
+            _config.filepath / 'teams.csv',
+            usecols=['parent_team_id', 'league_id'],
+            low_memory=False,
+        )
+        from config import club_lookup
+        org_id = next((k for k, v in club_lookup.items() if v == org), None)
+        if org_id is not None:
+            n_dsl = int((
+                (teams['parent_team_id'] == org_id)
+                & (teams['league_id'] == DSL_LEAGUE_ID)
+            ).sum())
+            if n_dsl >= 1:
+                sizes['R(DLR)'] = 15 * n_dsl
+    except Exception:
+        pass
+    return sizes
+
 WOBA_MIN = {
     'MLB': 0.280,
     'AAA': 0.250,
@@ -531,7 +568,10 @@ def main(org=None):
         p['_top'] = top
         p['_bot'] = bot
         valid_players.append(p)
-    
+
+    # Per-org roster sizes — R(DLR) scales by DSL team count (1 or 2)
+    roster_sizes = compute_roster_sizes(org)
+
     # === STEP 1: Catchers (2/level) ===
     # Score-driven greedy allocation: rank `is_catcher_candidate` players
     # by `catcher_alloc_score` (current wOBA + small C_fld component + small
@@ -597,7 +637,7 @@ def main(org=None):
     for lvl in LEVELS:
         nc_by[lvl].sort(key=lambda p: priority(p), reverse=True)
     
-    nc_slots = {lvl: ROSTER_SIZES[lvl] - len(cby[lvl]) for lvl in LEVELS}
+    nc_slots = {lvl: roster_sizes[lvl] - len(cby[lvl]) for lvl in LEVELS}
     
     # Cascade down
     for i, lvl in enumerate(LEVELS):
@@ -739,7 +779,7 @@ def main(org=None):
     # the spillover going to overflow rather than crowding the upper
     # levels.
     for i, lvl in enumerate(LEVELS):
-        while len(by_level[lvl]) > ROSTER_SIZES[lvl]:
+        while len(by_level[lvl]) > roster_sizes[lvl]:
             poppable = [p for p in by_level[lvl]
                         if not is_high_potential(p)
                         and p.get('_force_start') != lvl]
@@ -764,7 +804,7 @@ def main(org=None):
     # includes this level. Catchers stay out of this pool — Step 1
     # already handled their allocation.
     for i, lvl in enumerate(LEVELS):
-        target = ROSTER_SIZES[lvl]
+        target = roster_sizes[lvl]
         while len(by_level[lvl]) < target:
             candidates = [
                 p for p in overflow
@@ -898,6 +938,7 @@ def main(org=None):
             'bench': bench,
             'bench_roles': classify_bench(bench),
             'all': by_level[lvl],
+            'target': roster_sizes[lvl],
         }
 
     return rosters, overflow, flagged_players

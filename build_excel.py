@@ -235,7 +235,8 @@ def write_level_sheet(ws, lvl, roster):
         ws.column_dimensions[chr(64+i)].width = w
     
     row += 1
-    ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} players (target {ROSTER_SIZES[lvl]})').font = Font(name='Arial', italic=True, size=9, color='666666')
+    target = roster.get('target', ROSTER_SIZES[lvl])
+    ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} players (target {target})').font = Font(name='Arial', italic=True, size=9, color='666666')
 
 def write_summary(ws, rosters, overflow, org='LAA'):
     ws['A1'] = f'{org} Hitter System - Summary'
@@ -396,7 +397,9 @@ def write_pitcher_sheet(ws, lvl, roster):
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
     row += 1
 
-    for i in range(SP_PER_LEVEL):
+    sp_target = roster.get('sp_target', SP_PER_LEVEL)
+    rp_target = roster.get('rp_target', RP_PER_LEVEL)
+    for i in range(sp_target):
         if i < len(roster['starters']):
             write_pitcher_row(row, roster['starters'][i], f'SP{i+1}', 'sp_warP', sp_note)
         else:
@@ -413,7 +416,7 @@ def write_pitcher_sheet(ws, lvl, roster):
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
     row += 1
 
-    for i in range(RP_PER_LEVEL):
+    for i in range(rp_target):
         if i < len(roster['bullpen']):
             write_pitcher_row(row, roster['bullpen'][i], f'RP{i+1}', 'rp_warP', rp_note)
         else:
@@ -429,7 +432,7 @@ def write_pitcher_sheet(ws, lvl, roster):
         ws.column_dimensions[chr(64+i)].width = w
 
     row += 1
-    ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} pitchers (target {PITCHER_ROSTER_SIZE})').font = Font(name='Arial', italic=True, size=9, color='666666')
+    ws.cell(row=row, column=1, value=f'Total: {len(roster["all"])} pitchers (target {sp_target + rp_target})').font = Font(name='Arial', italic=True, size=9, color='666666')
 
 
 def write_pitcher_overflow(ws, overflow):

@@ -61,6 +61,32 @@ PWOBA_MAX = {
 }
 
 
+def _count_dsl_teams(org):
+    """Count DSL teams (league_id=234) belonging to an org. Returns 1 if
+    teams.csv is missing or org not found — most orgs have 1 or 2 DSL
+    teams, so 1 is a safe default for missing data."""
+    if org is None:
+        from config import team_managed
+        org = team_managed
+    try:
+        import config as _config
+        import pandas as _pd
+        teams = _pd.read_csv(
+            _config.filepath / 'teams.csv',
+            usecols=['parent_team_id', 'league_id'],
+            low_memory=False,
+        )
+        from config import club_lookup
+        org_id = next((k for k, v in club_lookup.items() if v == org), None)
+        if org_id is None:
+            return 1
+        n = int(((teams['parent_team_id'] == org_id)
+                 & (teams['league_id'] == 234)).sum())
+        return max(1, n)
+    except Exception:
+        return 1
+
+
 def load_team_pitchers(org=None):
     """Load pitchers for a single org. Defaults to config.team_managed."""
     if org is None:
@@ -143,11 +169,12 @@ def is_high_potential_pitcher(p):
     return pwobap <= HP_PITCHER_MAX_PWOBAP
 
 
-def _cascade(pool, slots_per_level):
+def _cascade(pool, slots_for):
     """Initial placement at each pitcher's `_top`, then cascade-down: while a
-    level holds more than `slots_per_level`, pop the worst-blend pitcher and
-    push to the next level (or to leftovers if age cap blocks). Returns
-    (by_level, leftovers)."""
+    level holds more than `slots_for[lvl]`, pop the worst-blend pitcher and
+    push to the next level (or to leftovers if age cap blocks).
+    `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
+    × DSL count) can vary."""
     by_level = {lvl: [] for lvl in LEVELS}
     leftovers = []
     for p in pool:
@@ -155,7 +182,7 @@ def _cascade(pool, slots_per_level):
     for lvl in LEVELS:
         by_level[lvl].sort(key=pitcher_priority)
     for i, lvl in enumerate(LEVELS):
-        while len(by_level[lvl]) > slots_per_level:
+        while len(by_level[lvl]) > slots_for[lvl]:
             cascaded = by_level[lvl].pop()  # last = worst blend
             next_idx = i + 1
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
@@ -166,8 +193,9 @@ def _cascade(pool, slots_per_level):
     return by_level, leftovers
 
 
-def _pull_up(by_level, slots_per_level):
-    """Top-down fill in two passes per level:
+def _pull_up(by_level, slots_for):
+    """Top-down fill in two passes per level. `slots_for` is a {level: int}
+    dict.
       1. Strict — pull the best-blend pitcher from below whose `_top` already
          qualifies them at this level. HPs and non-HPs both compete here.
       2. Non-HP +1 stretch — if gaps remain, pull up non-HPs whose `_top` is
@@ -179,7 +207,7 @@ def _pull_up(by_level, slots_per_level):
          natural level before any stretching happens."""
     for i, lvl in enumerate(LEVELS):
         # Pass 1: strict (_top <= i)
-        while len(by_level[lvl]) < slots_per_level:
+        while len(by_level[lvl]) < slots_for[lvl]:
             best = None
             best_j = None
             for j in range(i + 1, len(LEVELS)):
@@ -197,7 +225,7 @@ def _pull_up(by_level, slots_per_level):
             by_level[lvl].sort(key=pitcher_priority)
 
         # Pass 2: non-HP +1 stretch (_top == i + 1)
-        while len(by_level[lvl]) < slots_per_level:
+        while len(by_level[lvl]) < slots_for[lvl]:
             best = None
             best_j = None
             for j in range(i + 1, len(LEVELS)):
@@ -243,16 +271,24 @@ def main(org=None):
         else:
             valid.append(p)
 
+    # Per-org pitcher capacities. R(DLR) scales by DSL team count (each
+    # DSL team has its own staff = SP_PER_LEVEL + RP_PER_LEVEL slots).
+    sp_slots = {lvl: SP_PER_LEVEL for lvl in LEVELS}
+    rp_slots = {lvl: RP_PER_LEVEL for lvl in LEVELS}
+    n_dsl = max(1, _count_dsl_teams(org))
+    sp_slots['R(DLR)'] = SP_PER_LEVEL * n_dsl
+    rp_slots['R(DLR)'] = RP_PER_LEVEL * n_dsl
+
     # Step 2-3: SP cascade + pull-up
     sp_pool = [p for p in valid if is_sp_viable(p)]
-    sp_by, _sp_leftover = _cascade(sp_pool, SP_PER_LEVEL)
-    _pull_up(sp_by, SP_PER_LEVEL)
+    sp_by, _sp_leftover = _cascade(sp_pool, sp_slots)
+    _pull_up(sp_by, sp_slots)
     sp_assigned = {p['name'] for lvl in LEVELS for p in sp_by[lvl]}
 
     # Step 4: RP cascade + pull-up
     rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
-    rp_by, rp_leftover = _cascade(rp_pool, RP_PER_LEVEL)
-    _pull_up(rp_by, RP_PER_LEVEL)
+    rp_by, rp_leftover = _cascade(rp_pool, rp_slots)
+    _pull_up(rp_by, rp_slots)
     rp_assigned = {p['name'] for lvl in LEVELS for p in rp_by[lvl]}
 
     # Step 5: overflow
@@ -278,6 +314,8 @@ def main(org=None):
             'starters': sp_by[lvl],
             'bullpen': rp_by[lvl],
             'all': sp_by[lvl] + rp_by[lvl],
+            'sp_target': sp_slots[lvl],
+            'rp_target': rp_slots[lvl],
         }
 
     return rosters, overflow, flagged_players

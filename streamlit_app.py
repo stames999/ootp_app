@@ -369,9 +369,11 @@ with tab_overview:
         st.subheader('MLB pitching staff')
 
         rotation = rp['MLB']['starters']
-        st.markdown(f'**Rotation** ({len(rotation)} of {SP_PER_LEVEL} filled)')
+        sp_target = rp['MLB'].get('sp_target', SP_PER_LEVEL)
+        rp_target = rp['MLB'].get('rp_target', RP_PER_LEVEL)
+        st.markdown(f'**Rotation** ({len(rotation)} of {sp_target} filled)')
         rrows = []
-        for i in range(SP_PER_LEVEL):
+        for i in range(sp_target):
             if i < len(rotation):
                 p = rotation[i]
                 rrows.append({
@@ -386,9 +388,9 @@ with tab_overview:
         st.dataframe(pd.DataFrame(rrows), hide_index=True, width='stretch')
 
         bullpen = rp['MLB']['bullpen']
-        st.markdown(f'**Bullpen** ({len(bullpen)} of {RP_PER_LEVEL} filled)')
+        st.markdown(f'**Bullpen** ({len(bullpen)} of {rp_target} filled)')
         prows = []
-        for i in range(RP_PER_LEVEL):
+        for i in range(rp_target):
             if i < len(bullpen):
                 p = bullpen[i]
                 prows.append({
