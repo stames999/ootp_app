@@ -929,7 +929,12 @@ def main(org=None):
                     cascaded = False
                     if i + 1 < len(LEVELS):
                         next_lvl = LEVELS[i + 1]
-                        if hp['age'] <= MAX_AGE[next_lvl]:
+                        # Need both age-eligibility AND service/DSL floor (_bot)
+                        # to allow demotion to next_lvl. Without the _bot guard
+                        # an HP whose service has burned through R/A could be
+                        # cascaded to R anyway, then any swap_target gets
+                        # promoted past their _top.
+                        if hp['age'] <= MAX_AGE[next_lvl] and (i + 1) <= hp['_bot']:
                             hp_is_c = is_catcher(hp)
                             non_hp_in_next = [p for p in by_level[next_lvl]
                                               if not is_high_potential(p)
@@ -1118,6 +1123,7 @@ def main(org=None):
                             return False
                     return (
                         p['_top'] <= i
+                        and i <= p['_bot']
                         and p['age'] <= MAX_AGE[lvl]
                         and not is_high_potential(p)
                         and p.get('_force_start') != next_lvl
@@ -1178,8 +1184,20 @@ def main(org=None):
                     displace = min(spare_bench, key=lambda p: priority(p, lvl))
                 # Overflow has no age cap; only enforce the next-level age
                 # cap if the displaced player would be cascaded down a level.
-                if not from_overflow and displace['age'] > MAX_AGE[next_lvl]:
-                    continue
+                # Same for service/DSL floor — sending `displace` to next_lvl
+                # is invalid if next_lvl > displace['_bot'] (e.g. a service-
+                # exhausted player at A would cascade to R despite being
+                # blocked from R/R(DLR)). Use the from_overflow path or skip.
+                if not from_overflow:
+                    if displace['age'] > MAX_AGE[next_lvl]:
+                        continue
+                    if (i + 1) > displace['_bot']:
+                        # Send to overflow instead of an illegal level.
+                        send_to_overflow = True
+                    else:
+                        send_to_overflow = False
+                else:
+                    send_to_overflow = False
                 # `current` (and `bench_roles`) were computed at the top of
                 # this outer pass; an earlier role iteration may already have
                 # demoted `current`. If the displacement target is no longer
@@ -1191,6 +1209,9 @@ def main(org=None):
                 if from_overflow:
                     overflow.remove(best_alt)
                     overflow.append(displace)
+                elif send_to_overflow:
+                    overflow.append(displace)
+                    by_level[next_lvl].remove(best_alt)
                 else:
                     by_level[next_lvl].remove(best_alt)
                     by_level[next_lvl].append(displace)
