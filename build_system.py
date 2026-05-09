@@ -1118,27 +1118,45 @@ def main(org=None):
                     continue
                 from_overflow = best_alt in candidates_overflow
 
-                # If `current` is the role-holder we already have, displace
-                # them. Otherwise we need to either pull-without-displace
-                # (when the upper level is under target — fills a vacancy
-                # without forcing anyone out) or displace the lowest-
-                # priority Depth bench player. If the upper level is at /
-                # over target AND every bench player holds a named role,
-                # leave the role empty rather than evict a contributor.
-                displace = current
-                if displace is None:
-                    if len(by_level[lvl]) < roster_sizes[lvl]:
-                        # Upper level has a vacancy — promote without
-                        # displacing. Lower level (or overflow) thins by one.
-                        if from_overflow:
-                            overflow.remove(best_alt)
-                        else:
-                            by_level[next_lvl].remove(best_alt)
-                        by_level[lvl].append(best_alt)
-                        bench = bench + [best_alt]
-                        named_role_players = {p['name'] for _, p in classify_bench(bench, level=lvl)[:4] if p}
-                        changed = True
-                        continue
+                # Pull-without-displace when the upper level has a vacancy —
+                # no one needs to drop, just promote.
+                if len(by_level[lvl]) < roster_sizes[lvl]:
+                    if from_overflow:
+                        overflow.remove(best_alt)
+                    else:
+                        by_level[next_lvl].remove(best_alt)
+                    by_level[lvl].append(best_alt)
+                    bench = bench + [best_alt]
+                    named_role_players = {p['name'] for _, p in classify_bench(bench, level=lvl)[:4] if p}
+                    changed = True
+                    continue
+
+                # Pick the displacement target by simulating the post-promotion
+                # bench, not by blindly demoting `current`. The role-holder we
+                # are upgrading might be the highest-priority bat on the bench
+                # (e.g. a rescued primary-C with a real MLB bat being upgraded
+                # off Util OF by a glove specialist) — demoting them throws
+                # away a contributor while keeping a weaker bat. After fitting
+                # the candidate in, prefer to drop a non-HP bench player who
+                # holds NO named role in the post-promotion lineup; the named-
+                # role holders (Backup C, Utility IF, Utility OF, Best bat in
+                # the new bench) are protected because each role does real
+                # work. If everyone holds a named role, fall back to `current`
+                # (the prior behavior — demote the role-holder we're upgrading)
+                # so we don't strip a Util-IF specialist just to seat a Util-OF
+                # specialist.
+                trial_pool = by_level[lvl] + [best_alt]
+                _, trial_bench = fill_starters(trial_pool, lvl)
+                trial_named = {p['name'] for _, p in classify_bench(trial_bench, level=lvl)[:4] if p}
+                trial_unnamed = [p for p in trial_bench
+                                 if p['name'] != best_alt['name']
+                                 and not is_high_potential(p)
+                                 and p['name'] not in trial_named]
+                if trial_unnamed:
+                    displace = min(trial_unnamed, key=lambda p: priority(p, lvl))
+                elif current is not None:
+                    displace = current
+                else:
                     spare_bench = [p for p in bench if p['name'] not in named_role_players]
                     if not spare_bench:
                         continue
@@ -1146,6 +1164,13 @@ def main(org=None):
                 # Overflow has no age cap; only enforce the next-level age
                 # cap if the displaced player would be cascaded down a level.
                 if not from_overflow and displace['age'] > MAX_AGE[next_lvl]:
+                    continue
+                # `current` (and `bench_roles`) were computed at the top of
+                # this outer pass; an earlier role iteration may already have
+                # demoted `current`. If the displacement target is no longer
+                # at this level, skip rather than crash — the next outer
+                # pass will re-classify with fresh state.
+                if not any(p is displace for p in by_level[lvl]):
                     continue
                 by_level[lvl].remove(displace)
                 if from_overflow:
