@@ -544,7 +544,7 @@ def fill_starters(pool, level):
     return starters, bench
 
 PREMIUM_POS = {'C', '2B', '3B', 'SS', 'CF'}
-HP_MAX_AGE = 23
+HP_MAX_AGE = 24
 # HP qualification rules — a prospect qualifies if EITHER:
 #   (a) bestP_adj >= HP_BESTP_ADJ_THRESHOLD  (league-average projected WAR
 #       — the 2.0 mark approximates an MLB-regular floor), OR

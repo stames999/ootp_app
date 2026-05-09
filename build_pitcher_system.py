@@ -131,7 +131,7 @@ def is_rp_viable(p):
 # the MLB roster threshold (.345) so HP requires "true rotation/bullpen
 # upside" rather than just "barely MLB-eligible". Tweak HP_PITCHER_MAX_PWOBAP
 # if you want a tighter / looser bar.
-HP_PITCHER_MAX_AGE = 23
+HP_PITCHER_MAX_AGE = 24
 HP_PITCHER_MAX_PWOBAP = 0.330
 
 
