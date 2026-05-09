@@ -149,6 +149,7 @@ EXPORT_PAGES = [
             "age",
             "pa",
             "best_adj",
+            "bestP_adj",
             "pos_adj",
             "best",
             "bestP",

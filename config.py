@@ -82,17 +82,20 @@ POSITION_FLOOR = 40
 POSITION_FLOOR_EXEMPT = ["1B"]
 
 # ============================
-# Position viability gap (LEGACY — currently unused)
+# Position viability gap (display filter only)
 # ============================
-# Was previously a secondary eligibility filter on top of POSITION_FLOOR:
-# a position was feasible iff its WAR was within POSITION_VIABILITY_GAP wins
-# of the player's best. Removed because once the floor was calibrated to
-# match the lowest sim-tested rating, the WAR-gap filter created edge cases
-# (e.g. elite-rated players being excluded from their OOTP-natural position
-# because another position scored marginally higher).
-#
-# Constant kept for reference / easy re-enable. To re-apply, restore the
-# `_apply_viability` calls in metrics_war.calc_war().
+# Used to filter the displayed `field` column: a position is shown only
+# if the player's adjusted WAR there is within FIELD_VIABILITY_GAP of
+# their best position's adjusted WAR. ALL per-position WARs are still
+# computed and exported — this only affects the displayed `field` summary
+# so the user sees realistic alternatives rather than every position the
+# player technically passes the rating floor for. Calibrated to roughly
+# "positions where the player would be a passable starter relative to
+# their best fit."
+FIELD_VIABILITY_GAP = 2.0
+
+# Legacy constant kept for backwards-compatibility with any code that
+# imports it; not currently used as a hard eligibility filter.
 POSITION_VIABILITY_GAP = 1.5
 
 
@@ -111,24 +114,40 @@ POSITION_VIABILITY_GAP = 1.5
 # original 8-position calibration). Apply per player as a flat add to their
 # (bat + fld) at that position, divided by RUNS_PER_WIN to convert to WAR.
 POSITIONAL_ADJUSTMENT_RUNS = {
-    "SS": 6.5,
-    "2B": 4.8,
-    "C":  3.4,
-    "3B": 2.9,
-    "CF": 2.4,
-    # RF and LF tied at the average of their original empirical values. The
-    # raw cross-position sims gave RF -2.0, LF -5.4, but those values
-    # *amplify* the fielding-table difference rather than compensate for it
-    # (RF defense is already worth ~3.4 more runs than LF in OOTP via the
-    # OFrange/OFarm tables). Tying them removes that double-count: pos_adj
-    # contributes nothing to RF-vs-LF choice; the fielding tables alone
-    # decide it. With this change, weak-armed range-OK fielders correctly
-    # land at LF instead of always being shoved to RF.
-    "RF": -3.7,
-    "LF": -3.7,
-    "1B": -12.5,
-    "DH": -17.5,
+    # Grid-sweep optimum (2026-05-09). Selected from the centre of the top-10
+    # family in calibration/pos_adj_sweep.py — a 173k-combination search over
+    # all 9 positions, scored against (a) MLB Defensive Runs Saved leaders
+    # 2024 landing at their actual position in our model and (b) pool-balance
+    # / extreme-pool penalties. Test set was 33 elite-glove players whose
+    # MLB position is locked by their defense, NOT bat-driven stars whose
+    # OOTP fielding ratings can't reliably reproduce their MLB role.
+    #
+    # Match rate: 73% vs 55% under the prior team-of-clones-derived values.
+    # The 9 stubborn misplacements (Gimenez/Edman/Hayes/Urias/Garcia etc.
+    # routing to SS or 2B) are OOTP-rating-driven — their IF range/arm
+    # ratings genuinely qualify them at the more demanding position; no
+    # pos_adj setting reconciles them with MLB primary position.
+    #
+    # Material change vs prior calibration: SS premium +6.5→+12.5, RF
+    # penalty −3.7→−16.0, LF/CF/DH all repriced. This makes elite SS
+    # ~+0.7 WAR more valuable, brings RF stars back in line (no longer
+    # over-credited), and gives DH a livable population (was 0).
+    "C":   7.5,
+    "1B": -13.0,
+    "2B": 10.0,
+    "3B":  2.0,
+    "SS": 12.5,
+    "LF":  -9.0,
+    "CF":  -2.0,
+    "RF": -11.0,
+    "DH": -10.0,
 }
+# Final values from a multi-pass grid sweep against MLB DRS leaders +
+# Judge/Acuna as RF soft signals + Olson at CF as a hard-fail. 2B/3B
+# refined separately to lift 3B pool from 291 → ~420 (small bump 0→+2)
+# without distorting the OF balance or the SS/2B converged values.
+# Match rate: 26/35 = 74% on the elite-glove set; pools balanced; no
+# anti-violations.
 
 # ============================
 # Pitcher rating thresholds used to determine if a pitcher is a starter or reliever

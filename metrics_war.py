@@ -3,6 +3,7 @@ import pandas as pd
 
 from config import (
     FIELDING_RUN_VALUES_VS_REPLACEMENT,
+    FIELD_VIABILITY_GAP,
     POSITION_FLOOR,
     POSITION_FLOOR_EXEMPT,
     POSITION_VIABILITY_GAP,
@@ -72,12 +73,37 @@ def _apply_viability(df, war_columns, best_col):
         df.loc[outside, col] = np.nan
 
 
-def _build_field(df, position_cols):
-    """Return a Series of comma-separated feasible non-DH positions."""
-    return df[position_cols].apply(
-        lambda row: ", ".join(p for p in position_cols if pd.notna(row[p])),
-        axis=1,
-    )
+def _build_field(df, position_cols, gap_col=None, best_col=None,
+                 viability_gap=None):
+    """Return a Series of comma-separated feasible non-DH positions.
+
+    If gap_col, best_col, and viability_gap are all provided, additionally
+    filter out positions whose `gap_col` value is more than `viability_gap`
+    WAR below `best_col`. (gap_col is a template like "{}_adj" — formatted
+    per position.) Used for the displayed `field` column so a player sees
+    only realistic position alternatives rather than every position they
+    pass the rating floor at.
+    """
+    if gap_col is None or best_col is None or viability_gap is None:
+        return df[position_cols].apply(
+            lambda row: ", ".join(p for p in position_cols if pd.notna(row[p])),
+            axis=1,
+        )
+
+    def build(row):
+        best = row[best_col]
+        if pd.isna(best):
+            return ""
+        out = []
+        for p in position_cols:
+            if pd.isna(row[p]):
+                continue
+            val = row[gap_col.format(p)]
+            if pd.notna(val) and val >= best - viability_gap:
+                out.append(p)
+        return ", ".join(out)
+
+    return df.apply(build, axis=1)
 
 
 def calc_war(df):
@@ -140,8 +166,8 @@ def calc_war(df):
     df["bestP"] = df[war_potential_columns].max(axis=1)
     df["posP"] = df[war_potential_columns].idxmax(axis=1)
 
-    # ── Build `field` from feasible current-WAR positions ───────────────────
-    df["field"] = _build_field(df, FIELD_DISPLAY_POSITIONS)
+    # `field` is built later, after pos_adj is applied — it filters by the
+    # FIELD_VIABILITY_GAP against best_adj.
 
     # ── Fixed positional adjustment ─────────────────────────────────────────
     #
@@ -189,6 +215,17 @@ def calc_war(df):
     df["bestP_adj"] = df[adjP_cols].max(axis=1)
     df["posP_adj"] = (
         df[adjP_cols].idxmax(axis=1).str.replace("P_adj", "", regex=False)
+    )
+
+    # `field`: only show positions whose adjusted WAR is within
+    # FIELD_VIABILITY_GAP of the player's best_adj. Removes the noise of
+    # listing every position a player passes the rating floor at — keeps
+    # only realistic alternatives. All per-position WARs remain in the
+    # export untouched.
+    df["field"] = _build_field(
+        df, FIELD_DISPLAY_POSITIONS,
+        gap_col="{}_adj", best_col="best_adj",
+        viability_gap=FIELD_VIABILITY_GAP,
     )
 
     return df

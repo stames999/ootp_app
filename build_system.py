@@ -544,13 +544,23 @@ def fill_starters(pool, level):
 
 PREMIUM_POS = {'C', '2B', '3B', 'SS', 'CF'}
 HP_MAX_AGE = 23
-# Minimum fielding-only WAR at the premium position required to claim the
-# .300 wOBAP HP threshold (vs the .320 non-premium threshold). The premium
-# discount exists because a prospect whose bat plays at a tough defensive
-# position is more valuable — but only if they actually defend it. A SS
-# whose SS_fld is +0.4 won't really stay at SS as they develop, so we
-# don't grant them the discount; their wOBAP has to clear the higher
-# non-premium bar to count as HP.
+# HP qualification rules — a prospect qualifies if EITHER:
+#   (a) bestP_adj >= HP_BESTP_ADJ_THRESHOLD  (league-average projected WAR
+#       — the 2.0 mark approximates an MLB-regular floor), OR
+#   (b) wOBAP >= HP_WOBA_THRESHOLD  (elite bat projection — even with no
+#       defensive contribution at 1B/DH a wOBAP-.340 hitter is a real
+#       prospect)
+# The OR-rule combines the holistic projected-WAR signal with a bat-only
+# safety net so true bat-elite prospects whose poor defense pulls
+# bestP_adj below 2.0 still count. bestP_adj already encodes bat +
+# defense + positional scarcity, so this naturally elevates elite gloves
+# without requiring a defensive premium discount.
+HP_BESTP_ADJ_THRESHOLD = 2.0
+HP_WOBA_THRESHOLD = 0.340
+
+# Minimum fielding-only WAR for treating a player as a "real" defender at
+# a given position. Used in displacement / premium-fit logic, no longer
+# in HP determination itself.
 PREMIUM_FLD_MIN = 1.5
 
 # Positions where an HP with elite glove gets pos_adj overridden to that
@@ -685,29 +695,20 @@ def apply_hp_premium_fit_override(p):
 
 
 def is_high_potential(p):
-    """Minor-league prospect (minor=1, age <= HP_MAX_AGE) with elite projected
-    bat for position. Age cap excludes 24+ AAAA-types whose wOBAP clears the
-    threshold but who aren't real development cases.
-
-    The wOBAP threshold is .300 only for prospects who *actually* play SOME
-    premium position competently (any `{pos}_fld >= PREMIUM_FLD_MIN` for pos
-    in PREMIUM_POS). Keying on the best premium-position glove rather than
-    just `pos_adj` matters when scarcity adjustment hands a CF-capable bat
-    a corner-OF `pos_adj` (CF + weak corner bat → RF_adj edges out CF_adj
-    even though the player is a real CF defender). A player whose only
-    premium-position fielding is below the floor — e.g. SS_fld +0.4 — won't
-    stick there as they develop and uses the .320 non-premium bar instead."""
+    """Minor-league prospect (minor=1, age <= HP_MAX_AGE) qualifying via
+    EITHER projected WAR (bestP_adj >= 2.0, league-average regular) OR
+    elite bat projection (wOBAP >= .340). The OR combines a holistic
+    WAR test (which elevates elite gloves and drops bat-only borderlines)
+    with a bat-only safety net for genuine wOBAP-elite prospects whose
+    defense at 1B/DH pulls their bestP_adj below the 2.0 bar.
+    """
     if p.get('minor') != 1:
         return False
     if p['age'] > HP_MAX_AGE:
         return False
+    bestP_adj = p.get('bestP_adj') or float('-inf')
     wobap = p.get('wOBAP') or 0
-    has_premium_fld = any(
-        (p.get(f'{pos}_fld') or float('-inf')) >= PREMIUM_FLD_MIN
-        for pos in PREMIUM_POS
-    )
-    threshold = 0.300 if has_premium_fld else 0.320
-    return wobap >= threshold
+    return bestP_adj >= HP_BESTP_ADJ_THRESHOLD or wobap >= HP_WOBA_THRESHOLD
 
 def main(org=None):
     laa = load_team(org)
