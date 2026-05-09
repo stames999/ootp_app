@@ -183,6 +183,10 @@ with st.sidebar:
     # the app renders any data. We don't trust the on-disk JSONs from a
     # prior session because they may be stale or from a different OOTP
     # save than what the user wants to look at this time.
+    # PISTACHIO_BYPASS_UPLOAD_GATE: dev escape hatch — uses whatever JSONs
+    # are currently on disk. Never set this in normal use.
+    if os.getenv('PISTACHIO_BYPASS_UPLOAD_GATE') and has_cached_data():
+        st.session_state.data_loaded = True
     if not st.session_state.get('data_loaded'):
         st.warning('No data loaded yet. Upload the OOTP CSVs to begin.')
         if render_upload_widget(expanded=True):
@@ -314,6 +318,9 @@ with tab_overview:
         st.subheader('MLB position players')
 
         st.markdown('**Starting nine**')
+        # `bat` = pure batting WAR (war_hitting); `fld` = adjusted fielding
+        # WAR at this player's STARTING position (<pos>_fld, includes the
+        # positional scarcity premium); `WAR` = bat + fld = <pos>_adj.
         rows = []
         for pos in POSITIONS:
             p = rh['MLB']['starters'].get(pos)
@@ -323,11 +330,16 @@ with tab_overview:
                     'Player': p['name'],
                     'Age': p['age'],
                     'wOBA': round(p.get('wOBA') or 0, 3),
-                    'pos_adj': round(p.get(f'{pos}_adj') or 0, 2),
+                    'bat': round(p.get('war_hitting') or 0, 2),
+                    'fld': round(p.get(f'{pos}_fld') or 0, 2),
+                    'WAR': round(p.get(f'{pos}_adj') or 0, 2),
                 })
         st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
 
         st.markdown('**Bench (named roles)**')
+        # `Best` = best_adj (full scarcity-adjusted WAR at the player's best
+        # position). `bat` = pure batting WAR. Together they show whether a
+        # bench bat carries the role through their bat or their glove.
         brows = []
         for role, p in rh['MLB']['bench_roles']:
             if p:
@@ -335,41 +347,42 @@ with tab_overview:
                     'Role': role,
                     'Player': p['name'],
                     'Age': p['age'],
+                    'Pos': p.get('pos_adj') or '',
                     'wOBA': round(p.get('wOBA') or 0, 3),
+                    'bat': round(p.get('war_hitting') or 0, 2),
+                    'Best': round(p.get('best_adj') or 0, 2),
                 })
             else:
-                brows.append({'Role': role, 'Player': '(Sign FA)', 'Age': None, 'wOBA': None})
+                brows.append({'Role': role, 'Player': '(Sign FA)', 'Age': None,
+                              'Pos': '', 'wOBA': None, 'bat': None, 'Best': None})
         st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
 
         # Platoon batting orders + R/G — the migrated org-report bits.
-        # vs RHP / vs LHP rendered side-by-side for easy comparison.
+        # Stacked vertically so each table has the full left-column width
+        # (a side-by-side layout squeezed each lineup into ~30% of the page,
+        # which truncated long player names).
         st.markdown('**Batting orders**')
-        sub_r, sub_l = st.columns(2)
-        for sub_col, (label, vs_key) in zip(
-            [sub_r, sub_l],
-            [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')],
-        ):
-            with sub_col:
-                split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
-                backups = rh['MLB'].get(f'backups_vs{vs_key[-1]}', {})
-                name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
-                order_rows = []
-                for pos in POSITIONS:
-                    p = split_starters.get(pos)
-                    if not p:
-                        continue
-                    slot = name_to_slot.get(p['name'])
-                    bk = backups.get(pos)
-                    order_rows.append({
-                        'Slot': slot,
-                        'Pos': pos,
-                        'Player': p['name'],
-                        vs_key: round(p.get(vs_key) or 0, 3),
-                        'Backup': bk['name'] if bk else '(Sign FA)',
-                    })
-                df = pd.DataFrame(order_rows).sort_values('Slot')
-                st.markdown(f'**{label}** — R/G **{rpg:.2f}**')
-                st.dataframe(df, hide_index=True, width='stretch')
+        for label, vs_key in [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')]:
+            split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
+            backups = rh['MLB'].get(f'backups_vs{vs_key[-1]}', {})
+            name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
+            order_rows = []
+            for pos in POSITIONS:
+                p = split_starters.get(pos)
+                if not p:
+                    continue
+                slot = name_to_slot.get(p['name'])
+                bk = backups.get(pos)
+                order_rows.append({
+                    'Slot': slot,
+                    'Pos': pos,
+                    'Player': p['name'],
+                    vs_key: round(p.get(vs_key) or 0, 3),
+                    'Backup': bk['name'] if bk else '(Sign FA)',
+                })
+            df = pd.DataFrame(order_rows).sort_values('Slot')
+            st.markdown(f'**{label}** — R/G **{rpg:.2f}**')
+            st.dataframe(df, hide_index=True, width='stretch')
 
     with col_arms:
         st.subheader('MLB pitching staff')
@@ -435,8 +448,12 @@ with tab_overview:
                             'Pos': p.get('pos_adj'),
                             'wOBA': round(p.get('wOBA') or 0, 3),
                             'wOBAP': round(p.get('wOBAP') or 0, 3),
+                            'bat': round(p.get('war_hitting') or 0, 2),
+                            'batP': round(p.get('war_hittingP') or 0, 2),
+                            'Best': round(p.get('best_adj') or 0, 2),
+                            'BestP': round(p.get('bestP_adj') or 0, 2),
                         })
-            hp_df = pd.DataFrame(hp_rows).sort_values('wOBAP', ascending=False)
+            hp_df = pd.DataFrame(hp_rows).sort_values('BestP', ascending=False)
             st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential hitters in {team}.')
@@ -504,6 +521,8 @@ with tab_rosters:
 
             with col_h:
                 st.markdown('**Hitters — starters**')
+                # Same column scheme as the Overview MLB starters: bat /
+                # fld / WAR breakdown at the player's STARTING position.
                 rows = []
                 for pos in POSITIONS:
                     p = rh[lvl]['starters'].get(pos)
@@ -514,6 +533,9 @@ with tab_rosters:
                             'Age': p['age'],
                             'wOBA': round(p.get('wOBA') or 0, 3),
                             'wOBAP': round(p.get('wOBAP') or 0, 3),
+                            'bat': round(p.get('war_hitting') or 0, 2),
+                            'fld': round(p.get(f'{pos}_fld') or 0, 2),
+                            'WAR': round(p.get(f'{pos}_adj') or 0, 2),
                         })
                 st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
 
@@ -525,10 +547,14 @@ with tab_rosters:
                             'Role': role,
                             'Player': p['name'],
                             'Age': p['age'],
+                            'Pos': p.get('pos_adj') or '',
                             'wOBA': round(p.get('wOBA') or 0, 3),
+                            'bat': round(p.get('war_hitting') or 0, 2),
+                            'Best': round(p.get('best_adj') or 0, 2),
                         })
                     else:
-                        brows.append({'Role': role, 'Player': '(none)', 'Age': None, 'wOBA': None})
+                        brows.append({'Role': role, 'Player': '(none)', 'Age': None,
+                                      'Pos': '', 'wOBA': None, 'bat': None, 'Best': None})
                 st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
 
             with col_p:
@@ -549,37 +575,31 @@ with tab_rosters:
                 st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
 
             # Per-level platoon batting orders + R/G — same logic as the
-            # Overview tab's MLB block, applied to whichever level we're
-            # rendering. Useful at lower levels too: shows which prospect
-            # gets the leadoff / cleanup spot in each matchup.
+            # Overview tab's MLB block. Stacked vertically so each lineup
+            # gets the full expander width.
             st.markdown('**Batting orders**')
-            sub_r, sub_l = st.columns(2)
-            for sub_col, (label, vs_key) in zip(
-                [sub_r, sub_l],
-                [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')],
-            ):
-                with sub_col:
-                    split_starters = rh[lvl].get(f'starters_vs{vs_key[-1]}', {})
-                    backups = rh[lvl].get(f'backups_vs{vs_key[-1]}', {})
-                    name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
-                    order_rows = []
-                    for pos in POSITIONS:
-                        p = split_starters.get(pos)
-                        if not p:
-                            continue
-                        bk = backups.get(pos)
-                        order_rows.append({
-                            'Slot': name_to_slot.get(p['name']),
-                            'Pos': pos,
-                            'Player': p['name'],
-                            vs_key: round(p.get(vs_key) or 0, 3),
-                            'Backup': bk['name'] if bk else '(Sign FA)',
-                        })
-                    if order_rows:
-                        df_order = pd.DataFrame(order_rows).sort_values('Slot')
-                        rpg_str = f'{rpg:.2f}' if not (isinstance(rpg, float) and rpg != rpg) else 'n/a'
-                        st.markdown(f'**{label}** — R/G **{rpg_str}**')
-                        st.dataframe(df_order, hide_index=True, width='stretch')
+            for label, vs_key in [('vs RHP', 'wOBAR'), ('vs LHP', 'wOBAL')]:
+                split_starters = rh[lvl].get(f'starters_vs{vs_key[-1]}', {})
+                backups = rh[lvl].get(f'backups_vs{vs_key[-1]}', {})
+                name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
+                order_rows = []
+                for pos in POSITIONS:
+                    p = split_starters.get(pos)
+                    if not p:
+                        continue
+                    bk = backups.get(pos)
+                    order_rows.append({
+                        'Slot': name_to_slot.get(p['name']),
+                        'Pos': pos,
+                        'Player': p['name'],
+                        vs_key: round(p.get(vs_key) or 0, 3),
+                        'Backup': bk['name'] if bk else '(Sign FA)',
+                    })
+                if order_rows:
+                    df_order = pd.DataFrame(order_rows).sort_values('Slot')
+                    rpg_str = f'{rpg:.2f}' if not (isinstance(rpg, float) and rpg != rpg) else 'n/a'
+                    st.markdown(f'**{label}** — R/G **{rpg_str}**')
+                    st.dataframe(df_order, hide_index=True, width='stretch')
 
 
 # ---------- Release pool tab ----------
@@ -602,7 +622,10 @@ with tab_release:
                     'Top level': _hitter_top_level(p),
                     'wOBA': round(p.get('wOBA') or 0, 3),
                     'wOBAP': round(p.get('wOBAP') or 0, 3),
-                    'BestP': round(p.get('bestP') or 0, 1),
+                    'bat': round(p.get('war_hitting') or 0, 2),
+                    'batP': round(p.get('war_hittingP') or 0, 2),
+                    'Best': round(p.get('best_adj') or 0, 2),
+                    'BestP': round(p.get('bestP_adj') or 0, 2),
                 })
             h_df = pd.DataFrame(h_rows).sort_values('BestP', ascending=False)
             st.dataframe(h_df, hide_index=True, width='stretch', height=600)
@@ -668,20 +691,30 @@ with tab_scout_h:
 
     filtered_h = df_h_all[mask_h]
 
-    # Curated columns — pos_adj as primary; current and projected splits;
-    # WAR-relevant fielding for each position. Mirrors the old hitters.html
-    # but compact enough to fit on screen.
+    # Columns:
+    #   wOBA splits — current performance + platoon splits + projection.
+    #   war_hitting / war_hittingP — pure batting WAR (current / potential).
+    #   best_adj / bestP_adj — total scarcity-adjusted WAR at the player's
+    #     best position. best_adj == war_hitting + max(<pos>_fld); bestP_adj
+    #     == war_hittingP + max(<pos>_fld). These are the right numbers for
+    #     ranking total value — the legacy `best` / `bestP` (no pos_adj)
+    #     under-rate up-the-middle defenders.
+    #   <pos>_adj — adjusted positional WAR at every position the player can
+    #     play (NaN if floor-violator). Lets you see how a bat plays at C/SS
+    #     vs at 1B/DH side-by-side.
     h_display_cols = [
         c for c in [
             'name', 'org', 'minor', 'age', 'pa', 'pos_adj', 'field',
             'wOBA', 'wOBAR', 'wOBAL', 'wOBAP',
-            'best', 'bestP', 'best_adj',
-            'C_fld', 'SS_fld', '2B_fld', '3B_fld', 'CF_fld', 'LF_fld', 'RF_fld', '1B_fld',
+            'war_hitting', 'war_hittingP',
+            'best_adj', 'bestP_adj',
+            'C_adj', 'SS_adj', '2B_adj', '3B_adj',
+            'CF_adj', 'LF_adj', 'RF_adj', '1B_adj', 'DH_adj',
         ] if c in filtered_h.columns
     ]
     st.caption(f'{len(filtered_h)} of {len(df_h_all)} hitters match.')
     st.dataframe(
-        filtered_h[h_display_cols].sort_values('bestP', ascending=False, na_position='last'),
+        filtered_h[h_display_cols].sort_values('bestP_adj', ascending=False, na_position='last'),
         hide_index=True,
         width='stretch',
         height=600,
