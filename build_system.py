@@ -1061,6 +1061,13 @@ def main(org=None):
             return (0, priority(p, level))
         return cap
 
+    # Backup C cap is a (0, alloc_score) tuple so it slots into the same
+    # comparison machinery as the other named-role cap functions, which
+    # all return (count, score). The 0 placeholder keeps any real catcher
+    # ahead of the (-1, -inf) "empty role" sentinel.
+    def _backup_c_cap(p):
+        return (0, catcher_alloc_score(p))
+
     for _iter in range(20):
         changed = False
         for i, lvl in enumerate(LEVELS):
@@ -1068,6 +1075,7 @@ def main(org=None):
                 continue
             next_lvl = LEVELS[i + 1]
             UTIL_ROLE_FNS = {
+                'Backup C':   _backup_c_cap,
                 'Utility IF': _util_if_cap,
                 'Utility OF': _util_of_cap,
                 'Best bat':   _make_best_bat_cap(lvl),
@@ -1085,25 +1093,32 @@ def main(org=None):
                 # legitimate score still win.
                 current_cap = cap_fn(current) if current else (-1, float('-inf'))
                 # Candidate at next_lvl must be eligible upstairs by wOBA and
-                # age, not a catcher (utility roles are non-C), and not an HP
-                # (HPs need to start somewhere — even at MLB the development
-                # cost of benching an HP outweighs the marginal Util IF/OF
-                # upgrade, so a mature non-HP with no projection upside is
-                # the right MLB bench piece). The HP-cascade skip at MLB
-                # stays in place as a safety net but refinement won't pull
-                # HPs up in the first place.
+                # age, not an HP (HPs need to start somewhere — even at MLB
+                # the development cost of benching an HP outweighs the
+                # marginal upgrade), and the right SHAPE for this role:
+                # utility roles want non-catchers; Backup C wants a real
+                # catcher candidate. Without the role-specific shape filter,
+                # a Util IF refinement could pull up a fallback-C utility
+                # bat (Step-1 already handled real catchers via alloc_score),
+                # and a Backup C refinement would consider non-catchers.
                 # Candidate pool: next-level roster + overflow. Including
                 # overflow lets a great-glove player who got cascaded out
-                # on bat still claim a Util IF / Util OF / Best bat slot
-                # where their defensive profile actually matters (e.g.
-                # Robinson — CF_fld +5.35 — cascaded out of AZ AAA on a
-                # weak bat; he's the right Util OF whether or not the
-                # priority sort kept him in the level pool).
+                # on bat still claim the role where their profile actually
+                # matters (e.g. Robinson — CF_fld +5.35 — cascaded out of
+                # AZ AAA on a weak bat; or Heineman — alloc_score 0.44 —
+                # rescued out of TOR catcher allocation but bat-cascaded
+                # out of MLB and is still the right MLB Backup C).
+                is_backup_c = (role == 'Backup C')
                 def _is_eligible_candidate(p):
+                    if is_backup_c:
+                        if not is_catcher_candidate(p):
+                            return False
+                    else:
+                        if is_catcher(p):
+                            return False
                     return (
                         p['_top'] <= i
                         and p['age'] <= MAX_AGE[lvl]
-                        and not is_catcher(p)
                         and not is_high_potential(p)
                         and p.get('_force_start') != next_lvl
                         and (current is None or p['name'] != current['name'])
