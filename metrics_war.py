@@ -7,7 +7,7 @@ from config import (
     POSITION_FLOOR_EXEMPT,
     POSITION_VIABILITY_GAP,
     POSITIONAL_ADJUSTMENT_RUNS,
-    RUNS_PER_WIN,
+    RUNS_PER_WIN_FIELDING,
 )
 
 
@@ -146,8 +146,10 @@ def calc_war(df):
     # ── Fixed positional adjustment ─────────────────────────────────────────
     #
     # Each position gets a flat per-player WAR adjustment from
-    # POSITIONAL_ADJUSTMENT_RUNS (in runs/162, divided by RUNS_PER_WIN to
-    # convert to WAR units). Values were derived from OOTP team-of-clones
+    # POSITIONAL_ADJUSTMENT_RUNS (in runs/162, divided by RUNS_PER_WIN_FIELDING
+    # to convert to WAR units in the fielding sim's run environment — same
+    # divisor used for fielding _def, keeping the bat/def/pos-adj chain
+    # internally consistent). Values were derived from OOTP team-of-clones
     # calibration, scaled to FG-standard ±12.5 range, and sum to zero across
     # the 8 fielding positions. DH = -17.5 from FanGraphs convention.
     #
@@ -161,7 +163,7 @@ def calc_war(df):
     # OOTP fielding ratings are static.
     for pos in ALL_POSITIONS:
         adj_runs = POSITIONAL_ADJUSTMENT_RUNS.get(pos, 0)
-        adj_war = adj_runs / RUNS_PER_WIN
+        adj_war = adj_runs / RUNS_PER_WIN_FIELDING
 
         if pos == "DH":
             # DH has no fielding (no _def). _adj is just bat + DH adjustment.

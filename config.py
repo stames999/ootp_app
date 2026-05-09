@@ -116,8 +116,16 @@ POSITIONAL_ADJUSTMENT_RUNS = {
     "C":  3.4,
     "3B": 2.9,
     "CF": 2.4,
-    "RF": -2.0,
-    "LF": -5.4,
+    # RF and LF tied at the average of their original empirical values. The
+    # raw cross-position sims gave RF -2.0, LF -5.4, but those values
+    # *amplify* the fielding-table difference rather than compensate for it
+    # (RF defense is already worth ~3.4 more runs than LF in OOTP via the
+    # OFrange/OFarm tables). Tying them removes that double-count: pos_adj
+    # contributes nothing to RF-vs-LF choice; the fielding tables alone
+    # decide it. With this change, weak-armed range-OK fielders correctly
+    # land at LF instead of always being shoved to RF.
+    "RF": -3.7,
+    "LF": -3.7,
     "1B": -12.5,
     "DH": -17.5,
 }
@@ -1383,13 +1391,10 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
     #   IFerror: floor/ceiling, -9.1 to +3.1, asymmetric linear
     #   turnDP:  floor/ceiling, -10.3 to +3.9, asymmetric linear
     #
-    # KNOWN LIMITATION: SS has ~30-36% saturation at extreme rating combos
-    # (additive sum overstates cross-position floor/ceiling). Same pattern as
-    # 2B and 3B. The legacy SS_INTERACTION_CORRECTION grid was calibrated
-    # against the OLD 1D tables and is now stale — kept in place as a partial
-    # saturation correction but should be re-derived from the new tables when
-    # interaction matrices are revisited. See INTERACTION_HANDLERS comment in
-    # metrics_fielding.py.
+    # Saturation: additive sum overstates extreme combos by ~40% on both sides.
+    # Corrected at runtime via FIELDING_SATURATION["SS"] (uniform linear
+    # ~0.6× compression both sides — the legacy SS_INTERACTION_CORRECTION
+    # grid is no longer used).
     "SS": {
         "IFrange": {  # plateau ~-21 below 60 (with mild floor at -27), ~+16 above 60
             20: -27.0,
@@ -1405,7 +1410,11 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
             70: 16.0,
             75: 16.0,
         },
-        "IFarm": {  # plateau ~-17 below 60 (mild floor at -29), ~+14 above 60
+        "IFarm": {  # ~-17 below 60 (floor -29); rising 60→65 to +10, plateau ~+15 at 70-75
+            # ARM=65 is set to +10 (sim-measured) rather than the 70-75 plateau
+            # value (+14 at 70, +15.9 at 75) — the prior plateau-smoothed +14
+            # at 65 over-stated the (RNG=65, ARM=65) corner by ~4 runs and
+            # was the main contributor to the SS saturation-fit residual.
             20: -29.0,
             25: -29.0,
             30: -28.0,
@@ -1415,9 +1424,9 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
             50: -17.0,
             55: -16.0,
             60: 0.0,
-            65: 14.0,
+            65: 10.0,
             70: 14.0,
-            75: 14.0,
+            75: 15.0,
         },
         "IFerror": {  # linear interp from 20=-9.1 to 80=+3.1, anchor at 60
             20: -9.1,
@@ -1458,11 +1467,9 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
     #   IFerror: floor/ceiling, -4.7 to +2.9, near-linear
     #   IFarm:   floor/ceiling, -10.7 to +4.1, near-linear (baseline ARM=50)
     #
-    # KNOWN LIMITATION: 2B has ~17-45% saturation at extreme rating combos
-    # (additive sum overstates cross-position floor/ceiling). All-65 sim
-    # confirmed: predicted +9.8 sum, actual +5.4. See INTERACTION_HANDLERS
-    # comment in metrics_fielding.py. Linear-additive ranking is fine within
-    # position; absolute WAR for elite 2Bs may be ~0.4 high.
+    # Saturation: positive side ~40% (all-65 +9.3 → +5.4); negative side
+    # mild and only at extremes. Corrected at runtime via FIELDING_SATURATION
+    # ["2B"] (linear 0.589× on positive, tanh asymptote -73 on negative).
     "2B": {
         "IFrange": {  # gradual descent below 55, plateau ~+2 above
             20: -37.0,
@@ -1531,11 +1538,12 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
     #   IFerror: floor/ceiling, 20=-7.9, 80=+6.3, linear interp
     #   turnDP:  floor/ceiling, 20=-1.9, 80=+2.1, near-zero contribution
     #
-    # KNOWN LIMITATION: 3B has ~43-50% saturation at extreme rating combos
-    # (sum of individual contributions overstates cross-position floor/ceiling).
-    # See INTERACTION_HANDLERS comment in metrics_fielding.py — same pattern
-    # as 2B. Linear-additive ranking is fine within position; absolute WAR
-    # for elite 3Bs may be ~0.4 high. Revisit with saturation function later.
+    # Saturation: ~50% on positive side, asymmetric on negative. Corrected
+    # at runtime via FIELDING_SATURATION["3B"] (tanh both sides). Plus a
+    # one-cell RNG×ARM interaction correction at (55, 55) — the all-55 sim
+    # showed a 7-run residual after uniform saturation because RNG=55's
+    # 50→55 inflection (+17) only delivers when ARM ≥ 60.
+    # See FIELDING_INTERACTION_CORRECTION["3B"] for the cell.
     "3B": {
         "IFrange": {  # full sweep, plateau-smoothed at 60-75 (raw 21.8/17.6/18.5)
             20: -27.0,
@@ -1640,18 +1648,61 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
 
 
 # ===============================================
-# SS interaction correction (RNG x ARM substitution)
+# Infield saturation correction (2B / 3B / SS)
 # ===============================================
-# SS is the one position where additivity isn't enough — RNG and ARM substitute
-# for each other in a way our independent lookup tables can't capture (a great
-# arm partially makes up for limited range, and stacking both elite ratings
-# doesn't double the value). This 2D correction is added on top of the additive
-# SS_def sum at runtime; it's calibrated from the residuals of the LSQ-fit
-# additive tables vs. observed sim deltas. With this layer, SS MAE drops from
-# 6.4 to 0.3 runs/162 over the calibration set.
+# All three non-1B infield positions show saturation at extreme rating combos:
+# the additive sum of 1D table contributions overstates the true run impact
+# when multiple ratings move away from baseline together. Calibrated from
+# sim sweeps at all-20/40/55/65/80 plus a 3B RNG×ARM corner test.
+# See calibration/fit_saturation.py for the fit.
 #
-# Lookup is by (IFrange, IFarm) snapped to nearest 5; cells with no direct
-# sim observation use the nearest-Manhattan filled cell.
+# Saturation form, applied per-position to the post-additive sum:
+#   saturate(x) = +CEIL_POS * tanh(x / SCALE_POS)   if x >= 0
+#                 -CEIL_NEG * tanh(-x / SCALE_NEG)  if x < 0
+# Sides where the data is in the linear regime of the curve produce huge
+# CEIL/SCALE that degenerate to a slope ≈ CEIL/SCALE — see the inline notes.
+FIELDING_SATURATION = {
+    "2B": {
+        "ceil_pos":  200.000,  # +side LINEAR (slope ≈ 0.589)
+        "scale_pos": 339.844,
+        "ceil_neg":   73.164,  # -side TANH (asymptote -73)
+        "scale_neg":  63.671,
+    },
+    "3B": {
+        "ceil_pos":   45.748,  # +side TANH (asymptote +46)
+        "scale_pos":  83.072,
+        "ceil_neg":   37.730,  # -side TANH (asymptote -38)
+        "scale_neg":  26.177,
+    },
+    "SS": {
+        "ceil_pos":  200.000,  # +side LINEAR (slope ≈ 0.618)
+        "scale_pos": 323.449,
+        "ceil_neg":  200.000,  # -side LINEAR (slope ≈ 0.628)
+        "scale_neg": 318.516,
+    },
+}
+
+# 2D rating-pair corrections added to the additive sum BEFORE saturation.
+# Currently only 3B has a confirmed cell — the all-55 sim showed a 7-run
+# residual after saturation that uniform compression can't explain: at 3B,
+# RNG=55 is just above its 50→55 inflection (+17 jump) but only delivers
+# that benefit when ARM ≥ 60 (ARM's own inflection); with ARM=55, the RNG
+# benefit is partially negated. Lookup is exact (snap to nearest 5);
+# unlisted cells get correction 0.
+FIELDING_INTERACTION_CORRECTION = {
+    "3B": {
+        # (IFrange, IFarm) → runs added before saturation
+        (55, 55): -6.58,
+    },
+}
+
+
+# DEPRECATED: superseded by FIELDING_SATURATION above. The legacy SS grid
+# was calibrated against the previous LSQ-fit 1D tables and is now stale.
+# SS saturation is uniform (~0.6× compression both sides) and captured
+# cleanly by the FIELDING_SATURATION["SS"] linear scaling; no 2D grid
+# needed. Kept here for historical reference; metrics_fielding no longer
+# imports it.
 SS_INTERACTION_CORRECTION = {
     # Keys: (IFrange_rating, IFarm_rating); values: runs/162 correction
     # to add on top of the additive sum for this position.
