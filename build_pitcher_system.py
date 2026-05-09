@@ -37,7 +37,11 @@ Notes / limitations:
 """
 import json
 
-from build_system import LEVELS, MAX_AGE, age_lowest_level, service_lowest_level, _load_injured_names
+from build_system import (
+    LEVELS, MAX_AGE,
+    age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
+    _load_injured_names, _count_dsl_teams,
+)
 
 PITCHERS_JSON = 'outputs/pitchers.json'
 
@@ -61,32 +65,6 @@ PWOBA_MAX = {
 }
 
 
-def _count_dsl_teams(org):
-    """Count DSL teams (league_id=234) belonging to an org. Returns 1 if
-    teams.csv is missing or org not found — most orgs have 1 or 2 DSL
-    teams, so 1 is a safe default for missing data."""
-    if org is None:
-        from config import team_managed
-        org = team_managed
-    try:
-        import config as _config
-        import pandas as _pd
-        teams = _pd.read_csv(
-            _config.filepath / 'teams.csv',
-            usecols=['parent_team_id', 'league_id'],
-            low_memory=False,
-        )
-        from config import club_lookup
-        org_id = next((k for k, v in club_lookup.items() if v == org), None)
-        if org_id is None:
-            return 1
-        n = int(((teams['parent_team_id'] == org_id)
-                 & (teams['league_id'] == 234)).sum())
-        return max(1, n)
-    except Exception:
-        return 1
-
-
 def load_team_pitchers(org=None):
     """Load pitchers for a single org. Defaults to config.team_managed."""
     if org is None:
@@ -100,20 +78,19 @@ def load_laa_pitchers():
     return load_team_pitchers('LAA')
 
 
-def pitcher_priority(p):
-    """Cascade-ordering key for pitchers. Lower = better (matches the pwOBA
-    convention). Current pwOBA is the dominant signal at 90% weight;
-    projection contributes a small 10% tiebreak so a young ace-projection
-    arm still wins over an older same-pwOBA arm with no upside (e.g. Fana
-    .401 / .307 vs older .401 / .401), but a meaningful pwOBA gap
-    (anything > ~5 wOBA points) dominates the projection adjustment.
-    Without this, the previous age-tiered 30/70 → 50/50 → 70/30 → 90/10
-    blend let young projection-elite arms outrank materially-better-current
-    pitchers (e.g. Aracena .359 / .298 outranking Holman .350 / .351 at AAA
-    despite worse current stuff)."""
+def pitcher_priority(p, level=None):
+    """Cascade-ordering key for pitchers. Lower = better (matches the
+    pwOBA convention). Mirrors the hitter `priority` blend:
+      - MLB: pure current pwOBA. Projection upside doesn't help an active-
+        roster arm hold a slot — only current stuff matters.
+      - Every other level: 70/30 current/projected. A young arm with real
+        upside edges a same-pwOBA pitcher with no projection room, but the
+        weight is small enough that a meaningful pwOBA gap dominates."""
     pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
+    if level == 'MLB':
+        return pwoba
     pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
-    return 0.9 * pwoba + 0.1 * pwobap
+    return 0.7 * pwoba + 0.3 * pwobap
 
 
 def pwoba_top_level(p):
@@ -180,17 +157,203 @@ def _cascade(pool, slots_for):
     for p in pool:
         by_level[LEVELS[p['_top']]].append(p)
     for lvl in LEVELS:
-        by_level[lvl].sort(key=pitcher_priority)
+        by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
     for i, lvl in enumerate(LEVELS):
         while len(by_level[lvl]) > slots_for[lvl]:
             cascaded = by_level[lvl].pop()  # last = worst blend
             next_idx = i + 1
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                by_level[LEVELS[next_idx]].append(cascaded)
-                by_level[LEVELS[next_idx]].sort(key=pitcher_priority)
+                nxt = LEVELS[next_idx]
+                by_level[nxt].append(cascaded)
+                by_level[nxt].sort(key=lambda p: pitcher_priority(p, nxt))
             else:
                 leftovers.append(cascaded)
     return by_level, leftovers
+
+
+# Bullpen handedness balance — applied AFTER _pull_up to MLB / AAA / AA only.
+# Lower minors are skewed toward RHP and aren't worth distorting; the user's
+# real audience is the upper-minors / MLB pen. Hard 2–4 LHP, soft target 3.
+LHP_LEVELS = ('MLB', 'AAA', 'AA')
+LEFTY_MIN = 2
+LEFTY_TARGET = 3
+LEFTY_MAX = 4
+# Soft-target swap is rejected if the promoted LHP's pitcher_priority blend
+# is more than this much worse than the dropped RHP's. ~10 pwOBA points —
+# roughly the gap between a back-end MLB reliever and a top AAA reliever.
+LEFTY_TARGET_MAX_COST = 0.010
+
+
+def is_lhp(p):
+    """OOTP convention: throws == 2 → left, 1 → right. Returns False if the
+    field is missing (treated as right-handed by default)."""
+    return p.get('throws') == 2
+
+
+def _eligible_for_promotion(p, i, want_lhp, allow_stretch):
+    """Common eligibility filter for handedness-swap candidates. Returns
+    True if `p` is the right hand AND can legally be promoted to level i
+    (`_bot ≥ i`, `_top ≤ i` strict OR `_top == i+1` non-HP stretch)."""
+    if is_lhp(p) != want_lhp:
+        return False
+    if i > p['_bot']:
+        return False
+    if p['_top'] <= i:
+        return True
+    if allow_stretch and p['_top'] == i + 1 and not is_high_potential_pitcher(p):
+        return True
+    return False
+
+
+def _swap(by_level, lvl_top, drop_player, add_player, add_lvl):
+    """Swap drop_player (at lvl_top) with add_player (at add_lvl). Both
+    lists re-sorted by pitcher_priority at their respective level."""
+    by_level[lvl_top].remove(drop_player)
+    by_level[add_lvl].remove(add_player)
+    by_level[lvl_top].append(add_player)
+    by_level[add_lvl].append(drop_player)
+    by_level[lvl_top].sort(key=lambda p: pitcher_priority(p, lvl_top))
+    by_level[add_lvl].sort(key=lambda p: pitcher_priority(p, add_lvl))
+
+
+def _try_handedness_swap(by_level, overflow, lvl, i, drop_pool,
+                          want_lhp_promoted, allow_stretch_options=(False, True),
+                          max_cost=None):
+    """Try to make one handedness swap at level `lvl`. Searches BOTH lower
+    levels and overflow for the best promoted candidate, picks the
+    worst-priority drop candidate whose `_bot` allows them to land at the
+    swap destination. Promotion sources:
+      • from level j: classic 1-for-1 swap, drop goes to LEVELS[j].
+      • from overflow: candidate joins the level, drop goes to overflow
+        (no `_bot` check needed — overflow is "below all levels").
+    Tries strict eligibility first, then `+1` stretch by default."""
+    for allow_stretch in allow_stretch_options:
+        # Build candidate pool from lower levels + overflow.
+        by_level_cands = []
+        for j in range(i + 1, len(LEVELS)):
+            for p in by_level[LEVELS[j]]:
+                if _eligible_for_promotion(p, i, want_lhp_promoted, allow_stretch):
+                    by_level_cands.append((p, j))
+        overflow_cands = [p for p in overflow
+                          if _eligible_for_promotion(p, i, want_lhp_promoted, allow_stretch)]
+        if not by_level_cands and not overflow_cands:
+            continue
+
+        # Pick best across both sources by priority at the receiving level.
+        all_cands = [(p, ('lvl', j)) for p, j in by_level_cands] + \
+                    [(p, ('overflow', None)) for p in overflow_cands]
+        promoted, src = min(all_cands, key=lambda c: pitcher_priority(c[0], lvl))
+
+        # Eligible drops: from-level swap requires `_bot >= j`; from-overflow
+        # has no constraint (drop just goes to overflow).
+        if src[0] == 'lvl':
+            eligible = [p for p in drop_pool if p['_bot'] >= src[1]]
+        else:
+            eligible = list(drop_pool)
+        if not eligible:
+            continue
+
+        worst = max(eligible, key=lambda p: pitcher_priority(p, lvl))
+        if max_cost is not None:
+            cost = pitcher_priority(promoted, lvl) - pitcher_priority(worst, lvl)
+            if cost > max_cost:
+                continue
+
+        if src[0] == 'lvl':
+            _swap(by_level, lvl, worst, promoted, LEVELS[src[1]])
+        else:
+            # From overflow: candidate joins lvl, dropped goes to overflow.
+            by_level[lvl].remove(worst)
+            by_level[lvl].append(promoted)
+            by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+            overflow.remove(promoted)
+            overflow.append(worst)
+        return True
+    return False
+
+
+def _enforce_lhp_balance(by_level, overflow, slots_for):
+    """Adjust MLB/AAA/AA bullpens so 2 ≤ LHP ≤ 4, with a soft target of 3.
+    Iterates top-down so a demoted MLB RHP is visible to the AAA pass.
+    Under-filled bullpens are skipped — shape pressure already exists.
+
+    Returns `{level: lhp_shortfall}` — the number of bullpen slots left
+    open at each level because no strict-eligible LHP could be found.
+    Renderers use this to display "Sign LHP" placeholders for those slots
+    rather than generic "Sign FA"."""
+    shortfalls = {}
+    for lvl in LHP_LEVELS:
+        if lvl not in by_level:
+            continue
+        i = LEVELS.index(lvl)
+        if len(by_level[lvl]) < slots_for[lvl]:
+            continue
+
+        # Hard MAX: drop worst LHP, promote best eligible RHP from below.
+        # Stretch is fine here — we're trying to drop excess LHP, RHP
+        # quality at the level isn't the user's concern.
+        while True:
+            lefties = [p for p in by_level[lvl] if is_lhp(p)]
+            if len(lefties) <= LEFTY_MAX:
+                break
+            if not _try_handedness_swap(by_level, overflow, lvl, i, lefties, want_lhp_promoted=False):
+                break
+
+        # Hard MIN: drop worst RHP, promote best STRICT-eligible LHP from
+        # below or overflow. No +1 stretch — if there isn't a real LHP at
+        # this level's pwOBA threshold, leave the slot open (handled below).
+        while True:
+            lefties = [p for p in by_level[lvl] if is_lhp(p)]
+            if len(lefties) >= LEFTY_MIN:
+                break
+            righties = [p for p in by_level[lvl] if not is_lhp(p)]
+            if not righties:
+                break
+            if not _try_handedness_swap(
+                by_level, overflow, lvl, i, righties, want_lhp_promoted=True,
+                allow_stretch_options=(False,),
+            ):
+                break
+
+        # If MIN still unmet, drop the worst-priority RHP for each missing
+        # LHP slot — they cascade DOWN one level (or overflow if their
+        # `_bot` doesn't allow). The bullpen at this level runs short
+        # until the user signs a free-agent LHP.
+        n_lefties = sum(1 for p in by_level[lvl] if is_lhp(p))
+        short = max(0, LEFTY_MIN - n_lefties)
+        if short > 0:
+            righties_sorted = sorted(
+                [p for p in by_level[lvl] if not is_lhp(p)],
+                key=lambda p: pitcher_priority(p, lvl),
+            )
+            next_idx = i + 1
+            for _ in range(short):
+                if not righties_sorted:
+                    break
+                worst = righties_sorted.pop()  # last is worst-priority
+                by_level[lvl].remove(worst)
+                if next_idx < len(LEVELS) and next_idx <= worst['_bot']:
+                    by_level[LEVELS[next_idx]].append(worst)
+                else:
+                    overflow.append(worst)
+            shortfalls[lvl] = short
+
+        # Soft TARGET: chase a 3rd LHP only if the swap costs ≤ threshold,
+        # and only via strict eligibility (no +1 stretch — a "nice to have"
+        # 3rd lefty isn't worth promoting an unready arm).
+        while True:
+            lefties = [p for p in by_level[lvl] if is_lhp(p)]
+            if len(lefties) >= LEFTY_TARGET:
+                break
+            righties = [p for p in by_level[lvl] if not is_lhp(p)]
+            if not righties:
+                break
+            if not _try_handedness_swap(
+                by_level, overflow, lvl, i, righties, want_lhp_promoted=True,
+                allow_stretch_options=(False,), max_cost=LEFTY_TARGET_MAX_COST,
+            ):
+                break
+    return shortfalls
 
 
 def _pull_up(by_level, slots_for):
@@ -216,13 +379,13 @@ def _pull_up(by_level, slots_for):
                         continue
                     if p['_top'] > i:
                         continue
-                    if best is None or pitcher_priority(p) < pitcher_priority(best):
+                    if best is None or pitcher_priority(p, lvl) < pitcher_priority(best, lvl):
                         best, best_j = p, j
             if best is None:
                 break
             by_level[LEVELS[best_j]].remove(best)
             by_level[lvl].append(best)
-            by_level[lvl].sort(key=pitcher_priority)
+            by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
 
         # Pass 2: non-HP +1 stretch (_top == i + 1)
         while len(by_level[lvl]) < slots_for[lvl]:
@@ -236,13 +399,68 @@ def _pull_up(by_level, slots_for):
                         continue
                     if is_high_potential_pitcher(p):
                         continue
-                    if best is None or pitcher_priority(p) < pitcher_priority(best):
+                    if best is None or pitcher_priority(p, lvl) < pitcher_priority(best, lvl):
                         best, best_j = p, j
             if best is None:
                 break
             by_level[LEVELS[best_j]].remove(best)
             by_level[lvl].append(best)
-            by_level[lvl].sort(key=pitcher_priority)
+            by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+
+
+def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
+    """For HP pitchers in overflow, place them on a roster by displacing the
+    worst-priority non-HP at the HP's natural target level. Mirrors the
+    hitter Step 3 HP enforcement (`build_system.py:880+`).
+
+    The cascade alone can leave HPs in overflow when their level is full of
+    non-HPs whose current pwOBA is better — but the HP's projection is the
+    point of keeping them on the roster. Without enforcement, a young arm
+    like a 19yo HP with pwOBA .47 / pwOBAP .32 ends up cut despite being
+    a real future contributor.
+
+    Try levels from `_top` down to `_bot`. At each level, take the open slot
+    if any; otherwise displace the worst non-HP if the swap is worth it
+    (HP's projection gain >= non-HP's current loss, in pwOBA terms where
+    LOWER is better). If no level has a viable swap, the HP stays in
+    overflow but is tagged with `_force_start` for downstream display.
+
+    `pool_names` scopes the enforcement to one role (SP-pool or RP-pool).
+    Mutates `by_level` and `overflow` in place. Best HPs (lowest pwOBAP)
+    are processed first so they get first claim on swap targets."""
+    hps = sorted(
+        [p for p in list(overflow)
+         if p['name'] in pool_names and is_high_potential_pitcher(p)],
+        key=lambda p: (p.get('pwOBAP') or 1.0)
+    )
+    for hp in hps:
+        for idx in range(hp['_top'], hp['_bot'] + 1):
+            lvl = LEVELS[idx]
+            if lvl not in by_level:
+                continue
+            cap = slots_for.get(lvl, 0)
+            if len(by_level[lvl]) < cap:
+                # Open slot — just place the HP, no displacement needed.
+                by_level[lvl].append(hp)
+                overflow.remove(hp)
+                by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+                hp['_force_start'] = lvl
+                break
+            # Level is full — try to swap with worst non-HP at this level.
+            non_hps = [p for p in by_level[lvl] if not is_high_potential_pitcher(p)]
+            if not non_hps:
+                continue
+            worst = max(non_hps, key=lambda p: pitcher_priority(p, lvl))
+            current_loss = (hp.get('pwOBA') or 1.0) - (worst.get('pwOBA') or 1.0)
+            potential_gain = (worst.get('pwOBAP') or 1.0) - (hp.get('pwOBAP') or 1.0)
+            if potential_gain >= current_loss:
+                by_level[lvl].remove(worst)
+                by_level[lvl].append(hp)
+                overflow.remove(hp)
+                overflow.append(worst)
+                by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+                hp['_force_start'] = lvl
+                break
 
 
 def main(org=None):
@@ -265,7 +483,8 @@ def main(org=None):
     valid = []
     for p in laa:
         p['_top'] = pwoba_top_level(p)
-        p['_bot'] = min(age_lowest_level(p), service_lowest_level(p))
+        p['_bot'] = min(age_lowest_level(p), service_lowest_level(p),
+                        dsl_eligible_lowest_level(p))
         if p['_top'] > p['_bot']:
             overflow.append(p)
         else:
@@ -289,9 +508,33 @@ def main(org=None):
     rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
     rp_by, rp_leftover = _cascade(rp_pool, rp_slots)
     _pull_up(rp_by, rp_slots)
+
+    # Step 4b: bullpen handedness balance — MLB / AAA / AA only.
+    # Hard MIN uses strict eligibility only; if no qualified LHP exists,
+    # the slot is left open and tagged in `lhp_shortfalls` so the renderer
+    # can show "Sign LHP" instead of generic "Sign FA".
+    lhp_shortfalls = _enforce_lhp_balance(rp_by, overflow, rp_slots)
+
+    # Step 4c: rebalance any level the LHP shortfall pushed over capacity.
+    # When MLB or AAA drops a RHP to make room for "Sign LHP" placeholders,
+    # the demoted RHP cascades to the next level — which can then run over
+    # its rp_target. Trim from the top down by popping the worst-priority
+    # RP to the next level (or overflow if their _bot doesn't allow).
+    for i, lvl in enumerate(LEVELS):
+        if lvl not in rp_by:
+            continue
+        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL):
+            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
+            rp_by[lvl].remove(worst)
+            next_idx = i + 1
+            if next_idx < len(LEVELS) and next_idx <= worst['_bot']:
+                rp_by[LEVELS[next_idx]].append(worst)
+            else:
+                overflow.append(worst)
+
     rp_assigned = {p['name'] for lvl in LEVELS for p in rp_by[lvl]}
 
-    # Step 5: overflow
+    # Step 5: overflow — collect anyone not placed by SP or RP cascade.
     overflow.extend(rp_leftover)
     overflow_names = {p['name'] for p in overflow}
     for p in valid:
@@ -301,21 +544,61 @@ def main(org=None):
             overflow.append(p)
             overflow_names.add(p['name'])
 
-    # Tag roles + present each level's lists in blend order (best first)
+    # Step 5a: HP enforcement. Mirrors the hitter Step 3. The cascade alone
+    # can drop a high-potential prospect into overflow when their _bot level
+    # is full of non-HPs with better current pwOBA — but the HP's projection
+    # is the reason to keep them around. Run AFTER Step 5 so it can see
+    # everyone who didn't make a roster, including SP cascade leftovers.
+    # Per-role (SP separately from RP) so an HP SP doesn't get matched
+    # against an RP slot.
+    sp_pool_names = {p['name'] for p in sp_pool}
+    rp_pool_names = {p['name'] for p in rp_pool}
+    _enforce_hp_pitchers(sp_by, sp_slots, sp_pool_names, overflow)
+    _enforce_hp_pitchers(rp_by, rp_slots, rp_pool_names, overflow)
+
+    # Step 5b: split R(DLR) into n_dsl sub-teams (best, …, rest) by
+    # pitcher_priority blend. Each DSL affiliate gets its own staff:
+    # SP_PER_LEVEL rotation + RP_PER_LEVEL bullpen. For n_dsl == 1 this
+    # is a no-op and the single 'R(DLR)' key is preserved.
+    if n_dsl >= 2 and 'R(DLR)' in sp_by:
+        sp_full = sorted(sp_by.pop('R(DLR)'), key=lambda p: pitcher_priority(p, 'R(DLR)'))
+        rp_full = sorted(rp_by.pop('R(DLR)'), key=lambda p: pitcher_priority(p, 'R(DLR)'))
+        for k in range(n_dsl):
+            sp_by[f'R(DLR){k+1}'] = sp_full[k*SP_PER_LEVEL:(k+1)*SP_PER_LEVEL]
+            rp_by[f'R(DLR){k+1}'] = rp_full[k*RP_PER_LEVEL:(k+1)*RP_PER_LEVEL]
+
+    # Tag roles + present each level's lists in blend order (best first).
+    # Iterate the actual keys (not LEVELS) so the R(DLR) split is preserved.
     rosters = {}
-    for lvl in LEVELS:
-        sp_by[lvl].sort(key=pitcher_priority)
-        rp_by[lvl].sort(key=pitcher_priority)
+    for lvl in sp_by.keys():
+        # R(DLR) sub-team keys (R(DLR)1 etc.) get the same priority blend
+        # as the base R(DLR) level — collapse the suffix for the blend lookup.
+        sort_lvl = 'R(DLR)' if lvl.startswith('R(DLR)') else lvl
+        sp_by[lvl].sort(key=lambda p: pitcher_priority(p, sort_lvl))
+        rp_by[lvl].sort(key=lambda p: pitcher_priority(p, sort_lvl))
         for p in sp_by[lvl]:
             p['_role'] = 'SP'
         for p in rp_by[lvl]:
             p['_role'] = 'RP'
+        # For R(DLR) sub-teams the per-team capacity is the standard
+        # SP_PER_LEVEL / RP_PER_LEVEL; for un-split levels we use the
+        # slots_for value (which already accounts for any scaling).
+        if lvl.startswith('R(DLR)') and lvl != 'R(DLR)':
+            sp_target = SP_PER_LEVEL
+            rp_target = RP_PER_LEVEL
+        else:
+            sp_target = sp_slots[lvl]
+            rp_target = rp_slots[lvl]
         rosters[lvl] = {
             'starters': sp_by[lvl],
             'bullpen': rp_by[lvl],
             'all': sp_by[lvl] + rp_by[lvl],
-            'sp_target': sp_slots[lvl],
-            'rp_target': rp_slots[lvl],
+            'sp_target': sp_target,
+            'rp_target': rp_target,
+            # Number of bullpen slots intentionally left open because no
+            # strict-eligible LHP could fill them. Renderers show these as
+            # "Sign LHP" (vs generic "Sign FA"). Always 0 for non-MLB/AAA/AA.
+            'sign_lhp': lhp_shortfalls.get(lvl, 0),
         }
 
     return rosters, overflow, flagged_players
@@ -323,7 +606,7 @@ def main(org=None):
 
 if __name__ == '__main__':
     rosters, overflow, flagged = main()
-    for lvl in LEVELS:
+    for lvl in rosters.keys():
         r = rosters[lvl]
         print(f"\n=== {lvl} ({len(r['all'])}) ===")
         print('  STARTING ROTATION:')

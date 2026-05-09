@@ -97,29 +97,30 @@ POSITION_VIABILITY_GAP = 1.5
 
 
 # ============================
-# Empirical positional adjustment
+# Positional adjustments (cross-position calibration)
 # ============================
-# Reference position for the scarcity-adjusted WAR computation. For each
-# position, calc_war derives an adjustment = mean(<ref>_def) - mean(<pos>_def)
-# over the all-hitters pool, then adds it to the player's raw position WAR
-# to produce <pos>_adj. Mirrors FanGraphs' positional adjustment but sourced
-# entirely from your OOTP export instead of MLB historical data.
+# Fixed per-position run adjustments derived from OOTP team-of-clones
+# calibration (floor/ceiling sims at all 8 fielding positions, scaled to
+# FanGraphs-standard ±12.5 range, sums to zero across the 8 positions).
+# Replaces the prior skill-aware scarcity bonus which back-fit a per-player
+# premium against the in-sample fielding distribution. The fixed approach
+# matches MLB analytics convention and was empirically validated against
+# player-level expectations in calibration/test_fixed_pos_adj.py.
 #
-# 1B is the natural anchor: every player can fall back to it, and the
-# adjustment for 1B itself is 0 by construction.
-POSITION_ADJ_REFERENCE = "1B"
-
-# Skill-aware spread of the scarcity bonus. The flat mean-shift adjustment
-# `scarcity_constant = mean(<ref>_def) - mean(<pos>_def)` is replaced by a
-# per-player bonus
-#     bonus = scarcity_constant * (1 + gamma * (pct/50 - 1))
-# where pct is the player's percentile rank within the eligible hitter pool's
-# <pos>_def. Mean-preserving by construction (mean(bonus | eligible hitter) ==
-# scarcity_constant) so cross-position calibration anchored on
-# POSITION_ADJ_REFERENCE is preserved. gamma=0 recovers the flat scheme;
-# gamma=0.5 means the 100th-percentile eligible player gets 1.5x and the 0th
-# gets 0.5x. Derivation in calibration/skill_aware_adj.py.
-SCARCITY_SKILL_GAMMA = 0.5
+# Values in runs/162. DH = -17.5 from FanGraphs convention (not in the
+# original 8-position calibration). Apply per player as a flat add to their
+# (bat + fld) at that position, divided by RUNS_PER_WIN to convert to WAR.
+POSITIONAL_ADJUSTMENT_RUNS = {
+    "SS": 6.5,
+    "2B": 4.8,
+    "C":  3.4,
+    "3B": 2.9,
+    "CF": 2.4,
+    "RF": -2.0,
+    "LF": -5.4,
+    "1B": -12.5,
+    "DH": -17.5,
+}
 
 # ============================
 # Pitcher rating thresholds used to determine if a pitcher is a starter or reliever
@@ -163,20 +164,66 @@ SP_WAR_MIN_STAMINA = 36
 # Metric Constants
 # =================
 
-RUNS_PER_WIN = 10
-REPLACEMENT_LEVEL_WOBA = 0.3  # no positional adjustment
+RUNS_PER_WIN = 10  # generic / legacy default
+# Component-specific runs-per-win values, empirically derived from the
+# calibration sim environments. Each value is the slope of the
+# (runs/162 → wins/162) regression in that component's sim env. R² > 0.97
+# in all three. Used so each component's WAR reflects the actual win
+# value of runs in the environment it was measured against, rather than a
+# one-size-fits-all conversion.
+RUNS_PER_WIN_HITTING = 10.28   # hitting sim baseline RS/G = 4.38
+RUNS_PER_WIN_PITCHING = 10.76  # pitching sim baseline RS/G = 4.40 (origin-forced fit)
+RUNS_PER_WIN_FIELDING = 9.53   # fielding sim baseline RS/G = 4.16
+
+REPLACEMENT_LEVEL_WOBA = 0.290  # FanGraphs convention; sets hitting WAR zero point
 REPLACEMENT_LEVEL_PITCHER_WOBA = 0.36
 
-# Regression of wOBA vs runs/162 games for pitchers; this is the slope and intercept of the regression line
-RUNS_PER_GAME_PITCHING_COEFF = 646.6961042
-RUNS_PER_GAME_PITCHING_CONST = 206.0579547
+# Component-aware WAR coefficients for pitchers. Refitted from OOTP team-of-
+# clones sims (CTRL + HRA sweeps, 23 points, RMSE 0.15 WAR). Inputs are
+# component rates as PERCENTAGES (multiply decimal rate by 100). Output is
+# WAR at "good starter" SP usage (~200 IP — top-of-rotation workload, real
+# MLB qualifying starters throw 180-220 with 200 a typical solid season).
+#
+# Two scaling layers applied to the raw fit:
+#   1. IP scaling 200/224 = 0.8929 — raw fit was against OOTP Editor WAR
+#      which assumes 224 IP/season (32 GS × 7 IP); we scale to a realistic
+#      200 IP target. Matches modern MLB top-tier SP usage and gives
+#      Skubal-tier aces ~5.5-6.0 WAR (consistent with FG benchmarks).
+#   2. Runs-per-win scaling 10/10.76 = 0.9294 — OOTP Editor's WAR uses an
+#      implicit ~10 runs/win conversion, but the pitcher sim env has an
+#      empirical 10.76 runs/win (R²=0.98). Applying this brings pitcher
+#      WAR onto the same sim-empirical basis as hitting (10.28) and
+#      fielding (9.53).
+# Combined scale factor: 0.8929 × 0.9294 = 0.8299 vs raw OOTP Editor fit.
+# All-50 SP lands at ~2.6 WAR (matches "average MLB SP"); aces ~5.5-6.0.
+# RP WAR derived as sp_war × RELIEVER_VS_STARTER_AVERAGE_IP (= 0.333),
+# implying ~67 IP for an RP — elite-closer/setup-man workload territory.
+PITCHING_WAR_COEFFS = {
+    "intercept": 9.41,        # raw 11.34 × 0.8299
+    "hr_pct_coef": -1.01,     # raw -1.22 × 0.8299
+    "bb_pct_coef": -0.38,     # raw -0.46 × 0.8299
+    "k_pct_coef": 0.13,       # raw 0.16 × 0.8299
+    "h_nothr_pct_coef": -0.19,  # raw -0.23 × 0.8299
+}
 
-# same regression for hitters
-RUNS_PER_GAME_HITTING_COEFF = 554.7865342
-RUNS_PER_GAME_HITTING_CONST = 178.9071431
+# Regression of wOBA vs runs/162 games for hitters. Refitted from
+# calibration/sim_data.csv (OOTP team-of-clones, 100k G per scenario,
+# R²=0.99). Old hand-tuned values: COEFF=554.79, CONST=178.91 (which
+# implied replacement wOBA ≈ 0.322 — above league average; clearly miscalibrated).
+# New values: empirical slope, with CONST set to put replacement at
+# wOBA=0.290 (REPLACEMENT_LEVEL_WOBA, FanGraphs convention). Result:
+# league-average MLB hitter (wOBA ≈ 0.310) lands at ~+1.0 WAR; OOTP
+# calibrated league-average (wOBA ≈ 0.318) at ~+1.4 WAR; star (wOBA 0.400)
+# at ~+5 WAR; elite (wOBA 0.450) at ~+7.4 WAR.
+RUNS_PER_GAME_HITTING_COEFF = 496.84
+RUNS_PER_GAME_HITTING_CONST = 144.08  # = COEFF × REPLACEMENT_LEVEL_WOBA
 
 RELIEVER_VS_STARTER_AVERAGE_IP = 0.3333333  # relievers assumed to pitch one-third of the innings of a starter, on average
-DH_PENALTY = 0.023  # penalty to expected wOBA for being a DH (i.e. not playing defense)
+DH_PENALTY = 0.030  # multiplicative wOBA penalty for being a DH (not playing defense).
+# Empirically derived from team-of-clones sim: same hitter at each position
+# produced wOBA 0.3116 (non-DH avg, range 0.309-0.313) vs 0.3024 (DH).
+# Ratio: 1 - (0.3024 / 0.3116) = 0.0295. The penalty is stable across multiple
+# sim runs (DH OPS consistently 0.686-0.689). Old hand-tuned value was 0.023.
 HANDEDNESS_WEIGHTS = {"R": 0.7, "L": 0.3}
 
 # ============================
@@ -197,6 +244,13 @@ PLAYERS_COLUMNS = [
     # — replaces the old pitch-count rating thresholds which over-filtered
     # 1-pitch specialists.
     "position",
+    # OOTP handedness code (1 = R, 2 = L). Surfaced for the bullpen LHP
+    # balance pass in build_pitcher_system._enforce_lhp_balance.
+    "throws",
+    # Nationality. Used by build_system.dsl_eligible_lowest_level to block
+    # US (206) and Canadian (36) players from R(DLR) — OOTP's DSL is
+    # international-eligible only.
+    "nation_id",
 ]
 
 # —— players_career_pitching_stats.csv ——
@@ -370,12 +424,14 @@ COLUMNS_TO_BLANK_BEFORE_EXPORT = [
 # wOBA and wRC+ weights
 # ============================
 
-# Base rates for a pitcher with all 50 ratings
+# Base rates for a pitcher with all 50 ratings.
+# Refitted from OOTP team-of-clones sims (3 baseline reps, 100k G each, 54% GB).
+# Old hand-tuned values: HR=0.0326, BB=0.0714, K=0.2078, contact=0.2050.
 BASE_PITCHING_RATES = {
-    "hr_vs_baserate": 0.0326,
-    "bb_vs_baserate": 0.0714,
-    "k_vs_baserate": 0.2078,
-    "h_nothr_vs_baserate": 0.2050,
+    "hr_vs_baserate": 0.0270,
+    "bb_vs_baserate": 0.0750,
+    "k_vs_baserate": 0.2140,
+    "h_nothr_vs_baserate": 0.2137,
 }
 
 # Run-Value Weights for Pitching wOBA (pwOBA) calculation
@@ -413,275 +469,83 @@ LEAGUE_RUNS_PER_PA = 0.120
 # ===============================================
 # Pitching wOBA component adjustments by rating
 # ===============================================
+#
+# Multiplicative ratios applied to BASE_PITCHING_RATES. For each rating
+# category, look up the player's rating, multiply each component by the
+# corresponding *_vs_mult factor. All five categories combine multiplicatively.
+#
+# Schema (post-refit): keys are *_vs_mult (was *_vs_adj in the old additive
+# table). Old additive form deprecated 2026-05; multiplicative confirmed by
+# HRA × CTRL = 20/20 interaction sim (predicted 0.472 pwOBA, actual 0.468).
+#
+# Tables refit from OOTP team-of-clones sims:
+#   - Control / HRA: full sweeps (11 points each, 20-80), monotonic.
+#   - PBABIP: zeroed (effect too weak to refit reliably; single PBABIP=20 sim
+#     showed only 1.4pp contact rate change).
+#   - Stamina: zeroed (sweep across 40-80 confirmed zero effect on rate stats;
+#     stamina drives IP per appearance, not quality per IP).
+#   - Stuff: mechanically converted from old additive table using OLD base
+#     rates as denominator. Preserves the original K-driver behavior.
 
 PITCHING_COMPONENTS_ADJUST_MAP = {
     "Control": {
-        "35": {
-            "hr_vs_adj": -0.0022,
-            "bb_vs_adj": 0.0486,
-            "k_vs_adj": -0.0122,
-            "h_nothr_vs_adj": -0.0132,
-        },
-        "40": {
-            "hr_vs_adj": -0.0016,
-            "bb_vs_adj": 0.0349,
-            "k_vs_adj": -0.0081,
-            "h_nothr_vs_adj": -0.0092,
-        },
-        "45": {
-            "hr_vs_adj": -0.0012,
-            "bb_vs_adj": 0.0176,
-            "k_vs_adj": -0.0038,
-            "h_nothr_vs_adj": -0.0047,
-        },
-        "50": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": 0.0000,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0000,
-        },
-        "55": {
-            "hr_vs_adj": 0.0006,
-            "bb_vs_adj": -0.0083,
-            "k_vs_adj": 0.0016,
-            "h_nothr_vs_adj": 0.0019,
-        },
-        "60": {
-            "hr_vs_adj": 0.0004,
-            "bb_vs_adj": -0.0135,
-            "k_vs_adj": 0.0039,
-            "h_nothr_vs_adj": 0.0034,
-        },
-        "65": {
-            "hr_vs_adj": 0.0005,
-            "bb_vs_adj": -0.0173,
-            "k_vs_adj": 0.0052,
-            "h_nothr_vs_adj": 0.0043,
-        },
-        "70": {
-            "hr_vs_adj": 0.0005,
-            "bb_vs_adj": -0.0222,
-            "k_vs_adj": 0.0058,
-            "h_nothr_vs_adj": 0.0058,
-        },
-        "75": {
-            "hr_vs_adj": 0.0010,
-            "bb_vs_adj": -0.0264,
-            "k_vs_adj": 0.0069,
-            "h_nothr_vs_adj": 0.0069,
-        },
-        "80": {
-            "hr_vs_adj": 0.0018,
-            "bb_vs_adj": -0.0315,
-            "k_vs_adj": 0.0088,
-            "h_nothr_vs_adj": 0.0063,
-        },
+        "20": {"hr_vs_mult": 0.8519, "bb_vs_mult": 2.8933, "k_vs_mult": 0.8318, "h_nothr_vs_mult": 0.8284},
+        "25": {"hr_vs_mult": 0.8889, "bb_vs_mult": 2.2133, "k_vs_mult": 0.8879, "h_nothr_vs_mult": 0.8892},
+        "30": {"hr_vs_mult": 0.9259, "bb_vs_mult": 1.9333, "k_vs_mult": 0.9159, "h_nothr_vs_mult": 0.9126},
+        "35": {"hr_vs_mult": 0.9630, "bb_vs_mult": 1.6400, "k_vs_mult": 0.9393, "h_nothr_vs_mult": 0.9454},
+        "40": {"hr_vs_mult": 0.9630, "bb_vs_mult": 1.3600, "k_vs_mult": 0.9673, "h_nothr_vs_mult": 0.9735},
+        "45": {"hr_vs_mult": 1.0000, "bb_vs_mult": 1.1600, "k_vs_mult": 0.9860, "h_nothr_vs_mult": 0.9828},
+        "50": {"hr_vs_mult": 1.0000, "bb_vs_mult": 1.0000, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 1.0000},
+        "55": {"hr_vs_mult": 1.0000, "bb_vs_mult": 0.9333, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 1.0062},
+        "60": {"hr_vs_mult": 1.0370, "bb_vs_mult": 0.8533, "k_vs_mult": 1.0093, "h_nothr_vs_mult": 1.0062},
+        "65": {"hr_vs_mult": 1.0370, "bb_vs_mult": 0.7800, "k_vs_mult": 1.0210, "h_nothr_vs_mult": 1.0109},  # interp 60/70
+        "70": {"hr_vs_mult": 1.0370, "bb_vs_mult": 0.7067, "k_vs_mult": 1.0327, "h_nothr_vs_mult": 1.0156},
+        "75": {"hr_vs_mult": 1.0556, "bb_vs_mult": 0.6267, "k_vs_mult": 1.0374, "h_nothr_vs_mult": 1.0250},  # interp 70/80
+        "80": {"hr_vs_mult": 1.0741, "bb_vs_mult": 0.5467, "k_vs_mult": 1.0421, "h_nothr_vs_mult": 1.0343},
     },
     "pBABIP": {
-        "35": {
-            "hr_vs_adj": 0.0003,
-            "bb_vs_adj": -0.0003,
-            "k_vs_adj": -0.0009,
-            "h_nothr_vs_adj": 0.0067,
-        },
-        "40": {
-            "hr_vs_adj": -0.0005,
-            "bb_vs_adj": -0.0012,
-            "k_vs_adj": 0.0012,
-            "h_nothr_vs_adj": -0.0001,
-        },
-        "45": {
-            "hr_vs_adj": -0.0003,
-            "bb_vs_adj": -0.0010,
-            "k_vs_adj": 0.0002,
-            "h_nothr_vs_adj": 0.0026,
-        },
-        "50": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": 0.0000,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0000,
-        },
-        "55": {
-            "hr_vs_adj": 0.0002,
-            "bb_vs_adj": -0.0005,
-            "k_vs_adj": 0.0008,
-            "h_nothr_vs_adj": -0.0021,
-        },
-        "60": {
-            "hr_vs_adj": 0.0001,
-            "bb_vs_adj": -0.0006,
-            "k_vs_adj": -0.0003,
-            "h_nothr_vs_adj": -0.0032,
-        },
-        "65": {
-            "hr_vs_adj": 0.0001,
-            "bb_vs_adj": -0.0008,
-            "k_vs_adj": 0.0008,
-            "h_nothr_vs_adj": -0.0048,
-        },
-        "70": {
-            "hr_vs_adj": -0.0001,
-            "bb_vs_adj": 0.0002,
-            "k_vs_adj": 0.0005,
-            "h_nothr_vs_adj": -0.0083,
-        },
+        "35": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "40": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "45": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "50": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "55": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "60": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "65": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "70": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
     },
     "HRA": {
-        "35": {
-            "hr_vs_adj": 0.0286,
-            "bb_vs_adj": -0.0013,
-            "k_vs_adj": 0.0012,
-            "h_nothr_vs_adj": -0.0094,
-        },
-        "40": {
-            "hr_vs_adj": 0.0217,
-            "bb_vs_adj": -0.0004,
-            "k_vs_adj": 0.0003,
-            "h_nothr_vs_adj": -0.0073,
-        },
-        "45": {
-            "hr_vs_adj": 0.0110,
-            "bb_vs_adj": -0.0008,
-            "k_vs_adj": 0.0012,
-            "h_nothr_vs_adj": -0.0030,
-        },
-        "50": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": 0.0000,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0000,
-        },
-        "55": {
-            "hr_vs_adj": -0.0040,
-            "bb_vs_adj": -0.0007,
-            "k_vs_adj": 0.0010,
-            "h_nothr_vs_adj": 0.0014,
-        },
-        "60": {
-            "hr_vs_adj": -0.0071,
-            "bb_vs_adj": -0.0004,
-            "k_vs_adj": 0.0003,
-            "h_nothr_vs_adj": 0.0023,
-        },
-        "65": {
-            "hr_vs_adj": -0.0096,
-            "bb_vs_adj": -0.0006,
-            "k_vs_adj": 0.0008,
-            "h_nothr_vs_adj": 0.0026,
-        },
-        "70": {
-            "hr_vs_adj": -0.0112,
-            "bb_vs_adj": -0.0005,
-            "k_vs_adj": -0.0006,
-            "h_nothr_vs_adj": 0.0030,
-        },
-        "75": {
-            "hr_vs_adj": -0.0141,
-            "bb_vs_adj": -0.0002,
-            "k_vs_adj": -0.0001,
-            "h_nothr_vs_adj": 0.0043,
-        },
-        "80": {
-            "hr_vs_adj": -0.0170,
-            "bb_vs_adj": -0.0006,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0060,
-        },
+        "20": {"hr_vs_mult": 3.5926, "bb_vs_mult": 0.9867, "k_vs_mult": 1.0140, "h_nothr_vs_mult": 0.8892},
+        "25": {"hr_vs_mult": 2.6296, "bb_vs_mult": 1.0000, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 0.9314},
+        "30": {"hr_vs_mult": 2.2222, "bb_vs_mult": 1.0133, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 0.9454},
+        "35": {"hr_vs_mult": 1.8148, "bb_vs_mult": 1.0133, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 0.9594},
+        "40": {"hr_vs_mult": 1.4444, "bb_vs_mult": 1.0133, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 0.9735},
+        "45": {"hr_vs_mult": 1.1852, "bb_vs_mult": 1.0000, "k_vs_mult": 0.9953, "h_nothr_vs_mult": 0.9875},
+        "50": {"hr_vs_mult": 1.0000, "bb_vs_mult": 1.0000, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 1.0000},
+        "55": {"hr_vs_mult": 0.9259, "bb_vs_mult": 1.0133, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 1.0016},
+        "60": {"hr_vs_mult": 0.8148, "bb_vs_mult": 1.0133, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 1.0016},
+        "65": {"hr_vs_mult": 0.7222, "bb_vs_mult": 1.0067, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 1.0039},  # interp 60/70
+        "70": {"hr_vs_mult": 0.6296, "bb_vs_mult": 1.0000, "k_vs_mult": 1.0047, "h_nothr_vs_mult": 1.0062},
+        "75": {"hr_vs_mult": 0.5556, "bb_vs_mult": 1.0067, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 1.0109},  # interp 70/80
+        "80": {"hr_vs_mult": 0.4815, "bb_vs_mult": 1.0133, "k_vs_mult": 0.9953, "h_nothr_vs_mult": 1.0156},
     },
     "Stuff": {
-        "35": {
-            "hr_vs_adj": -0.0001,
-            "bb_vs_adj": -0.0015,
-            "k_vs_adj": -0.0726,
-            "h_nothr_vs_adj": 0.0224,
-        },
-        "40": {
-            "hr_vs_adj": -0.0003,
-            "bb_vs_adj": -0.0014,
-            "k_vs_adj": -0.0395,
-            "h_nothr_vs_adj": 0.0157,
-        },
-        "45": {
-            "hr_vs_adj": 0.0003,
-            "bb_vs_adj": 0.0001,
-            "k_vs_adj": -0.0154,
-            "h_nothr_vs_adj": 0.0048,
-        },
-        "50": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": 0.0000,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0000,
-        },
-        "55": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": -0.0005,
-            "k_vs_adj": 0.0310,
-            "h_nothr_vs_adj": -0.0096,
-        },
-        "60": {
-            "hr_vs_adj": -0.0001,
-            "bb_vs_adj": -0.0002,
-            "k_vs_adj": 0.0478,
-            "h_nothr_vs_adj": -0.0120,
-        },
-        "65": {
-            "hr_vs_adj": -0.0006,
-            "bb_vs_adj": -0.0006,
-            "k_vs_adj": 0.0565,
-            "h_nothr_vs_adj": -0.0220,
-        },
-        "70": {
-            "hr_vs_adj": -0.0002,
-            "bb_vs_adj": -0.0004,
-            "k_vs_adj": 0.0752,
-            "h_nothr_vs_adj": -0.0217,
-        },
-        "75": {
-            "hr_vs_adj": -0.0004,
-            "bb_vs_adj": -0.0001,
-            "k_vs_adj": 0.0881,
-            "h_nothr_vs_adj": -0.0261,
-        },
-        "80": {
-            "hr_vs_adj": -0.0001,
-            "bb_vs_adj": -0.0001,
-            "k_vs_adj": 0.1081,
-            "h_nothr_vs_adj": -0.0316,
-        },
+        "35": {"hr_vs_mult": 0.9969, "bb_vs_mult": 0.9790, "k_vs_mult": 0.6506, "h_nothr_vs_mult": 1.1093},
+        "40": {"hr_vs_mult": 0.9908, "bb_vs_mult": 0.9804, "k_vs_mult": 0.8099, "h_nothr_vs_mult": 1.0766},
+        "45": {"hr_vs_mult": 1.0092, "bb_vs_mult": 1.0014, "k_vs_mult": 0.9259, "h_nothr_vs_mult": 1.0234},
+        "50": {"hr_vs_mult": 1.0000, "bb_vs_mult": 1.0000, "k_vs_mult": 1.0000, "h_nothr_vs_mult": 1.0000},
+        "55": {"hr_vs_mult": 1.0000, "bb_vs_mult": 0.9930, "k_vs_mult": 1.1492, "h_nothr_vs_mult": 0.9532},
+        "60": {"hr_vs_mult": 0.9969, "bb_vs_mult": 0.9972, "k_vs_mult": 1.2300, "h_nothr_vs_mult": 0.9415},
+        "65": {"hr_vs_mult": 0.9816, "bb_vs_mult": 0.9916, "k_vs_mult": 1.2719, "h_nothr_vs_mult": 0.8927},
+        "70": {"hr_vs_mult": 0.9939, "bb_vs_mult": 0.9944, "k_vs_mult": 1.3619, "h_nothr_vs_mult": 0.8941},
+        "75": {"hr_vs_mult": 0.9877, "bb_vs_mult": 0.9986, "k_vs_mult": 1.4240, "h_nothr_vs_mult": 0.8727},
+        "80": {"hr_vs_mult": 0.9969, "bb_vs_mult": 0.9986, "k_vs_mult": 1.5202, "h_nothr_vs_mult": 0.8459},
     },
     "Stamina": {
-        "40": {
-            "hr_vs_adj": -0.0008,
-            "bb_vs_adj": -0.0009,
-            "k_vs_adj": 0.0007,
-            "h_nothr_vs_adj": 0.0004,
-        },
-        "45": {
-            "hr_vs_adj": -0.0003,
-            "bb_vs_adj": -0.0003,
-            "k_vs_adj": -0.0001,
-            "h_nothr_vs_adj": 0.0003,
-        },
-        "50": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": 0.0000,
-            "k_vs_adj": 0.0000,
-            "h_nothr_vs_adj": 0.0000,
-        },
-        "55": {
-            "hr_vs_adj": 0.0000,
-            "bb_vs_adj": -0.0003,
-            "k_vs_adj": 0.0009,
-            "h_nothr_vs_adj": -0.0011,
-        },
-        "60": {
-            "hr_vs_adj": 0.0001,
-            "bb_vs_adj": -0.0006,
-            "k_vs_adj": -0.0003,
-            "h_nothr_vs_adj": 0.0003,
-        },
+        "40": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "45": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "50": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "55": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
+        "60": {"hr_vs_mult": 1.0, "bb_vs_mult": 1.0, "k_vs_mult": 1.0, "h_nothr_vs_mult": 1.0},
     },
 }
 
@@ -1294,412 +1158,482 @@ BATTING_COMPONENTS_ADJUST_MAP = {
 # ===============================================
 
 FIELDING_RUN_VALUES_VS_REPLACEMENT = {
-    # C refitted from calibration/fielding_sim.csv (LSQ over 30 OOTP scenarios).
-    # MAE = 0.7 runs/162 vs 4.4 for previous table. Cfram is dominant (~30 run swing
-    # 40→70); Cabil is a small +/- 3-run effect; Carm is nearly inert (~3 run swing).
+    # C refitted from calibrated team-of-clones sims (10-pt FRM sweep + BLK/ARM
+    # floor-ceiling pairs, all anchored at baseline 55/55/55 in the league-avg
+    # run env, RS/G=4.16). Additivity verified: FRM(45.6) + BLK(6.6) + ARM(8.9)
+    # = 61.1 vs cross-position floor/ceiling 62.4 (98% match). FRM is dominant
+    # (73% of variance, asymmetric — 5x penalty vs ceiling); BLK and ARM
+    # contribute small magnitudes interpolated linearly between sim points.
     "C": {
-        "Cabil": {
-            20: -13.7,
-            25: -10.7,
-            30: -7.7,
-            35: -4.7,
-            40: -1.7,
-            45: -1.2,
-            50: -0.6,
+        "Cabil": {  # blocking, floor=-2.0, ceiling=+4.6
+            20: -2.0,
+            25: -1.7,
+            30: -1.4,
+            35: -1.1,
+            40: -0.9,
+            45: -0.6,
+            50: -0.3,
             55: 0.0,
             60: 0.9,
             65: 1.8,
-            70: 2.7,
-            75: 3.1,
+            70: 2.8,
+            75: 3.7,
         },
-        "Cfram": {
-            20: -57.1,
-            25: -48.5,
-            30: -39.9,
-            35: -31.3,
-            40: -22.7,
-            45: -14.1,
-            50: -6.9,
+        "Cfram": {  # framing, full sweep — plateau-smoothed at 65-75 (raw 9.3/7.9/7.4 → +8)
+            20: -38.0,
+            25: -36.0,
+            30: -33.0,
+            35: -27.0,
+            40: -20.0,
+            45: -13.0,
+            50: -4.0,
             55: 0.0,
-            60: 3.1,
-            65: 7.5,
-            70: 7.5,
-            75: 7.5,
+            60: 5.0,
+            65: 8.0,
+            70: 8.0,
+            75: 8.0,
         },
-        "Carm": {
-            20: -15.0,
-            25: -12.0,
-            30: -9.0,
-            35: -6.0,
+        "Carm": {  # arm, floor=-6.9, ceiling=+2.0 — heavily downside-weighted
+            20: -6.9,
+            25: -5.9,
+            30: -4.9,
+            35: -3.9,
             40: -3.0,
-            45: -1.5,
+            45: -2.0,
+            50: -1.0,
+            55: 0.0,
+            60: 0.4,
+            65: 0.8,
+            70: 1.2,
+            75: 1.6,
+        },
+    },
+    # CF refitted from calibrated team-of-clones sims. Baseline 60/50/55
+    # (RNG/ERR/ARM). Cross-position floor (all 20): -22.6; ceiling (all 80):
+    # +36.7. Range 59.3.
+    #
+    # Individual rating sweeps:
+    #   OFrange: full 9-pt sweep, plateau ~-11 below 60, sharp jump to +28
+    #            plateau above 60 (the "elite-CF inflection")
+    #   OFarm:   floor/ceiling, -6.1 to +7.8, near-linear
+    #   OFerror: floor/ceiling, -2.1 to +2.6, near-linear
+    #
+    # Additivity holds (within sim noise). CF is 64% RNG-driven; ARM ~24%,
+    # ERR ~12% of variance. The 60→65 cliff is the dominant feature.
+    "CF": {
+        "OFrange": {  # plateau ~-11 below 60, sharp jump to ~+28 plateau above
+            20: -12.5,
+            25: -12.0,
+            30: -12.0,
+            35: -11.0,
+            40: -11.1,
+            45: -11.0,
+            50: -8.9,
+            55: -11.5,
+            60: 0.0,
+            65: 28.0,
+            70: 28.0,
+            75: 28.0,
+        },
+        "OFarm": {  # linear interp from 20=-6.1 to 80=+7.8, anchor at 55
+            20: -6.1,
+            25: -5.2,
+            30: -4.3,
+            35: -3.5,
+            40: -2.6,
+            45: -1.7,
+            50: -0.9,
+            55: 0.0,
+            60: 1.6,
+            65: 3.1,
+            70: 4.7,
+            75: 6.2,
+        },
+        "OFerror": {  # linear interp from 20=-2.1 to 80=+2.6, anchor at 50
+            20: -2.1,
+            25: -1.8,
+            30: -1.4,
+            35: -1.1,
+            40: -0.7,
+            45: -0.4,
             50: 0.0,
             55: 0.4,
-            60: 0.7,
-            65: 0.7,
-            70: 0.7,
-            75: 0.7,
+            60: 0.9,
+            65: 1.3,
+            70: 1.7,
+            75: 2.2,
         },
     },
-    # CF refitted from calibration/fielding_sim.csv (LSQ over 52 OOTP scenarios
-    # incl. dense 3D Systematic grid + RNG=45/50/55 single-attr sweeps to pin
-    # down the 40-60 plateau). MAE = 1.0 runs/162. The OFrange cliff sits
-    # entirely between 60 and 65 (+30.6 jump); below 60 the curve is flat-ish
-    # at -11 to -12 — confirmed by direct sim measurement at RNG 45/50/55.
-    "CF": {
-        "OFrange": {
-            20: -24.4,
-            25: -21.4,
-            30: -18.4,
-            35: -15.4,
-            40: -12.4,
-            45: -12.4,
-            50: -12.2,
-            55: -11.2,
-            60: 0.0,
-            65: 30.6,
-            70: 31.9,
-            75: 31.9,
+    # RF refitted from calibrated team-of-clones sims. Baseline 50/50/50.
+    # Cross-position floor (all 20): -18.9; ceiling (all 80): +26.8. Range 45.7.
+    #
+    # Individual rating sweeps:
+    #   OFrange: full 9-pt sweep, -8.5 to +17.0 (plateau structure ~-7 below
+    #            50, ~+19 above 50)
+    #   OFarm:   full 9-pt sweep, -6.1 to +9.9 (gradual curve)
+    #   OFerror: floor/ceiling, -1 (extrapolated from +0.2 sim noise) to +2.4
+    #
+    # Additivity holds (saturation within sim-noise tolerance, ~9% at ceiling,
+    # mild anti-saturation at floor). No interaction matrix needed.
+    "RF": {
+        "OFrange": {  # plateau ~-7 below 50, plateau ~+19 above 50
+            20: -8.5,
+            25: -8.0,
+            30: -7.5,
+            35: -7.0,
+            40: -7.0,
+            45: -7.0,
+            50: 0.0,
+            55: 19.0,
+            60: 19.0,
+            65: 19.0,
+            70: 19.0,
+            75: 19.0,
         },
-        "OFerror": {
-            20: -14.3,
-            25: -11.3,
-            30: -8.3,
-            35: -5.3,
-            40: -2.3,
+        "OFarm": {  # gradual curve, 16-run total range
+            20: -6.1,
+            25: -5.4,
+            30: -4.7,
+            35: -4.0,
+            40: -3.3,
+            45: -2.0,
+            50: 0.0,
+            55: 3.5,
+            60: 5.0,
+            65: 6.0,
+            70: 7.5,
+            75: 9.0,
+        },
+        "OFerror": {  # very small effect, near-linear (within noise of zero at floor)
+            20: -1.0,
+            25: -0.7,
+            30: -0.5,
+            35: -0.3,
+            40: -0.2,
+            45: -0.1,
+            50: 0.0,
+            55: 0.5,
+            60: 1.0,
+            65: 1.5,
+            70: 2.0,
+            75: 2.4,
+        },
+    },
+    # LF refitted from calibrated team-of-clones sims. Baseline 50/50/50.
+    # Cross-position floor (all 20): -15.3; ceiling (all 80): +19.8. Range 35.1.
+    #
+    # Individual rating sweeps:
+    #   OFrange: full 9-pt sweep, plateau ~+16 above 50 with slight downward drift
+    #   OFarm:   floor/ceiling, -5.7 to +6.6, near-linear
+    #   OFerror: floor/ceiling, +3.3 to +1.0 (both within sim noise of zero)
+    #
+    # Additivity holds (within 2 runs of cross-position floor/ceiling). LF is
+    # 79% RNG-driven — by far the most range-dominant fielding position.
+    # ERR is essentially noise; ARM contributes a small linear effect.
+    "LF": {
+        "OFrange": {  # plateau-smoothed at 55-75 (raw 18.1/17.0/16.2/15.0/14.2)
+            20: -13.7,
+            25: -13.0,
+            30: -12.0,
+            35: -12.0,
+            40: -10.0,
+            45: -5.0,
+            50: 0.0,
+            55: 16.0,
+            60: 16.0,
+            65: 16.0,
+            70: 16.0,
+            75: 16.0,
+        },
+        "OFarm": {  # linear interp from 20=-5.7 to 80=+6.6, anchor at 50
+            20: -5.7,
+            25: -4.8,
+            30: -3.8,
+            35: -2.9,
+            40: -1.9,
             45: -1.0,
             50: 0.0,
-            55: 0.0,
-            60: 0.0,
-            65: 0.0,
-            70: 0.0,
-            75: 0.0,
+            55: 1.1,
+            60: 2.2,
+            65: 3.3,
+            70: 4.4,
+            75: 5.5,
         },
-        "OFarm": {
-            20: -19.1,
-            25: -16.1,
-            30: -13.1,
-            35: -10.1,
-            40: -7.1,
-            45: -6.4,
-            50: -5.8,
-            55: 0.0,
-            60: 1.3,
-            65: 3.0,
-            70: 4.7,
-            75: 4.8,
-        },
-    },
-    # RF refitted from calibration/fielding_sim.csv (LSQ over 30 OOTP scenarios incl.
-    # 3D Systematic grid, baseline 50/55/55). MAE = 1.4 runs/162 vs 25.3 for previous
-    # table — old massively undershot the OFrange cliff (old +0.0 → new +32.9 at 55+)
-    # and over-penalized below-floor range.
-    "RF": {
-        "OFrange": {
-            20: -28.2,
-            25: -25.2,
-            30: -22.2,
-            35: -19.2,
-            40: -16.2,
-            45: -14.1,
+        "OFerror": {  # essentially zero — small linear values for honesty
+            20: -1.0,
+            25: -0.8,
+            30: -0.6,
+            35: -0.4,
+            40: -0.3,
+            45: -0.1,
             50: 0.0,
-            55: 32.6,
-            60: 32.6,
-            65: 32.6,
-            70: 32.6,
-            75: 32.6,
-        },
-        "OFerror": {
-            20: -11.9,
-            25: -8.9,
-            30: -5.9,
-            35: -2.9,
-            40: 0.1,
-            45: 0.1,
-            50: 0.1,
-            55: 0.1,
-            60: 0.1,
+            55: 0.2,
+            60: 0.4,
             65: 0.6,
-            70: 1.0,
-            75: 1.5,
-        },
-        "OFarm": {
-            20: -19.3,
-            25: -16.3,
-            30: -13.3,
-            35: -10.3,
-            40: -7.3,
-            45: -4.9,
-            50: -2.4,
-            55: 0.0,
-            60: 1.5,
-            65: 3.1,
-            70: 4.8,
-            75: 6.4,
+            70: 0.8,
+            75: 1.0,
         },
     },
-    # LF refitted from calibration/fielding_sim.csv (LSQ over 30 OOTP scenarios incl.
-    # 3D Systematic grid). MAE = 0.9 runs/162 vs 12.3 for previous table — old massively
-    # undershot the OFrange cliff at 55 (old +0.0 → new +18.7).
-    "LF": {
-        "OFrange": {
-            20: -20.0,
-            25: -17.0,
-            30: -14.0,
-            35: -11.0,
-            40: -8.0,
-            45: -5.7,
-            50: 0.0,
-            55: 18.7,
-            60: 20.4,
-            65: 20.4,
-            70: 20.4,
-            75: 20.4,
-        },
-        "OFerror": {
-            20: -13.0,
-            25: -10.0,
-            30: -7.0,
-            35: -4.0,
-            40: -1.0,
-            45: -0.6,
-            50: -0.6,
-            55: -0.6,
-            60: -0.6,
-            65: -0.6,
-            70: -0.6,
-            75: -0.6,
-        },
-        "OFarm": {
-            20: -15.9,
-            25: -12.9,
-            30: -9.9,
-            35: -6.9,
-            40: -3.9,
-            45: -1.9,
-            50: -0.4,
-            55: -0.4,
-            60: -0.4,
-            65: -0.1,
-            70: 0.6,
-            75: 1.3,
-        },
-    },
-    # SS refitted from calibration/ss_sim.csv (least-squares over 64 OOTP scenarios,
-    # then PAV-smoothed for monotonicity). MAE = 6.4 runs/162 vs 7.3 for previous table.
-    # Architectural caveat: additive model can't fully capture RNG×ARM substitution
-    # at extreme combos — use [Best position] runs values as a ranking signal, not absolute.
+    # SS refitted from calibrated team-of-clones sims. Baseline 60/60/60/60.
+    # Cross-position floor (all 20): -47.8; ceiling (all 80): +24.2. Range 72.0.
+    #
+    # Individual rating sweeps:
+    #   IFrange: full 9-pt sweep, plateau structure (~-21 below 60, ~+16 above)
+    #   IFarm:   full 9-pt sweep, plateau structure (~-17 below 60, ~+13 above)
+    #   IFerror: floor/ceiling, -9.1 to +3.1, asymmetric linear
+    #   turnDP:  floor/ceiling, -10.3 to +3.9, asymmetric linear
+    #
+    # KNOWN LIMITATION: SS has ~30-36% saturation at extreme rating combos
+    # (additive sum overstates cross-position floor/ceiling). Same pattern as
+    # 2B and 3B. The legacy SS_INTERACTION_CORRECTION grid was calibrated
+    # against the OLD 1D tables and is now stale — kept in place as a partial
+    # saturation correction but should be re-derived from the new tables when
+    # interaction matrices are revisited. See INTERACTION_HANDLERS comment in
+    # metrics_fielding.py.
     "SS": {
-        "IFrange": {
-            20: -43.0,
-            25: -36.8,
-            30: -30.6,
-            35: -24.4,
-            40: -18.2,
-            45: -12.0,
-            50: -12.0,
-            55: -12.0,
+        "IFrange": {  # plateau ~-21 below 60 (with mild floor at -27), ~+16 above 60
+            20: -27.0,
+            25: -27.0,
+            30: -27.0,
+            35: -27.0,
+            40: -27.0,
+            45: -25.0,
+            50: -21.0,
+            55: -21.0,
             60: 0.0,
-            65: 16.7,
-            70: 25.4,
-            75: 25.4,
+            65: 16.0,
+            70: 16.0,
+            75: 16.0,
         },
-        "IFerror": {
-            20: -22.1,
-            25: -19.1,
-            30: -16.1,
-            35: -13.1,
-            40: -10.1,
-            45: -7.1,
-            50: -4.1,
-            55: -4.0,
-            60: -0.1,
-            65: -0.1,
-            70: 4.1,
-            75: 4.1,
+        "IFarm": {  # plateau ~-17 below 60 (mild floor at -29), ~+14 above 60
+            20: -29.0,
+            25: -29.0,
+            30: -28.0,
+            35: -28.0,
+            40: -25.0,
+            45: -22.0,
+            50: -17.0,
+            55: -16.0,
+            60: 0.0,
+            65: 14.0,
+            70: 14.0,
+            75: 14.0,
         },
-        "IFarm": {
-            20: -14.5,
-            25: -11.5,
-            30: -8.5,
-            35: -5.5,
-            40: -2.5,
-            45: -2.5,
-            50: 0.9,
-            55: 0.9,
-            60: 9.7,
-            65: 11.3,
-            70: 14.9,
-            75: 17.9,
-        },
-        "turnDP": {
-            20: -22.6,
-            25: -18.9,
-            30: -15.2,
-            35: -11.5,
-            40: -7.8,
-            45: -4.1,
-            50: -0.4,
-            55: -0.4,
-            60: 1.6,
-            65: 1.6,
-            70: 2.3,
+        "IFerror": {  # linear interp from 20=-9.1 to 80=+3.1, anchor at 60
+            20: -9.1,
+            25: -8.0,
+            30: -6.8,
+            35: -5.7,
+            40: -4.6,
+            45: -3.4,
+            50: -2.3,
+            55: -1.1,
+            60: 0.0,
+            65: 0.8,
+            70: 1.6,
             75: 2.3,
         },
+        "turnDP": {  # linear interp from 20=-10.3 to 80=+3.9, anchor at 60
+            20: -10.3,
+            25: -9.0,
+            30: -7.7,
+            35: -6.4,
+            40: -5.2,
+            45: -3.9,
+            50: -2.6,
+            55: -1.3,
+            60: 0.0,
+            65: 1.0,
+            70: 1.9,
+            75: 2.9,
+        },
     },
-    # 2B refitted from calibration/fielding_sim.csv (LSQ over 44 OOTP scenarios).
-    # MAE = 2.3 runs/162 vs 18.9 for previous table — old IFrange values like -39
-    # below RNG=55 were ~10x too punitive vs sim reality.
+    # 2B refitted from calibrated team-of-clones sims. Baseline 55/55/50/55
+    # (RNG/ERR/ARM/TDP — note ARM baseline is 50, others 55).
+    # Cross-position floor (all 20): -59.0; ceiling (all 80): +7.8. Range 66.8.
+    #
+    # Individual rating sweeps:
+    #   IFrange: full 8-pt sweep, gradual descent below 55, plateau ~+2 above
+    #   turnDP:  full 9-pt sweep, gradual S-curve from -18.7 to +6.8
+    #   IFerror: floor/ceiling, -4.7 to +2.9, near-linear
+    #   IFarm:   floor/ceiling, -10.7 to +4.1, near-linear (baseline ARM=50)
+    #
+    # KNOWN LIMITATION: 2B has ~17-45% saturation at extreme rating combos
+    # (additive sum overstates cross-position floor/ceiling). All-65 sim
+    # confirmed: predicted +9.8 sum, actual +5.4. See INTERACTION_HANDLERS
+    # comment in metrics_fielding.py. Linear-additive ranking is fine within
+    # position; absolute WAR for elite 2Bs may be ~0.4 high.
     "2B": {
-        "IFrange": {
-            20: -15.7,
-            25: -12.7,
-            30: -9.7,
-            35: -6.7,
-            40: -3.7,
-            45: -2.4,
-            50: 0.0,
-            55: 10.6,
-            60: 11.0,
-            65: 13.1,
-            70: 13.1,
-            75: 13.1,
+        "IFrange": {  # gradual descent below 55, plateau ~+2 above
+            20: -37.0,
+            25: -35.0,
+            30: -33.0,
+            35: -32.0,
+            40: -32.0,
+            45: -29.0,
+            50: -25.0,
+            55: 0.0,
+            60: 2.0,
+            65: 2.0,
+            70: 2.0,
+            75: 2.0,
         },
-        "IFerror": {
-            20: -15.0,
-            25: -12.0,
-            30: -9.0,
-            35: -6.0,
-            40: -3.0,
-            45: -3.0,
-            50: -3.0,
-            55: -1.8,
-            60: -1.8,
-            65: -1.1,
-            70: 1.4,
-            75: 1.4,
+        "IFerror": {  # linear interp from 20=-4.7 to 80=+2.9, anchor at 55
+            20: -4.7,
+            25: -4.0,
+            30: -3.4,
+            35: -2.7,
+            40: -2.0,
+            45: -1.3,
+            50: -0.7,
+            55: 0.0,
+            60: 0.6,
+            65: 1.2,
+            70: 1.7,
+            75: 2.3,
         },
-        "IFarm": {
-            20: -15.6,
-            25: -12.6,
-            30: -9.6,
-            35: -6.6,
+        "IFarm": {  # linear interp from 20=-10.7 to 80=+4.1, anchor at 50
+            20: -10.7,
+            25: -8.9,
+            30: -7.1,
+            35: -5.4,
             40: -3.6,
             45: -1.8,
             50: 0.0,
-            55: 1.0,
-            60: 1.7,
-            65: 3.9,
-            70: 3.9,
-            75: 4.6,
+            55: 0.7,
+            60: 1.4,
+            65: 2.1,
+            70: 2.7,
+            75: 3.4,
         },
-        "turnDP": {
-            20: -18.2,
-            25: -15.2,
-            30: -12.2,
-            35: -9.2,
-            40: -6.2,
-            45: -5.3,
-            50: -4.4,
-            55: 0.0,
-            60: 0.3,
-            65: 2.7,
-            70: 4.5,
-            75: 4.5,
-        },
-    },
-    # 3B refitted from calibration/fielding_sim.csv (LSQ over 25 OOTP scenarios).
-    # MAE = 1.9 runs/162 vs 3.1 for previous table. TDP omitted (sim shows it's inert at 3B).
-    "3B": {
-        "IFrange": {
-            20: -17.7,
-            25: -14.7,
-            30: -11.7,
-            35: -8.7,
-            40: -5.7,
+        "turnDP": {  # full 9-pt sweep, gradual S-curve
+            20: -18.7,
+            25: -16.0,
+            30: -13.0,
+            35: -10.0,
+            40: -6.4,
             45: -5.7,
-            50: -5.7,
+            50: -1.7,
             55: 0.0,
-            60: 4.8,
-            65: 7.1,
-            70: 9.4,
-            75: 14.4,
-        },
-        "IFerror": {
-            20: -16.2,
-            25: -13.2,
-            30: -10.2,
-            35: -7.2,
-            40: -4.2,
-            45: -4.2,
-            50: -4.2,
-            55: -1.0,
-            60: -1.0,
-            65: 3.1,
-            70: 4.2,
-            75: 4.2,
-        },
-        "IFarm": {
-            20: -21.9,
-            25: -18.9,
-            30: -15.9,
-            35: -12.9,
-            40: -9.9,
-            45: -7.5,
-            50: -5.0,
-            55: 0.0,
-            60: 7.7,
-            65: 8.6,
-            70: 9.5,
-            75: 14.3,
+            60: 0.9,
+            65: 4.0,
+            70: 4.0,
+            75: 5.4,
         },
     },
-    # 1B refitted from calibration/fielding_sim.csv (LSQ over 11 rows where ARM/TDP
-    # held at baseline). MAE = 1.5 runs/162 vs 4.0 for previous table. Sim confirms
-    # 1B defense is nearly inert — total RNG swing only ~4 runs, ERR essentially flat,
-    # ARM treated as fully inert (single confounded sim observation insufficient to fit).
-    "1B": {
-        "IFrange": {
-            20: -2.6,
-            25: -2.6,
-            30: -2.6,
-            35: 0.0,
-            40: 0.3,
-            45: 1.2,
-            50: 1.2,
-            55: 1.2,
-            60: 1.2,
-            65: 1.2,
-            70: 1.2,
-            75: 1.2,
-        },
-        "IFerror": {
-            20: -2.0,
-            25: -1.0,
-            30: -1.0,
-            35: -1.0,
-            40: -1.0,
-            45: -1.0,
-            50: -1.0,
-            55: -1.0,
-            60: -1.0,
-            65: -1.0,
-            70: -1.0,
-            75: -1.0,
-        },
-        "IFarm": {
-            20: 0.0,
-            25: 0.0,
-            30: 0.0,
-            35: 0.0,
-            40: 0.0,
-            45: 0.0,
+    # 3B refitted from calibrated team-of-clones sims. Baseline 50/55/60/50
+    # (RNG/ERR/ARM/TDP). Cross-position floor (all 20): -37.2; ceiling (all 80):
+    # +23.8. Range = 61.0.
+    #
+    # Individual rating sweeps:
+    #   IFrange: full 7-pt sweep, 20=-27 to 80=+19, sharp inflection at 50→55
+    #   IFarm:   full 8-pt sweep, 20=-28 to 80=+21, sharp inflection at 60→65
+    #   IFerror: floor/ceiling, 20=-7.9, 80=+6.3, linear interp
+    #   turnDP:  floor/ceiling, 20=-1.9, 80=+2.1, near-zero contribution
+    #
+    # KNOWN LIMITATION: 3B has ~43-50% saturation at extreme rating combos
+    # (sum of individual contributions overstates cross-position floor/ceiling).
+    # See INTERACTION_HANDLERS comment in metrics_fielding.py — same pattern
+    # as 2B. Linear-additive ranking is fine within position; absolute WAR
+    # for elite 3Bs may be ~0.4 high. Revisit with saturation function later.
+    "3B": {
+        "IFrange": {  # full sweep, plateau-smoothed at 60-75 (raw 21.8/17.6/18.5)
+            20: -27.0,
+            25: -22.0,
+            30: -17.0,
+            35: -14.0,
+            40: -12.0,
+            45: -10.0,
             50: 0.0,
+            55: 17.0,
+            60: 20.0,
+            65: 20.0,
+            70: 20.0,
+            75: 20.0,
+        },
+        "IFerror": {  # linear interp from 20=-7.9 to 80=+6.3, anchored at 55
+            20: -7.9,
+            25: -6.8,
+            30: -5.6,
+            35: -4.5,
+            40: -3.4,
+            45: -2.3,
+            50: -1.1,
             55: 0.0,
+            60: 1.3,
+            65: 2.5,
+            70: 3.8,
+            75: 5.0,
+        },
+        "IFarm": {  # full sweep, anchored at 60 (3B baseline ARM=60)
+            20: -28.0,
+            25: -27.0,
+            30: -27.0,
+            35: -26.0,
+            40: -26.0,
+            45: -20.0,
+            50: -18.0,
+            55: -12.0,
             60: 0.0,
-            65: 0.0,
-            70: 0.0,
-            75: 0.0,
+            65: 17.0,
+            70: 18.0,
+            75: 21.0,
+        },
+        "turnDP": {  # linear interp from 20=-1.9 to 80=+2.1, anchored at 50
+            20: -1.9,
+            25: -1.6,
+            30: -1.3,
+            35: -0.9,
+            40: -0.6,
+            45: -0.3,
+            50: 0.0,
+            55: 0.4,
+            60: 0.7,
+            65: 1.1,
+            70: 1.4,
+            75: 1.8,
+        },
+    },
+    # 1B refitted from calibrated team-of-clones sims. Baseline 35/35/35/35
+    # (typical 1B rating profile in OOTP — much lower than other infield).
+    # Cross-position floor (all 20): -3.5 runs; ceiling (all 80): +9.8 runs.
+    # Range only 13.3 runs — confirms 1B has minimal defensive variance.
+    #
+    # Individual rating sweeps (each at 20 and 80, others held at 35):
+    #   IFrange: -1.8 → +6.8  (range 8.6, ~65% of 1B variance)
+    #   IFerror: +0.7 → +1.4  (range 0.7 — within sim noise of zero)
+    #   IFarm:   +2.9 → +3.6  (range 0.7 — within sim noise of zero)
+    #   turnDP:  +2.2 → +1.5  (range -0.7 — inverted, sim noise)
+    #
+    # Only IFrange is meaningful; ERR/ARM/TDP set to 0 since all measurements
+    # were within ±2 run sim-noise tolerance. RNG curve is roughly linear,
+    # piecewise around the 35 baseline anchor.
+    "1B": {
+        "IFrange": {  # slope 0.12/pt below 35, 0.151/pt above 35
+            20: -1.8,
+            25: -1.2,
+            30: -0.6,
+            35: 0.0,
+            40: 0.8,
+            45: 1.5,
+            50: 2.3,
+            55: 3.0,
+            60: 3.8,
+            65: 4.5,
+            70: 5.3,
+            75: 6.0,  # clamped via closest_rating; sim measured 80=+6.8
+        },
+        "IFerror": {  # within sim noise of zero
+            20: 0.0, 25: 0.0, 30: 0.0, 35: 0.0, 40: 0.0, 45: 0.0,
+            50: 0.0, 55: 0.0, 60: 0.0, 65: 0.0, 70: 0.0, 75: 0.0,
+        },
+        "IFarm": {  # within sim noise of zero
+            20: 0.0, 25: 0.0, 30: 0.0, 35: 0.0, 40: 0.0, 45: 0.0,
+            50: 0.0, 55: 0.0, 60: 0.0, 65: 0.0, 70: 0.0, 75: 0.0,
+        },
+        "turnDP": {  # within sim noise of zero (added for parity with other IF positions)
+            20: 0.0, 25: 0.0, 30: 0.0, 35: 0.0, 40: 0.0, 45: 0.0,
+            50: 0.0, 55: 0.0, 60: 0.0, 65: 0.0, 70: 0.0, 75: 0.0,
         },
     },
 }

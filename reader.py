@@ -173,8 +173,23 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     # Keep only ratings from your scouting director
     # Read config.ID at call time so the Streamlit ratings-source toggle
     # (Head Scout vs OSA) can monkey-patch it before invoking the pipeline.
-    ratings_df = ratings_df[ratings_df["scouting_coach_id"] == config.ID]
-    ratings_df = ratings_df.drop(columns=["scouting_coach_id"])
+    filtered = ratings_df[ratings_df["scouting_coach_id"] == config.ID]
+    # Defensive auto-correct: if the configured coach_id matches no rows in
+    # the current CSV (e.g. config.ID is the repo default 114 from a stale
+    # state but the active save's head scout is some other id), detect the
+    # save's actual head scout and use that instead. Without this, every
+    # rating column merges as NaN, wOBAP floors at the all-50 base rate,
+    # and rosters silently come out empty / wrong.
+    if len(filtered) == 0 and config.ID != -1:
+        detected = detect_head_scout_id(config.filepath)
+        if detected is not None and detected != config.ID:
+            print(
+                f"⚠ config.ID={config.ID} matched no rating rows in "
+                f"{file.name}; auto-correcting to coach_id={detected}."
+            )
+            config.ID = detected
+            filtered = ratings_df[ratings_df["scouting_coach_id"] == config.ID]
+    ratings_df = filtered.drop(columns=["scouting_coach_id"])
     # Rename the column for clarity
     for old, new in SCOUTED_RATINGS_RENAMES.items():
         ratings_df = rename_columns(ratings_df, old, new)
@@ -201,6 +216,30 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
 
 # Add a flag column for names listed in flagged.txt
 import numpy as np
+
+
+def detect_head_scout_id(csv_dir):
+    """Scan `players_scouted_ratings.csv` and return the most-frequent
+    non-OSA `scouting_coach_id` — that's the user's head scout in OOTP.
+    Returns None if the CSV is missing or every rating row is OSA (-1).
+    Used by both the Streamlit uploader and the CLI `refresh` subcommand
+    so the right scout is picked per save without hardcoding `config.ID`."""
+    import csv as csv_mod
+    from collections import Counter
+    from pathlib import Path as _Path
+    f = _Path(csv_dir) / 'players_scouted_ratings.csv'
+    if not f.exists():
+        return None
+    counts = Counter()
+    with open(f) as fh:
+        rdr = csv_mod.DictReader(fh)
+        for r in rdr:
+            cid = r.get('scouting_coach_id') or ''
+            if cid and cid != '-1':
+                counts[cid] += 1
+    if not counts:
+        return None
+    return int(counts.most_common(1)[0][0])
 
 
 def is_flagged(df: pd.DataFrame) -> pd.DataFrame:

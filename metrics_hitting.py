@@ -6,7 +6,7 @@ from config import (
     BATTING_WOBA_WEIGHTS,
     RUNS_PER_GAME_HITTING_COEFF,
     RUNS_PER_GAME_HITTING_CONST,
-    RUNS_PER_WIN,
+    RUNS_PER_WIN_HITTING,
     DH_PENALTY,
     LEAGUE_WOBA,
     WOBA_SCALE,
@@ -91,8 +91,8 @@ def calc_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
         df["wOBAL"] * HANDEDNESS_WEIGHTS["L"]
     )
     
-    df["war_hitting"] = (((df["wOBA"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN).round(1)
-    df["DH_hitting"] = ((((df["wOBA"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN).round(1)
+    df["war_hitting"] = (((df["wOBA"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
+    df["DH_hitting"] = ((((df["wOBA"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
 
     df["wRC+"] = ((((df["wOBA"] - LEAGUE_WOBA) / WOBA_SCALE) + LEAGUE_RUNS_PER_PA) / LEAGUE_RUNS_PER_PA * 100).round(0)
        
@@ -157,8 +157,8 @@ def calc_potential_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Calculate potential WAR and DH WAR
-    df["war_hittingP"] = (((df["wOBAP"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN).round(1)
-    df["DH_hittingP"] = ((((df["wOBAP"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN).round(1)
+    df["war_hittingP"] = (((df["wOBAP"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
+    df["DH_hittingP"] = ((((df["wOBAP"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
 
     # Calculate potential wRC+
     df["wRC+P"] = ((((df["wOBAP"] - LEAGUE_WOBA) / WOBA_SCALE) + LEAGUE_RUNS_PER_PA) / LEAGUE_RUNS_PER_PA * 100).round(0)

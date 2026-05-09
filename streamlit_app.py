@@ -32,15 +32,28 @@ POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 HITTERS_JSON = 'outputs/hitters.json'
 PITCHERS_JSON = 'outputs/pitchers.json'
 
+
+def hand_label(throws):
+    """OOTP throws code to a one-letter label for table display.
+    1 → 'R', 2 → 'L', everything else → ''."""
+    if throws == 2:
+        return 'L'
+    if throws == 1:
+        return 'R'
+    return ''
+
 REQUIRED_CSVS = {
     'players.csv',
     'players_scouted_ratings.csv',
 }
-# These two are accepted but optional — they only populate the IP / PA
-# display columns in pitcher / hitter tables. No projection uses them.
+# Optional but accepted. The career-stats CSVs populate the IP / PA display
+# columns and the years-at-level service-time data. teams.csv drives the
+# R(DLR) DSL-team count — without it, every org defaults to 1 DSL team and
+# the R(DLR) best/rest split for 2-DSL orgs won't trigger.
 OPTIONAL_CSVS = {
     'players_career_pitching_stats.csv',
     'players_career_batting_stats.csv',
+    'teams.csv',
 }
 ACCEPTED_CSVS = REQUIRED_CSVS | OPTIONAL_CSVS
 
@@ -97,24 +110,10 @@ def has_cached_data() -> bool:
 
 @st.cache_data(show_spinner=False)
 def detect_head_scout_id(csv_dir_str: str) -> int | None:
-    """Scan players_scouted_ratings.csv and return the scouting_coach_id with
-    the most ratings rows excluding -1 (OSA). That's the user's head scout
-    in OOTP. Returns None if the CSV is missing or has no non-OSA scouts."""
-    import csv as csv_mod
-    from collections import Counter
-    f = Path(csv_dir_str) / 'players_scouted_ratings.csv'
-    if not f.exists():
-        return None
-    counts = Counter()
-    with open(f) as fh:
-        rdr = csv_mod.DictReader(fh)
-        for r in rdr:
-            cid = r.get('scouting_coach_id') or ''
-            if cid and cid != '-1':
-                counts[cid] += 1
-    if not counts:
-        return None
-    return int(counts.most_common(1)[0][0])
+    """Cached Streamlit wrapper around reader.detect_head_scout_id (the
+    canonical implementation, also used by app.py refresh)."""
+    from reader import detect_head_scout_id as _impl
+    return _impl(csv_dir_str)
 
 
 def process_uploaded(uploaded_files):
@@ -266,12 +265,13 @@ with st.sidebar:
 
 rh, oh, fh, rp, op, fp = get_rosters(team, sig)
 
-# KPI cards
-n_h_placed = sum(len(rh[l]['all']) for l in LEVELS)
-n_p_placed = sum(len(rp[l]['all']) for l in LEVELS)
+# KPI cards. Iterate the actual roster keys (LEVELS doesn't include the
+# R(DLR) sub-team keys produced by the best/rest split for 2+ DSL orgs).
+n_h_placed = sum(len(rh[l]['all']) for l in rh.keys())
+n_p_placed = sum(len(rp[l]['all']) for l in rp.keys())
 n_overflow = len(oh) + len(op)
-hps = [p for l in LEVELS for p in rh[l]['all'] if is_high_potential(p)]
-hps_pitchers = [p for l in LEVELS for p in rp[l]['all'] if is_high_potential_pitcher(p)]
+hps = [p for l in rh.keys() for p in rh[l]['all'] if is_high_potential(p)]
+hps_pitchers = [p for l in rp.keys() for p in rp[l]['all'] if is_high_potential_pitcher(p)]
 
 st.title(f'{team} organisation')
 
@@ -299,7 +299,10 @@ def load_all_hitters_df(_sig: tuple) -> pd.DataFrame:
 @st.cache_data
 def load_all_pitchers_df(_sig: tuple) -> pd.DataFrame:
     rows = json.load(open(PITCHERS_JSON))['rows']
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if 'throws' in df.columns:
+        df['Hand'] = df['throws'].map({1: 'R', 2: 'L'}).fillna('')
+    return df
 
 # ---------- Overview tab ----------
 
@@ -348,6 +351,7 @@ with tab_overview:
         ):
             with sub_col:
                 split_starters = rh['MLB'].get(f'starters_vs{vs_key[-1]}', {})
+                backups = rh['MLB'].get(f'backups_vs{vs_key[-1]}', {})
                 name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
                 order_rows = []
                 for pos in POSITIONS:
@@ -355,11 +359,13 @@ with tab_overview:
                     if not p:
                         continue
                     slot = name_to_slot.get(p['name'])
+                    bk = backups.get(pos)
                     order_rows.append({
                         'Slot': slot,
                         'Pos': pos,
                         'Player': p['name'],
                         vs_key: round(p.get(vs_key) or 0, 3),
+                        'Backup': bk['name'] if bk else '(Sign FA)',
                     })
                 df = pd.DataFrame(order_rows).sort_values('Slot')
                 st.markdown(f'**{label}** — R/G **{rpg:.2f}**')
@@ -380,14 +386,16 @@ with tab_overview:
                     'Slot': f'SP{i+1}',
                     'Player': p['name'],
                     'Age': p['age'],
+                    'Hand': hand_label(p.get('throws')),
                     'pwOBA': round(p.get('pwOBA') or 0, 3),
                     'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                 })
             else:
-                rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'pwOBA': None, 'pwOBAP': None})
+                rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'Hand': '', 'pwOBA': None, 'pwOBAP': None})
         st.dataframe(pd.DataFrame(rrows), hide_index=True, width='stretch')
 
         bullpen = rp['MLB']['bullpen']
+        sign_lhp = rp['MLB'].get('sign_lhp', 0)
         st.markdown(f'**Bullpen** ({len(bullpen)} of {rp_target} filled)')
         prows = []
         for i in range(rp_target):
@@ -397,11 +405,17 @@ with tab_overview:
                     'Slot': f'RP{i+1}',
                     'Player': p['name'],
                     'Age': p['age'],
+                    'Hand': hand_label(p.get('throws')),
                     'pwOBA': round(p.get('pwOBA') or 0, 3),
                     'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                 })
             else:
-                prows.append({'Slot': f'RP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'pwOBA': None, 'pwOBAP': None})
+                # Last `sign_lhp` empty slots are LHP shortfalls — flag them
+                # explicitly so the user knows what they need to sign.
+                empty_idx = i - len(bullpen)
+                empty_total = rp_target - len(bullpen)
+                placeholder = '(Sign LHP)' if empty_idx >= empty_total - sign_lhp else '(Sign FA)'
+                prows.append({'Slot': f'RP{i+1}', 'Player': placeholder, 'Age': None, 'Hand': '', 'pwOBA': None, 'pwOBAP': None})
         st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
 
     # Row 2: development pipeline — HP hitters | HP pitchers
@@ -411,7 +425,7 @@ with tab_overview:
         st.subheader('HP hitters')
         if hps:
             hp_rows = []
-            for lvl in LEVELS:
+            for lvl in rh.keys():
                 for p in rh[lvl]['all']:
                     if is_high_potential(p):
                         hp_rows.append({
@@ -430,13 +444,14 @@ with tab_overview:
     with col_hpp:
         st.subheader('HP pitchers')
         hp_pitchers = []
-        for lvl in LEVELS:
+        for lvl in rp.keys():
             for p in rp[lvl]['all']:
                 if is_high_potential_pitcher(p):
                     hp_pitchers.append({
                         'Player': p['name'],
                         'Lvl': lvl,
                         'Age': p['age'],
+                        'Hand': hand_label(p.get('throws')),
                         'Role': p.get('_role', '?'),
                         'pwOBA': round(p.get('pwOBA') or 0, 3),
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3),
@@ -456,6 +471,7 @@ with tab_overview:
             'Player': p['name'],
             'Type': 'Hitter',
             'Age': p['age'],
+            'Hand': '',  # blank for hitters; kept so the joint table aligns
             'Pos / Role': p.get('pos_adj') or '',
             'wOBA / pwOBA': round(p.get('wOBA') or 0, 3),
         })
@@ -464,6 +480,7 @@ with tab_overview:
             'Player': p['name'],
             'Type': 'Pitcher',
             'Age': p['age'],
+            'Hand': hand_label(p.get('throws')),
             'Pos / Role': p.get('_role') or 'P',
             'wOBA / pwOBA': round(p.get('pwOBA') or 0, 3),
         })
@@ -478,7 +495,9 @@ with tab_overview:
 
 with tab_rosters:
     st.subheader(f'{team} rosters by level')
-    for lvl in LEVELS:
+    # Iterate the actual rosters keys so R(DLR) sub-teams (R(DLR)1, R(DLR)2,
+    # …) introduced for 2+ DSL orgs each get their own expander.
+    for lvl in rh.keys():
         with st.expander(f'{lvl}  —  {len(rh[lvl]["all"])} hitters / {len(rp[lvl]["all"])} pitchers',
                          expanded=(lvl == 'MLB')):
             col_h, col_p = st.columns(2)
@@ -522,6 +541,7 @@ with tab_rosters:
                         'Role': role,
                         'Player': p['name'],
                         'Age': p['age'],
+                        'Hand': hand_label(p.get('throws')),
                         'pwOBA': round(metric, 3) if metric is not None else None,
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3) if p.get('pwOBAP') is not None else None,
                     })
@@ -540,17 +560,20 @@ with tab_rosters:
             ):
                 with sub_col:
                     split_starters = rh[lvl].get(f'starters_vs{vs_key[-1]}', {})
+                    backups = rh[lvl].get(f'backups_vs{vs_key[-1]}', {})
                     name_to_slot, rpg = _platoon_lineup_extras(split_starters, vs_key)
                     order_rows = []
                     for pos in POSITIONS:
                         p = split_starters.get(pos)
                         if not p:
                             continue
+                        bk = backups.get(pos)
                         order_rows.append({
                             'Slot': name_to_slot.get(p['name']),
                             'Pos': pos,
                             'Player': p['name'],
                             vs_key: round(p.get(vs_key) or 0, 3),
+                            'Backup': bk['name'] if bk else '(Sign FA)',
                         })
                     if order_rows:
                         df_order = pd.DataFrame(order_rows).sort_values('Slot')
@@ -594,6 +617,7 @@ with tab_release:
                 p_rows.append({
                     'Player': p['name'],
                     'Age': p['age'],
+                    'Hand': hand_label(p.get('throws')),
                     'Top level': _pitcher_top_level(p),
                     'pwOBA': round(p.get('pwOBA') or 0, 3),
                     'pwOBAP': round(p.get('pwOBAP') or 0, 3),
@@ -713,7 +737,7 @@ with tab_scout_p:
 
     p_display_cols = [
         c for c in [
-            'name', 'org', 'minor', 'age', 'ip', 'Role',
+            'name', 'org', 'minor', 'age', 'Hand', 'ip', 'Role',
             'pwOBA', 'pwOBAR', 'pwOBAL', 'pwOBAP',
             'sp_war', 'sp_warP', 'rp_war', 'rp_warP',
         ] if c in filtered_p.columns

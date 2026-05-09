@@ -5,199 +5,340 @@
 OOTP Baseball roster-construction tool. Takes the user's CSV exports from any
 OOTP save, runs a metrics pipeline, then assigns every player to one of 7
 levels (MLB → AAA → AA → A+ → A → R → R(DLR)) with positional Hungarian,
-high-potential prospect enforcement, and platoon-aware lineups. Renders to
-xlsx and a Streamlit web UI.
+high-potential prospect enforcement, platoon-aware lineups, per-position
+depth charts, and bullpen handedness balance. Renders to xlsx and a
+Streamlit web UI.
 
 ## Where the work lives
 
-- **Active worktree**: `.claude/worktrees/distracted-benz-9c4f3a` (branch
-  `claude/distracted-benz-9c4f3a`)
-- **Remote**: `ootp_app` → https://github.com/stames999/ootp_app
-- Latest commit on the branch is the canonical state; `ootp_app/main` mirrors it
-- A second worktree exists (`upgrade-v1`) but its work has been merged in;
-  you can ignore it
-- **All work continues in the benz worktree.** Run `git worktree list` if unsure.
+- Branch `main` on the `pistachio` repo (this directory).
+- Local raw sim data lives at `OOTP simulation/OOTP sims.xlsx` (committed).
+- Previous HEAD before this session's overhaul: `e2770d4`. This session has
+  not yet been committed — substantial uncommitted changes across `config.py`,
+  `metrics_pitching.py`, `metrics_war.py`, `metrics_fielding.py`,
+  `metrics_hitting.py`, `build_pitcher_system.py`, `build_system.py`,
+  `exporter.py`, `reader.py`. New calibration scripts in `calibration/`. Two
+  legacy calibration scripts deleted (`compare_adjustments.py`,
+  `skill_aware_adj.py`).
 
 ## How to run
 
-From PowerShell, in the worktree:
+From PowerShell, in the project directory:
 
 ```powershell
 python -m streamlit run streamlit_app.py
 ```
 
-Browser opens at `http://localhost:8501`. The session-scoped gate forces a
+Browser opens at `http://localhost:8501`. Session-scoped gate forces a
 fresh upload every browser tab — drop in OOTP CSVs from
 `saved_games/<save>.lg/import_export/csv/`. Required: `players.csv`,
-`players_scouted_ratings.csv`, `teams.csv`. Recommended: the two
-`players_career_*_stats.csv` files (drive service-time data).
+`players_scouted_ratings.csv`. Recommended: the two
+`players_career_*_stats.csv` files (drive service-time data) **and
+`teams.csv`** (drives R(DLR) DSL-team count for the best/rest split).
 
-CLI alternative: `python app.py refresh --csv-dir <path>` then
+CLI: `python app.py refresh --csv-dir <path>` then
 `python app.py rosters --team COL`.
+
+## What changed this session (major)
+
+This session refit large portions of the model from new OOTP team-of-clones
+sim data run in a calibrated environment (BABIP .293, ERA 3.85, RS/G ~4.15-4.4
+depending on which sim). The fielding system was rebuilt end-to-end from sim
+sweeps; pitcher and hitter WAR formulas were recalibrated; positional
+adjustments were replaced with a fixed sim-derived scheme; DSL eligibility
+filter was added; etc.
+
+### Pitching model (multiplicative + component-aware WAR)
+
+- `config.BASE_PITCHING_RATES` refit from sim baseline (3 reps, 100k G each):
+  HR 0.027, BB 0.075, K 0.214, contact 0.214 (was hand-tuned higher).
+- `config.PITCHING_COMPONENTS_ADJUST_MAP` switched from additive to
+  **multiplicative** ratios (`*_vs_mult` keys, was `*_vs_adj`). HRA × CTRL = 20/20
+  interaction sim confirmed multiplicative wins (predicted pwOBA 0.472, actual
+  0.468; additive predicted 0.489).
+- CTRL and HRA: full sim sweeps, refit. PBABIP and Stamina: zeroed (sims
+  showed minimal effect on rate stats). Stuff: mechanically converted from
+  old additive table using OLD base rates.
+- New `config.PITCHING_WAR_COEFFS`: component-aware WAR formula. Replaces
+  the old single-coefficient pwOBA regression. Coefficients fit to OOTP
+  Editor WAR across 23 sim points (RMSE 0.15 WAR), then scaled by 0.83
+  (= 200/224 IP × 10/10.76 runs/win) to give realistic 200-IP target with
+  sim-empirical runs/win.
+- `RUNS_PER_GAME_PITCHING_COEFF` and `RUNS_PER_GAME_PITCHING_CONST` removed.
+- All-50 SP now lands ~2.6 WAR. Top SPs (Skubal/Crochet/Skenes) at ~4.7-5.6.
+
+### Hitting model (refit constants)
+
+- `config.RUNS_PER_GAME_HITTING_COEFF`: 554.79 → **496.84** (12% slope
+  correction). Empirical from `calibration/sim_data.csv` regression.
+- `config.RUNS_PER_GAME_HITTING_CONST`: 178.91 → **144.08** (= COEFF × 0.290
+  replacement-level wOBA, FG convention). Old value implied replacement at
+  wOBA=0.322 — above league average — clearly miscalibrated.
+- `config.REPLACEMENT_LEVEL_WOBA`: 0.300 → **0.290** (FG-standard).
+- New `config.RUNS_PER_WIN_HITTING = 10.28` (sim-empirical, was using generic
+  `RUNS_PER_WIN = 10`).
+- `metrics_hitting.py` now uses `RUNS_PER_WIN_HITTING` instead of `RUNS_PER_WIN`.
+- `config.DH_PENALTY`: 0.023 → **0.030** (empirically derived from rest-engineered
+  sim showing per-PA wOBA gap of 0.0092 between non-DH and DH).
+- League-avg hitter (wOBA 0.318) now lands ~+1.4 WAR. Soto/Tucker/Ohtani at
+  +5.7-6.9. Replacement (wOBA 0.290) at exactly 0.0.
+
+### Fielding system (full rebuild from sim sweeps)
+
+All 8 positions' `FIELDING_RUN_VALUES_VS_REPLACEMENT` tables replaced with
+sim-derived values. Each position has its baseline (anchor) plus per-rating
+contributions:
+
+| Position | Baseline | Method |
+|---|---|---|
+| C | 55/55/55 | FRM full sweep + BLK/ARM floor-ceiling. Additive. |
+| 1B | 35/35/35/35 | All ratings floor-ceiling. Only RNG meaningful. Additive. |
+| 2B | 55/55/50/55 | RNG/TDP full sweeps + ERR/ARM floor-ceiling. **Saturation flagged.** |
+| 3B | 50/55/60/50 | RNG/ARM full sweeps + ERR/TDP floor-ceiling. **Saturation flagged.** |
+| SS | 60/60/60/60 | RNG/ARM full sweeps + ERR/TDP floor-ceiling. **Saturation flagged.** |
+| CF | 60/50/55 | RNG full sweep + ARM/ERR floor-ceiling. Additive. |
+| LF | 50/50/50 | RNG full sweep + ARM/ERR floor-ceiling. Additive. |
+| RF | 50/50/50 | RNG/ARM full sweeps + ERR floor-ceiling. Additive. |
+
+Fielding `metrics_fielding.calc_fielding_metrics` was vectorized (175× speedup,
+output identical). Cross-position validation: each position's individual rating
+sums match cross-position floor/ceiling within sim noise EXCEPT for the
+infield positions (2B/3B/SS) which have ~30-50% saturation at extremes.
+This is documented in `metrics_fielding.INTERACTION_HANDLERS` comment.
+
+### Cross-position adjustments (fixed values, replaces scarcity bonus)
+
+- New `config.POSITIONAL_ADJUSTMENT_RUNS`: SS +6.5, 2B +4.8, C +3.4, 3B +2.9,
+  CF +2.4, RF −2.0, LF −5.4, 1B −12.5, DH −17.5. Sum to zero across 8
+  fielding positions; DH from FG convention.
+- Replaces `_skill_aware_bonus` and `_compute_positional_distribution` in
+  `metrics_war.py` (both removed). Old `POSITION_ADJ_REFERENCE` and
+  `SCARCITY_SKILL_GAMMA` constants removed.
+- Applied as flat per-position WAR adjustment. Validated in
+  `calibration/test_fixed_pos_adj.py`.
+
+### New constants in `config.py`
+
+- `RUNS_PER_WIN = 10` (kept as legacy/default)
+- `RUNS_PER_WIN_HITTING = 10.28` (sim-empirical, used by `metrics_hitting.py`)
+- `RUNS_PER_WIN_PITCHING = 10.76` (informational; pitcher coefficients are
+  pre-scaled, formula doesn't reference this)
+- `RUNS_PER_WIN_FIELDING = 9.53` (informational; `metrics_fielding.py` still
+  uses `RUNS_PER_WIN = 10` divisor — see "open questions" below)
+- `POSITIONAL_ADJUSTMENT_RUNS` (dict, 9 positions)
+- `PITCHING_WAR_COEFFS` (dict, intercept + 4 coefs)
+- `DSL_INELIGIBLE_NATIONS = {206, 36}` — USA, Canada (in `build_system.py`)
+
+### DSL eligibility (US/Canadian players blocked from R(DLR))
+
+- New `build_system.dsl_eligible_lowest_level(p)` returns R for USA (206) /
+  Canadian (36) players; R(DLR) for everyone else. `build_system.py:300+`.
+- `_bot` calculation in both build files now: `min(age_lowest_level,
+  service_lowest_level, dsl_eligible_lowest_level)`.
+- `nation_id` added to `PLAYERS_COLUMNS` in config and to both
+  `hitters.html` / `pitchers.html` `EXPORT_PAGES` column lists.
+- Validated: 0 US/CAN players in R(DLR) across COL/AZ/LAA/NYY/BOS.
+
+### Pitcher HP enforcement
+
+- New `_enforce_hp_pitchers` function in `build_pitcher_system.py:411+`,
+  mirrors hitter Step 3 HP enforcement. For HP pitchers in overflow, attempts
+  to swap with worst non-HP at target level if pwOBAP gain ≥ pwOBA loss.
+- Added as Step 5a (after the Step 5 catch-all).
+- Validated: Slawinski (LAA HP, pwOBA 0.469, pwOBAP 0.324) now placed at
+  R(DLR) RP via swap. Some HP pitchers may still remain in overflow if no
+  swap is viable — that's correct behavior.
+
+### Removed legacy code
+
+- `_skill_aware_bonus`, `_compute_positional_distribution`,
+  `_all_floor_baseline` functions in `metrics_war.py`
+- `POSITION_ADJ_REFERENCE`, `SCARCITY_SKILL_GAMMA`, `ADJ_STDEV_FLOOR`
+  constants
+- `RUNS_PER_GAME_PITCHING_COEFF`, `RUNS_PER_GAME_PITCHING_CONST` constants
+- Files deleted: `calibration/compare_adjustments.py`,
+  `calibration/skill_aware_adj.py`
+- `war_pitchingP` gating in `metrics_pitching.py`: replaced
+  `(...).where(sp_warP.notna())` with role-based mask matching the current-side
+  pattern
+
+### Other fixes
+
+- Cleaned up `xlsx` Front-of-rotation note thresholds at
+  `build_excel.py:396-405`. Old thresholds (>=2.0 = "Front-of-rotation")
+  produced "everyone is front-of-rotation" with the new WAR scale. New:
+  >=4.0 = Front, >=2.0 = Mid, >=0.5 = Back-end. RP: >=1.5 = High leverage,
+  >=0.5 = Mid, else Low/depth.
+- Catcher tables: legacy `_fld` (scarcity-adjusted) inflates ~+3 WAR over
+  `_def`. The legacy scarcity math was removed; current `_fld` = `_def` +
+  fixed pos-adj. Behavior should be cleaner now.
 
 ## Critical files
 
 | File | Role |
 |---|---|
-| `build_system.py` | Hitter rosters — wOBA cascade, catcher allocation, HP enforcement, platoon Hungarians, bench refinement, service-time floor, overflow backfill |
-| `build_pitcher_system.py` | Pitcher rosters — pwOBA cascade, SP/RP split, +1 stretch, overflow handling |
-| `build_excel.py` | xlsx renderer; batting orders + R/G estimate per platoon block |
-| `streamlit_app.py` | Single-page UI: Overview / Rosters by level / Release pool / Scout hitters / Scout pitchers tabs |
-| `main.py` | `compute_df()` runs the full metrics pipeline; `main()` adds JSON / HTML exports |
-| `reader.py` | OOTP CSV loaders. `add_years_at_level` builds service-time columns |
-| `metrics_pitching.py` | pwOBA / sprp using `position == 1` + stamina ≥ 40 |
-| `metrics_war.py` | Scarcity-adjusted positional WAR; `_hitter_mask` uses `pitches == 0` |
-| `config.py` | Constants. `pistachio_filepath = Path(__file__).parent`; `filepath` is OOTP CSV dir, runtime-overridable |
-| `app.py` | argparse CLI |
-| `outputs/hitters.json` / `outputs/pitchers.json` | Pipeline output, consumed by build_system / build_pitcher_system |
-| `outputs/{org}_roster_system.xlsx` | Final per-team xlsx |
+| `config.py` | All constants. `BASE_PITCHING_RATES`, `PITCHING_COMPONENTS_ADJUST_MAP` (multiplicative), `PITCHING_WAR_COEFFS`, `POSITIONAL_ADJUSTMENT_RUNS`, `FIELDING_RUN_VALUES_VS_REPLACEMENT` (rebuilt all 8 positions), DSL_INELIGIBLE_NATIONS, RUNS_PER_WIN_HITTING/PITCHING/FIELDING, DH_PENALTY = 0.030 |
+| `metrics_pitching.py` | Multiplicative `adjust_rates`, component-aware WAR formula, role-mask gating |
+| `metrics_hitting.py` | Uses `RUNS_PER_WIN_HITTING` |
+| `metrics_war.py` | Fixed positional adjustments only (no more scarcity bonus). Cleaner. |
+| `metrics_fielding.py` | Vectorized (175× speedup). 2B/3B/SS saturation flagged in INTERACTION_HANDLERS comment. |
+| `build_system.py` | Hitter rosters. New `dsl_eligible_lowest_level` helper. |
+| `build_pitcher_system.py` | Pitcher rosters. New `_enforce_hp_pitchers` (Step 5a). DSL eligibility added. |
+| `build_excel.py` | xlsx renderer. Recalibrated rotation/leverage thresholds. |
+| `streamlit_app.py` | 5-tab UI. No structural changes this session. |
+| `exporter.py` | `nation_id` added to hitters and pitchers EXPORT_PAGES. |
+| `reader.py` | `nation_id` added to PLAYERS_COLUMNS via config. |
+| `calibration/fit_pitcher_v2.py` | Pitcher refit script (analysis only) |
+| `calibration/validate_pitcher_v2.py` | Sim cross-check (predict each sim row, compare actual) |
+| `calibration/test_fixed_pos_adj.py` | Side-by-side test of fixed vs scarcity pos-adj |
+| `calibration/release_pool_check.py` | Overflow analysis tool |
+| `calibration/sim_data.csv` | Hitter calibration sim data (legacy) |
+| `calibration/fielding_sim.csv` | Fielding calibration data (legacy LSQ source — superseded by direct sim sweeps this session) |
 
-## Current algorithm
+## Sample WAR values (post-refit)
 
-### Pipeline (main.compute_df)
+### Top SPs (200 IP target, sim-empirical runs/win)
+| Pitcher | sp_war |
+|---|---|
+| Tarik Skubal (LAA) | 5.6 |
+| Garrett Crochet (BOS) | 4.9 |
+| Paul Skenes (PIT) | 4.7 |
+| Logan Webb (SF) | 4.3 |
+| Chris Sale (ATL) | 3.8 |
+| (all-50 baseline SP) | 2.6 |
 
-1. `load_players` — players.csv → df, drops retired
-2. `add_pitching_career_stats`, `add_hitting_career_stats` — IP / PA columns (display only; optional)
-3. `add_years_at_level` — yrs_MLB / yrs_AAA / … / yrs_R(DLR) (one year per calendar season, credited to highest level reached). Optional; zero-fills when career CSVs missing
-4. `add_scouted_ratings` — filtered to `config.ID` (head scout). The Streamlit toggle monkey-patches this to `-1` for OSA
-5. `count_pitches`, `is_flagged`, `calc_*_metrics`, `calc_war` — computes pwOBA / wOBA / WAR / `_def` / `_adj` / `_fld` / `pos_adj`
-6. `export_html_pages`, `export_json_pages` — write outputs/
+### Top RPs (RP IP = 0.333 × SP IP ≈ 67 IP)
+| Pitcher | rp_war |
+|---|---|
+| Griffin Jax (TB), Jhoan Duran (PHI) | 1.7 |
+| Mason Miller (HOU), Cade Smith (CLE) | 1.5 |
+| (no leverage adjustment — multiply by 1.5-2× for FG-comparable closer WAR) | |
 
-### Hitter placement (build_system.main)
+### Top hitters (with new positional adjustments)
+| Player | wOBA | best_adj |
+|---|---|---|
+| Kyle Tucker (LAD, RF) | .408 | 8.90 |
+| Roman Anthony (BOS, CF) | .392 | 8.24 |
+| Corey Seager (TEX, SS), Francisco Lindor (NYM, SS) | .37 | 7.75 |
+| Soto (NYM, RF) | .433 | 6.90 |
+| (league avg, wOBA 0.318) | | ~1.4 (bat only) |
 
-- **Step 0**: filter international complex (minor=0 + age<20); separate injured (OOTP `injury_is_injured == 1` AND NOT `injury_dtd_injury == 1` — DTD players keep playing)
-- **Step 1**: catcher allocation. Score `wOBA + 0.05·C_fld + 0.002·min(age, 30)`, strict `_top` eligibility, `is_catcher_candidate` filters out players whose pos_adj isn't C and whose best-other-fld exceeds C_fld by > 1.5
-- **Step 2**: non-catcher cascade. Each player placed at `_top = woba_max_level(p)` (with `PREMIUM_WOBA_RELAX` of .005 for primary C / SS / CF). `_bot = min(age_lowest_level, service_lowest_level)` — service-time limits (`SERVICE_LIMITS = {'A+':5, 'A':4, 'R':3, 'R(DLR)':3}`, inclusive — 5 yrs total still admits A+) hard-floor placement upward
-- **Step 3**: HP enforcement. Every HP must START except at MLB. Demote alone if no swap target eligible
-- **Step 3.5**: rebalance — pop over-target levels (created by HP demotions) back down or to overflow
-- **Step 3.6**: overflow backfill — pull highest-priority eligible players out of overflow into any under-target level
-- **Step 4**: bench refinement. Util IF / Util OF roles use score `(positions_playable, 0.6·fld_sum + 0.4·war_hitting)`; refinement uses the same shape. Multi-position is hard prerequisite; weighted glove+bat resolves within a tied position count
-- **Step 5**: per-level Hungarian + vs-RHP / vs-LHP variants
+### Top defensive catchers (raw fielding only)
+| Catcher | Cfram | C_def |
+|---|---|---|
+| Patrick Bailey (SF) | 80 | 1.2 |
+| Alejandro Kirk (TOR) | 75 | 1.2 |
+| Austin Hedges (FA) | 70 | 1.1 |
+| (Edgar Quero, CWS — worst) | 45 | −1.4 |
 
-### Pitcher placement (build_pitcher_system.main)
+(Quero matches FG's −15 FRV almost exactly. Bailey is OOTP-engine-compressed
+vs FG +30 — the engine plateaus framing above 65; documented as engine quirk.)
 
-- **Classifier**: `position == 1` (OOTP's own field) → pitcher. SP if stamina ≥ 40, else RP. No more pitch-count thresholds (deprecated).
-- **`_top`**: `pwoba_top_level(p)` only (no age cap). `_bot = min(age_lowest_level, service_lowest_level)`.
-- **`pitcher_priority`**: `0.9·pwOBA + 0.1·pwOBAP` — current dominant, projection light tiebreak. (Was age-tiered blend; over-promoted projection-elite arms above better-current pitchers.)
-- **Cascade + pull-up**: `_cascade` and `_pull_up` accept per-level `slots_for` dicts. Strict `_top ≤ i` plus a non-HP +1 stretch pass for backfill.
+## Known limitations
 
-### Per-org level capacities
+### Infield saturation (2B/3B/SS) — DEFERRED for future work
 
-`compute_roster_sizes(org)` (in build_system) reads `teams.csv` and scales
-R(DLR) by the count of org-affiliated DSL teams (league_id 234). Most orgs
-have 2 DSL teams → R(DLR) hitter cap 30. Pitcher capacities mirror —
-`SP_PER_LEVEL × n_dsl` rotations, `RP_PER_LEVEL × n_dsl` bullpen at R(DLR).
-Per-level targets stored on rosters dict (`target`, `sp_target`, `rp_target`)
-so xlsx + Streamlit display matches.
+`metrics_fielding.INTERACTION_HANDLERS` comment documents this. All three
+infield positions show ~30-50% saturation at extreme rating combos:
+- 2B: 17% floor / 45% ceiling (validated all-65 sim)
+- 3B: 43% floor / 50% ceiling
+- SS: 36% floor / 31% ceiling (legacy SS_INTERACTION_CORRECTION grid still
+  applied as partial correction, but calibrated against OLD 1D tables — stale)
 
-## Key constants (tunable)
+Effect: elite IF defenders' WAR is ~0.3-0.5 too high in absolute terms.
+**Relative rankings within each position are preserved.** Cross-position
+comparisons via the +12.5/−12.5 pos-adj may slightly favor IF over OF.
 
-| Constant | Value | Where | What it does |
-|---|---|---|---|
-| `WOBA_MIN` | dict per level | build_system | wOBA threshold per level (.280 MLB → .165 R) |
-| `MAX_AGE` | dict per level | build_system | Age cap per level (R(DLR)=21, R=22, A=23, A+=24, AA+=99) |
-| `SERVICE_LIMITS` | A+=5, A=4, R=3, R(DLR)=3 | build_system | OOTP cumulative service caps; inclusive (5 yrs still allowed at A+) |
-| `C_FLD_WEIGHT` | 0.05 | build_system | C_fld weight in catcher_alloc_score |
-| `AGE_WEIGHT` | 0.002 | build_system | Older-catcher tiebreak |
-| `C_FLD_GAP_MAX` | 1.5 | build_system | Catcher candidate filter — exclude if best_other_fld − C_fld > this |
-| `PREMIUM_WOBA_RELAX` | 0.005 for C/SS/CF | build_system | Hitter wOBA threshold relaxation for premium positions |
-| `HP_MAX_AGE` | 23 | build_system | HP age cutoff (hitters) |
-| `PWOBA_MAX` | dict per level | build_pitcher_system | pwOBA ceiling per level (.345 MLB → 1.000 R(DLR)) |
-| `MINIMUM_STARTER_STAMINA` | 40 | config | Stamina ≥ this → SP-viable |
-| `HP_PITCHER_MAX_PWOBAP` | 0.330 | build_pitcher_system | HP pitcher projection threshold |
-| `SP_PER_LEVEL` / `RP_PER_LEVEL` | 5 / 8 | build_pitcher_system | Default per-level pitcher counts (R(DLR) scales by DSL count) |
-| `MINIMUM_RELIEVER_PITCHES` / `MINIMUM_STARTER_PITCHES` | deprecated | config | No longer used; kept for back-compat |
+Two paths to fix later:
+1. Position-specific saturation function (multiplier on summed contributions)
+2. Refit interaction grids (2D RNG×ARM for 3B, refit SS grid against new tables)
 
-## Streamlit UI
+A diagnostic 3B sim was suggested earlier (RNG=80×ARM=80 with others at
+baseline) — would tell whether RNG×ARM is the dominant 2D interaction at 3B.
+Not yet run.
 
-5 tabs: **Overview** (KPI cards + MLB lineup + bench + rotation + bullpen +
-HP hitters + HP pitchers + Currently unavailable), **Rosters by level**
-(per-level expanders with hitters / pitchers / vs-RHP / vs-LHP batting
-orders + R/G), **Release pool** (overflow with Top level column),
-**Scout hitters** / **Scout pitchers** (cross-org filterable scouting view).
+### Catcher framing engine plateau
 
-Sidebar: team picker, ratings source toggle (Head Scout / OSA — auto-detects
-non-OSA scouting_coach_id from CSV; Recalc button re-runs pipeline),
-upload widget (session-gated; new tab requires fresh upload), download xlsx.
+OOTP's engine plateaus framing value above Cfram=65 (+8 runs ceiling regardless
+of higher rating). Real MLB FRV says elite framers worth +30 runs. This is a
+genuine OOTP engine limitation (the doc flagged it; matches the +3.4 catcher
+pos-adj vs FG's +12.5). Decision: trust the sim. Catcher fielding WAR will be
+"compressed" vs FG-comparable values for elite framers but accurate for the
+floor side (Quero matches FG within 1 run).
 
-## What was done this session (changelog)
+### LF essentially eliminated as `pos_adj`
 
-In rough order:
-1. Catcher logic refinement: strict `_top`, `AGE_WEIGHT`, `PREMIUM_WOBA_RELAX`,
-   `is_catcher_candidate` glove-gap test
-2. Streamlit front-end built; xlsx absorbed batting-order + R/G from the
-   retired org-report
-3. CLI parameterised (any team, any save)
-4. CSV upload flow with session gate; ratings toggle; scout-id auto-detect
-5. Career-stats CSVs made optional; pitches replaced ip as hitter-mask
-6. DTD injuries excluded from flagged list
-7. Pitcher age cap removed; pwOBA alone gates `_top`
-8. Service-time data layer (`add_years_at_level` collapses multi-level
-   years to highest reached)
-9. Service-time as hard constraint via `_bot` floor
-10. Step 3.5 rebalance + Step 3.6 overflow backfill (closes the
-    AA-bulge / under-filled-AAA gap)
-11. Pitcher classification: `position == 1` + stamina-only gate
-    (drops MINIMUM_*_PITCHES)
-12. `pitcher_priority` to 90/10 current/projection (was age-tiered blend)
-13. Utility IF/OF 60/40 fld-to-bat scoring (in WAR units)
-14. Bench refinement aligned with classify_bench
-15. Per-org R(DLR) capacity scales by DSL team count
+With the new positional adjustments (RF −2.0 vs LF −5.4) and similar OF
+fielding values for both positions, RF strictly dominates LF for any player
+with adequate arm. Result: 0 players have `pos_adj=LF` after refit. This
+matches the side-by-side test prediction. LF still gets computed but rarely
+chosen — only players whose RF is NaN'd by floor (no arm) end up at LF.
 
-Latest commit: `d77bb7f` "Scale R(DLR) capacity by DSL team count per org".
+### Pitcher RP WAR is workload-only, no leverage adjustment
 
-## Open / next-up
+`rp_war = sp_war × 0.3333` implies ~67 IP for an RP. Doesn't apply
+FanGraphs' leverage multiplier for closers/setup men. To match FG-displayed
+closer WAR (3-4 fWAR for elite seasons), multiply elite RP WAR by ~1.5-2×.
+Could add a leverage layer in the future.
 
-**Split R(DLR) into two physical teams.** Currently R(DLR) for a
-2-DSL org is one combined level with capacity 30. The user wants
-each DSL team to be its own level slot (e.g. R(DLR) → R(DLR1) +
-R(DLR2)) so:
-- Each team has its own roster
-- xlsx renders separate sheets per DSL team
-- Streamlit per-level expander shows each separately
+### Pitching coefficient asymmetry
 
-This is non-trivial because:
-- `LEVELS` list and `WOBA_MIN` / `PWOBA_MAX` / etc. are module-level
-  constants; making them per-org would require refactoring everywhere
-  that iterates `LEVELS`
-- Sheet naming, JSON shape, Streamlit tab layout all assume a fixed
-  level set
-- HP / cascade / refinement loops all index by level name
+Pitcher WAR uses single-coefficient regression. Per the calibration: HRA-driven
+pwOBA changes give ~74 WAR/pwOBA, CTRL-driven give ~101 WAR/pwOBA. Single
+fitted coefficient is the average. Pure HR-suppressors slightly undervalued,
+control-only specialists slightly overvalued. Acceptable as known limitation.
 
-Possible approaches:
-1. **Org-aware LEVELS list**: `compute_levels(org)` returns
-   `[..., 'R(DLR)1', 'R(DLR)2']` for 2-DSL orgs, plain `R(DLR)` otherwise.
-   All modules iterate the org-specific list.
-2. **Sub-level grouping**: keep LEVELS as-is, but the rosters dict
-   for R(DLR) gains a sub-roster per DSL team, distributed by some rule
-   (alphabetical / age / random). Less invasive but doesn't actually
-   create separate sheets.
+### Calibration file `fielding_sim.csv` is stale
 
-Option 1 is what the user wants. Bigger refactor. Start by mapping
-every consumer of `LEVELS` and threading an org through.
-
-## Worktree hygiene
-
-Stale worktrees in `.claude/worktrees/`:
-- `distracted-benz-9c4f3a` ← active
-- `upgrade-v1` ← merged, can `git worktree remove`
-- a few older ones (`elastic-sutherland`, `flamboyant-sammet`, `relaxed-*`)
-  unrelated to current work — safe to remove if you want to clean up
+The legacy `calibration/fielding_sim.csv` was the data source for the OLD
+LSQ-fit fielding tables. The new tables came from direct sim sweeps in the
+calibrated environment (data was pasted into chat, not stored in CSV). The
+`fielding_sim.csv` file is now just historical artifact.
 
 ## Quick smoke test
 
 ```powershell
-cd C:\Users\sfwea\OneDrive\Documents\Antigravity\pistachio\.claude\worktrees\distracted-benz-9c4f3a
-python -X utf8 app.py refresh --csv-dir "C:/Users/sfwea/OneDrive/Documents/Out of the Park Developments/OOTP Baseball 27/saved_games/Rockies Rebuild.lg/import_export/csv"
-python -X utf8 -c "from build_system import main, LEVELS; r,o,f = main(org='COL'); print(f'COL: placed={sum(len(r[l][chr(34)+\"all\"+chr(34)]) for l in LEVELS)}, overflow={len(o)}, flagged={len(f)}')"
+python app.py refresh
+
+# Hitters
+python -X utf8 -c "from build_system import main; r,o,f=main(org='COL'); print(f'COL: rosters={list(r.keys())}, placed={sum(len(r[l][chr(34)+\"all\"+chr(34)]) for l in r)}, overflow={len(o)}')"
+
+# Pitchers + LHP balance
+python -X utf8 -c "from build_pitcher_system import main, is_lhp; r,o,f=main(org='AZ'); [print(lvl, sum(1 for p in r[lvl]['bullpen'] if is_lhp(p)),'L /', sum(1 for p in r[lvl]['bullpen'] if not is_lhp(p)),'R, sign_lhp=',r[lvl].get('sign_lhp',0)) for lvl in ('MLB','AAA','AA')]"
+
+# Pitcher sim cross-check
+cd calibration && python -X utf8 validate_pitcher_v2.py
 ```
 
-Expected for Rockies save: COL placed ~95-110, overflow ~20-25.
+Expected: COL hitters ~94 placed / ~23 overflow. AZ MLB bullpen 2L/6R sign_lhp=0.
+
+## What's still pending
+
+1. **2B/3B/SS saturation correction** — flagged in INTERACTION_HANDLERS comment
+2. **3B RNG×ARM diagnostic sim** suggested but not yet run (tests whether 2D
+   interaction grid like SS is the right fix)
+3. **SS_INTERACTION_CORRECTION grid re-derivation** — the existing 100-cell
+   grid was calibrated against OLD 1D tables, currently stale
+4. **`metrics_fielding.py` runs/win** still uses `RUNS_PER_WIN = 10`, not
+   `RUNS_PER_WIN_FIELDING = 9.53` — held off because user said wait for full
+   fielding rebuild. Now that the rebuild is done, this 5% scaling could be
+   applied. Effect: fielding WAR scales up ~5% uniformly.
+4. **Optional `nation_id` for `hit_prospects.html`** — currently missing from
+   that EXPORT_PAGES entry. Doesn't break anything (hit_prospects.json isn't
+   read by build systems) but inconsistent with the other two pages.
+5. **Per-stamina IP scaling for pitcher WAR** — explicitly held off to avoid
+   prospect distortion. Current model: SP=200 IP, RP=67 IP (constants). Could
+   model dynamic IP based on STAM rating but introduces other issues.
+6. **Pitcher RP leverage adjustment** — would let elite closers' rp_war match
+   FG's leverage-adjusted ~3-4 WAR.
+7. **Run history + git commit** — this session's changes are uncommitted.
+   Worth a single commit summarizing the rebuild before next chat.
 
 ## Worktree branch / remote
 
 ```
-local branch:  claude/distracted-benz-9c4f3a
-remote:        ootp_app/main (=ootp_app/upgrade-v1)
-HEAD commit:   d77bb7f
+local branch:  main
+remote:        ootp_app/main
+HEAD commit:   e2770d4 (pre-session)
+uncommitted:   substantial — see "What changed this session"
 ```

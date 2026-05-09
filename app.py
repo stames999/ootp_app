@@ -25,11 +25,20 @@ from pathlib import Path
 
 
 def _apply_csv_dir(args):
-    """Override config.filepath if --csv-dir was given. Must run before any
-    main / reader import that reads config.filepath."""
+    """Override config.filepath if --csv-dir was given, then auto-detect the
+    save's head-scout coach_id and apply it to config.ID. Auto-detect runs
+    unconditionally (with or without --csv-dir) — the repo default for
+    config.ID matches the LAA save the repo shipped with, and silently
+    diverges for any other save. Auto-detect catches that drift before the
+    pipeline filters every player's ratings to NaN."""
+    import config
     if getattr(args, 'csv_dir', None):
-        import config
         config.filepath = Path(args.csv_dir)
+    from reader import detect_head_scout_id
+    detected = detect_head_scout_id(config.filepath)
+    if detected is not None and detected != config.ID:
+        config.ID = detected
+        print(f'Using head-scout coach_id {detected} (auto-detected).')
 
 
 def cmd_refresh(args):

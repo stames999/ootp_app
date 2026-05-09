@@ -3,12 +3,11 @@ import pandas as pd
 
 from config import (
     FIELDING_RUN_VALUES_VS_REPLACEMENT,
-    POSITION_ADJ_REFERENCE,
     POSITION_FLOOR,
     POSITION_FLOOR_EXEMPT,
     POSITION_VIABILITY_GAP,
+    POSITIONAL_ADJUSTMENT_RUNS,
     RUNS_PER_WIN,
-    SCARCITY_SKILL_GAMMA,
 )
 
 
@@ -81,128 +80,6 @@ def _build_field(df, position_cols):
     )
 
 
-# Floor for per-position stdev when standardizing a player's defensive WAR
-# (the denominator of the z-score). Just a safety net for under-sampled or
-# pathologically-tight position distributions.
-ADJ_STDEV_FLOOR = 0.3
-
-
-def _all_floor_baseline(pos):
-    """
-    Synthetic <pos>_def value for a player whose relevant ratings are all at
-    POSITION_FLOOR (40). Used as a CAP on per-player contributions to the
-    positional mean — sub-floor extrapolated values can otherwise drag the
-    all-hitters mean far below this baseline and inflate the adjustment.
-
-    Returns the baseline in WAR units (runs / RUNS_PER_WIN).
-    """
-    ratings_dict = FIELDING_RUN_VALUES_VS_REPLACEMENT.get(pos, {})
-    if not ratings_dict:
-        return 0.0
-    runs = sum(table.get(POSITION_FLOOR, 0) for table in ratings_dict.values())
-    return runs / RUNS_PER_WIN
-
-
-def _skill_aware_bonus(df, pos, scarcity_constant, gamma):
-    """
-    Per-player scarcity bonus, scaled by the player's percentile rank within
-    the eligible hitter pool's <pos>_def. Mean-preserving by construction:
-
-        mean(bonus | eligible hitter) == scarcity_constant
-
-    so cross-position calibration anchored on POSITION_ADJ_REFERENCE is
-    preserved. gamma=0 recovers the flat scheme; gamma=0.5 spreads bonuses
-    from 0.5x to 1.5x scarcity_constant across the percentile range.
-
-    The reference distribution is hitters-only (no current pitch types
-    above the rating floor) so the percentile isn't diluted by pitchers
-    who happen to clear the floor; bonuses are then interpolated for any
-    non-hitter who passes the floor (rarely matters since pitcher
-    <pos>_fld isn't consumed downstream).
-
-    Returns a Series indexed like df: bonus for floor-passing players, NaN
-    elsewhere. Adding this to df[pos] / df[f"{pos}_def"] propagates NaN
-    correctly for ineligible players.
-    """
-    bonus = pd.Series(np.nan, index=df.index)
-
-    elig_idx = df.index[df[pos].notna()]
-    if len(elig_idx) == 0:
-        return bonus
-
-    hitter_mask = _hitter_mask(df)
-    ref_idx = df.index[df[pos].notna() & hitter_mask]
-    if len(ref_idx) == 0:
-        return bonus
-
-    ref_def = np.sort(df.loc[ref_idx, f"{pos}_def"].to_numpy())
-    elig_def = df.loc[elig_idx, f"{pos}_def"].to_numpy()
-
-    # Percentile against the hitter-eligible distribution, midpoint convention
-    # so the empirical mean of pct is exactly 50 over the reference pool.
-    n_ref = len(ref_def)
-    left = np.searchsorted(ref_def, elig_def, side="left")
-    right = np.searchsorted(ref_def, elig_def, side="right")
-    pct = ((left + right) / 2.0 / n_ref) * 100.0
-
-    bonus.loc[elig_idx] = scarcity_constant * (1.0 + gamma * (pct / 50.0 - 1.0))
-    return bonus
-
-
-def _compute_positional_distribution(df):
-    """
-    Compute (mean, stdev) of each position's defensive WAR. The mean drives
-    the mean-shift positional adjustment in calc_war.
-
-    Per-player <pos>_def values are CAPPED at the position's all-floor
-    baseline before contributing to the mean. Without this cap, sub-floor
-    extrapolated values (Cfram=20 → -57 runs, etc.) drag the all-hitters
-    mean far below the realistic floor and inflate the scarcity adjustment
-    (e.g. C adjustment ballooning to +7 WAR in real OOTP exports). Capping
-    at the all-rating-40 baseline preserves the scarcity signal — positions
-    where most players score below floor still produce meaningfully-negative
-    means — without runaway inflation.
-
-    1B is exempt (no floor → no cap). DH has no _def → degenerate.
-
-    Returns a dict {position: (mean_capped, stdev_eligible)}.
-    """
-    hitters = df[_hitter_mask(df)]
-
-    stats = {}
-    for pos in ALL_POSITIONS:
-        if pos == "DH":
-            stats[pos] = (0.0, 0.0)  # degenerate; DH has no fielding value
-            continue
-
-        col = f"{pos}_def"
-        if col not in hitters.columns:
-            stats[pos] = (0.0, 0.0)
-            continue
-
-        # Mean: cap each player's <pos>_def at the all-floor baseline before
-        # averaging. 1B (catch-all, no floor) skips the cap.
-        if pos in POSITION_FLOOR_EXEMPT:
-            pos_mean = float(hitters[col].mean())
-        else:
-            cap = _all_floor_baseline(pos)
-            pos_mean = float(hitters[col].clip(lower=cap).mean())
-
-        # Stdev kept around for diagnostics (computed over the eligible pool
-        # to avoid sub-floor variance inflation). Not used by mean-shift adj.
-        ratings_dict = FIELDING_RUN_VALUES_VS_REPLACEMENT.get(pos, {})
-        relevant_cols = [c for c in ratings_dict.keys() if c in hitters.columns]
-        if pos in POSITION_FLOOR_EXEMPT or not relevant_cols:
-            eligible = hitters
-        else:
-            ok = (hitters[relevant_cols].fillna(0) >= POSITION_FLOOR).all(axis=1)
-            eligible = hitters[ok]
-        pos_std = float(eligible[col].std()) if len(eligible) > 1 else float(hitters[col].std())
-
-        stats[pos] = (pos_mean, pos_std)
-    return stats
-
-
 def calc_war(df):
     """
     Combine hitting WAR with each position's defensive runs to produce
@@ -211,9 +88,9 @@ def calc_war(df):
     1B exempt as catch-all). The `field` column lists every position the
     player can physically play.
 
-    Then computes empirical positional adjustments from <pos>_def averages
-    over the all-hitters pool (anchored on POSITION_ADJ_REFERENCE) and
-    produces scarcity-adjusted <pos>_adj columns plus best_adj / pos_adj.
+    Then applies fixed positional adjustments from POSITIONAL_ADJUSTMENT_RUNS
+    (sim-calibrated, FG-standard ±12.5) and produces position-adjusted
+    <pos>_adj columns plus best_adj / pos_adj.
 
     Output columns:
       Raw current:     C, CF, RF, LF, SS, 2B, 3B, 1B, DH (NaN if floor-violator)
@@ -266,56 +143,38 @@ def calc_war(df):
     # ── Build `field` from feasible current-WAR positions ───────────────────
     df["field"] = _build_field(df, FIELD_DISPLAY_POSITIONS)
 
-    # ── Skill-aware empirical positional adjustment ─────────────────────────
+    # ── Fixed positional adjustment ─────────────────────────────────────────
     #
-    # For each non-anchor position, the scarcity bonus is mean-preserving but
-    # per-player: the bonus scales with the player's percentile rank within
-    # the eligible hitter pool's <pos>_def. The eligible-pool mean of the
-    # bonus equals the flat mean-shift constant
+    # Each position gets a flat per-player WAR adjustment from
+    # POSITIONAL_ADJUSTMENT_RUNS (in runs/162, divided by RUNS_PER_WIN to
+    # convert to WAR units). Values were derived from OOTP team-of-clones
+    # calibration, scaled to FG-standard ±12.5 range, and sum to zero across
+    # the 8 fielding positions. DH = -17.5 from FanGraphs convention.
     #
-    #     scarcity_pos = mean_1B - mean_pos
+    # Replaces the prior in-sample skill-aware scarcity bonus, which back-fit
+    # a per-player premium against the population's fielding distribution.
+    # The fixed scheme is conventional (matches FG/bWAR), externally calibrated
+    # (sim-derived, not data-fit), and validated in test_fixed_pos_adj.py.
     #
-    # so cross-position calibration (anchored on POSITION_ADJ_REFERENCE) is
-    # preserved by construction. SCARCITY_SKILL_GAMMA controls the spread:
-    # gamma=0 recovers the flat scheme exactly; the production default 0.5
-    # gives a 100th-percentile player at SS ~1.5x the scarcity bonus, a 0th
-    # percentile player ~0.5x. See _skill_aware_bonus and
-    # calibration/skill_aware_adj.py for the derivation and comparison
-    # against the flat scheme.
-    #
-    # Hitting WAR is preserved as a literal additive term. 1B_adj == 1B by
-    # construction (it's the anchor; bonus = 0). Same bonus is applied to
-    # current and potential WAR because OOTP fielding ratings are static.
-    pos_stats = _compute_positional_distribution(df)
-    ref_mean, _ = pos_stats[POSITION_ADJ_REFERENCE]
-
+    # _fld preserves the legacy behavior of "fielding-only WAR with positional
+    # adjustment baked in" — same value across current and potential because
+    # OOTP fielding ratings are static.
     for pos in ALL_POSITIONS:
+        adj_runs = POSITIONAL_ADJUSTMENT_RUNS.get(pos, 0)
+        adj_war = adj_runs / RUNS_PER_WIN
+
         if pos == "DH":
-            # DH has no fielding distribution; no scarcity premium to capture.
-            # DH penalty already lives inside DH_hitting; DH_fld is nominally 0.
-            df[f"{pos}_adj"] = df[pos]
-            df[f"{pos}P_adj"] = df[f"{pos}P"]
-            df["DH_fld"] = 0.0
+            # DH has no fielding (no _def). _adj is just bat + DH adjustment.
+            df[f"{pos}_adj"] = df[pos] + adj_war
+            df[f"{pos}P_adj"] = df[f"{pos}P"] + adj_war
+            df["DH_fld"] = 0.0  # nominally zero for the no-defense position
             continue
 
-        if pos == POSITION_ADJ_REFERENCE:
-            # Anchor: by construction adj_pos == 0 for the reference.
-            df[f"{pos}_adj"] = df[pos]
-            df[f"{pos}P_adj"] = df[f"{pos}P"]
-            # _fld for the anchor = raw _def (no scarcity adj).
-            df[f"{pos}_fld"] = df[f"{pos}_def"]
-            df.loc[df[pos].isna(), f"{pos}_fld"] = float("nan")
-            continue
-
-        pos_mean, _ = pos_stats[pos]
-        scarcity = ref_mean - pos_mean  # eligible-pool mean of the bonus
-        bonus = _skill_aware_bonus(df, pos, scarcity, SCARCITY_SKILL_GAMMA)
-
-        # Apply per-player bonus. NaN bonus for ineligible players propagates
-        # through addition so floor-violators stay NaN'd in _adj / _fld.
-        df[f"{pos}_adj"] = df[pos] + bonus
-        df[f"{pos}P_adj"] = df[f"{pos}P"] + bonus
-        df[f"{pos}_fld"] = df[f"{pos}_def"] + bonus
+        # Apply fixed per-position WAR adjustment. NaN at the underlying
+        # position (floor violator) propagates so ineligible players stay NaN.
+        df[f"{pos}_adj"] = df[pos] + adj_war
+        df[f"{pos}P_adj"] = df[f"{pos}P"] + adj_war
+        df[f"{pos}_fld"] = df[f"{pos}_def"] + adj_war
         df.loc[df[pos].isna(), f"{pos}_fld"] = float("nan")
 
     adj_cols = [f"{p}_adj" for p in ALL_POSITIONS]

@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+
 from config import (
     FIELDING_RUN_VALUES_VS_REPLACEMENT,
     RUNS_PER_WIN,
@@ -5,8 +8,25 @@ from config import (
 )
 
 # Positions with a 2D interaction correction layered on top of the additive
-# tables. SS is the only one — its RNG×ARM substitution genuinely violates
-# additivity. See config.SS_INTERACTION_CORRECTION for derivation.
+# tables. SS is the only one currently — its RNG×ARM substitution genuinely
+# violates additivity. See config.SS_INTERACTION_CORRECTION for derivation.
+#
+# KNOWN SATURATION LIMITATIONS (2B / 3B / SS):
+# All three infield positions (excluding 1B) show ~30-50% saturation at
+# extreme rating combos — the linear-additive sum overstates the
+# cross-position floor/ceiling sims:
+#   2B: 17% floor saturation, 45% ceiling saturation (validated all-65 sim
+#       predicted +9.8 vs actual +5.4)
+#   3B: 43% floor, 50% ceiling
+#   SS: 36% floor, 31% ceiling (legacy SS_INTERACTION_CORRECTION grid below
+#       provides partial correction but was calibrated against OLD 1D tables
+#       and is stale; needs re-derivation against the current tables)
+#
+# Effect on elite infielder WAR: ~0.3-0.5 too high in absolute terms.
+# Relative rankings within each position are preserved. Revisit with
+# position-specific saturation functions or refit interaction grids when
+# absolute WAR magnitudes matter (e.g., for cross-position comparisons via
+# the +12.5/-12.5 pos-adj).
 INTERACTION_HANDLERS = {
     "SS": {
         "grid": SS_INTERACTION_CORRECTION,
@@ -24,11 +44,19 @@ def closest_rating(value):
     scarcity. NaN ratings default to 20 (most punitive) on the principle
     that "we have no data" should be treated like "this player can't field."
     """
-    import pandas as pd
     if pd.isna(value):
         return 20
     rounded = round(value / 5) * 5
     return min(75, max(20, rounded))
+
+
+def _vec_closest_rating(series):
+    """Vectorized closest_rating: round to nearest 5, clamp 20-75, NaN→20.
+    Returns an int Series aligned with `series`."""
+    arr = series.fillna(20).to_numpy(dtype=float)
+    rounded = np.clip(np.rint(arr / 5.0) * 5.0, 20, 75).astype(int)
+    return pd.Series(rounded, index=series.index)
+
 
 def calc_fielding_metrics(df):
     """
@@ -48,29 +76,27 @@ def calc_fielding_metrics(df):
     for position, ratings_dict in FIELDING_RUN_VALUES_VS_REPLACEMENT.items():
         total_def_column = f"{position}_def"
         handler = INTERACTION_HANDLERS.get(position)
-        def_values = []
 
-        for _, row in df.iterrows():
-            total = 0.0
+        # Sum the lookup-table values across all ratings, vectorized.
+        total = pd.Series(0.0, index=df.index)
+        for rating_name, rating_map in ratings_dict.items():
+            if rating_name not in df.columns:
+                continue
+            rounded = _vec_closest_rating(df[rating_name])
+            total = total + rounded.map(rating_map).fillna(0.0)
 
-            for rating_name, rating_map in ratings_dict.items():
-                if rating_name in row:
-                    player_rating = row[rating_name]
-                    rounded = closest_rating(player_rating)
-                    value = rating_map.get(rounded, 0.0)
-                    total += value
+        # 2D interaction correction (SS only). Missing column defaults to
+        # 30 to match the legacy iterrows behavior.
+        if handler is not None:
+            col1, col2 = handler["rating_cols"]
+            v1 = (_vec_closest_rating(df[col1]) if col1 in df.columns
+                  else pd.Series(30, index=df.index))
+            v2 = (_vec_closest_rating(df[col2]) if col2 in df.columns
+                  else pd.Series(30, index=df.index))
+            pairs = pd.Series(list(zip(v1, v2)), index=df.index)
+            total = total + pairs.map(handler["grid"]).fillna(0.0)
 
-            # 2D interaction correction (SS only)
-            if handler is not None:
-                col1, col2 = handler["rating_cols"]
-                v1 = closest_rating(row[col1]) if col1 in row else 30
-                v2 = closest_rating(row[col2]) if col2 in row else 30
-                total += handler["grid"].get((v1, v2), 0.0)
-
-            def_values.append(total)
-
-        df[total_def_column] = def_values
-        df[total_def_column] = (df[total_def_column] / RUNS_PER_WIN).round(1) # convert from runs to wins i.e. fielding WAR
+        df[total_def_column] = (total / RUNS_PER_WIN).round(1)
         added_columns.append(total_def_column)
 
     print(f"Added fielding columns: {added_columns}")

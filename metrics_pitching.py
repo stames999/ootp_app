@@ -3,12 +3,10 @@ from config import (
     BASE_PITCHING_RATES,
     PITCHING_COMPONENTS_ADJUST_MAP,
     PITCHING_WOBA_WEIGHTS,
+    PITCHING_WAR_COEFFS,
     HANDEDNESS_WEIGHTS,
     MINIMUM_STARTER_STAMINA,
     PITCHER_RATING_FLOOR,
-    RUNS_PER_GAME_PITCHING_COEFF,
-    RUNS_PER_GAME_PITCHING_CONST,
-    RUNS_PER_WIN,
     RELIEVER_VS_STARTER_AVERAGE_IP,
     SP_WAR_MIN_STAMINA,
 )
@@ -38,7 +36,9 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     df["sprp"] = df.apply(identify_role, axis=1)
 
-    # Helper function to adjust rates
+    # Helper function to adjust rates. Multiplicative model: each rating's
+    # adjustment is a ratio applied to the running rate (vs old additive form).
+    # Confirmed by HRA × CTRL = 20/20 interaction sim.
     def adjust_rates(row, side):
         rates = {
             "hr_vs": BASE_PITCHING_RATES["hr_vs_baserate"],
@@ -68,20 +68,19 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
                     continue
                 adj = table[str_value]
             else:
-                # Clamp to [min_key, max_key]. Mirrors metrics_hitting.py and
-                # avoids the previous sub-floor x10 amplification, which
-                # produced mathematically impossible pwOBA (>1.0) for low-rated
-                # pitchers and absurdly-negative rp_war.
+                # Clamp to [min_key, max_key]. Below-floor ratings (especially
+                # rare for CTRL/HRA after the 20-table extension) get the
+                # min_key multiplier rather than extrapolating into nonsense.
                 if pd.isna(value):
                     clamped = min_key
                 else:
                     clamped = max(min_key, min(int(value), max_key))
                 adj = table[str(clamped)]
 
-            rates["hr_vs"] += adj["hr_vs_adj"]
-            rates["bb_vs"] += adj["bb_vs_adj"]
-            rates["k_vs"] += adj["k_vs_adj"]
-            rates["h_nothr_vs"] += adj["h_nothr_vs_adj"]
+            rates["hr_vs"] *= adj["hr_vs_mult"]
+            rates["bb_vs"] *= adj["bb_vs_mult"]
+            rates["k_vs"] *= adj["k_vs_mult"]
+            rates["h_nothr_vs"] *= adj["h_nothr_vs_mult"]
 
         return pd.Series({
             f"hr_vs{side}": rates["hr_vs"],
@@ -125,10 +124,22 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # pwOBA / pwOBAR / pwOBAL are intentionally NOT gated by PITCHER_RATING_FLOOR
     # — they're bounded (post-clamp-fix) and useful as raw skill-quality
     # metrics for minor league system planning, where ratings <35 are common.
+    #
+    # Component-aware formula: WAR = b0 + b_HR*HR% + b_BB*BB% + b_K*K% + b_C*contact%
+    # Coefficients refit from sim sweeps; old single-coefficient pwOBA regression
+    # was systematically off by 2.5-3.5 WAR.
+    hr_pct = (df["hr_vsR"] * HANDEDNESS_WEIGHTS["R"] + df["hr_vsL"] * HANDEDNESS_WEIGHTS["L"]) * 100
+    bb_pct = (df["bb_vsR"] * HANDEDNESS_WEIGHTS["R"] + df["bb_vsL"] * HANDEDNESS_WEIGHTS["L"]) * 100
+    k_pct  = (df["k_vsR"]  * HANDEDNESS_WEIGHTS["R"] + df["k_vsL"]  * HANDEDNESS_WEIGHTS["L"]) * 100
+    c_pct  = (df["h_nothr_vsR"] * HANDEDNESS_WEIGHTS["R"] + df["h_nothr_vsL"] * HANDEDNESS_WEIGHTS["L"]) * 100
+
     base_war = (
-        -((df["pwOBA"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST)
-        / RUNS_PER_WIN
-    ).round(1)
+        PITCHING_WAR_COEFFS["intercept"]
+        + PITCHING_WAR_COEFFS["hr_pct_coef"] * hr_pct
+        + PITCHING_WAR_COEFFS["bb_pct_coef"] * bb_pct
+        + PITCHING_WAR_COEFFS["k_pct_coef"] * k_pct
+        + PITCHING_WAR_COEFFS["h_nothr_pct_coef"] * c_pct
+    ).where(pitcher_capable).round(1)
 
     df["sp_war"] = base_war
     df["rp_war"] = (base_war * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
@@ -176,7 +187,8 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     df["sprpP"] = df.apply(identify_role, axis=1)
 
-    # Helper function to adjust rates using potential ratings (no handedness)
+    # Helper function to adjust rates using potential ratings (no handedness).
+    # Multiplicative model — see calc_pitching_metrics for rationale.
     def adjust_rates(row):
         rates = {
             "hr_vs": BASE_PITCHING_RATES["hr_vs_baserate"],
@@ -204,18 +216,16 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
                     continue
                 adj = table[str_value]
             else:
-                # Clamp to [min_key, max_key]. See calc_pitching_metrics for
-                # why the prior x10 sub-floor amplification was removed.
                 if pd.isna(value):
                     clamped = min_key
                 else:
                     clamped = max(min_key, min(int(value), max_key))
                 adj = table[str(clamped)]
 
-            rates["hr_vs"] += adj["hr_vs_adj"]
-            rates["bb_vs"] += adj["bb_vs_adj"]
-            rates["k_vs"] += adj["k_vs_adj"]
-            rates["h_nothr_vs"] += adj["h_nothr_vs_adj"]
+            rates["hr_vs"] *= adj["hr_vs_mult"]
+            rates["bb_vs"] *= adj["bb_vs_mult"]
+            rates["k_vs"] *= adj["k_vs_mult"]
+            rates["h_nothr_vs"] *= adj["h_nothr_vs_mult"]
 
         return pd.Series(rates)
 
@@ -236,10 +246,20 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # applied — potential is meant to show development upside, so even
     # currently-sub-floor pitchers get a meaningful potential projection
     # (sub-floor potentials are clamped to min_key in adjust_rates above).
+    #
+    # Component-aware formula mirrors current-side WAR (see calc_pitching_metrics).
+    hr_pctP = df["hr_vs"] * 100
+    bb_pctP = df["bb_vs"] * 100
+    k_pctP  = df["k_vs"] * 100
+    c_pctP  = df["h_nothr_vs"] * 100
+
     base_warP = (
-        -((df["pwOBAP"] * RUNS_PER_GAME_PITCHING_COEFF) - RUNS_PER_GAME_PITCHING_CONST)
-        / RUNS_PER_WIN
-    ).round(1)
+        PITCHING_WAR_COEFFS["intercept"]
+        + PITCHING_WAR_COEFFS["hr_pct_coef"] * hr_pctP
+        + PITCHING_WAR_COEFFS["bb_pct_coef"] * bb_pctP
+        + PITCHING_WAR_COEFFS["k_pct_coef"] * k_pctP
+        + PITCHING_WAR_COEFFS["h_nothr_pct_coef"] * c_pctP
+    ).where(valid_pitcher).round(1)
 
     # Both sp_warP and rp_warP populated for every eligible pitcher (same
     # reasoning as current: lets users compare role-fit). Primary-role
@@ -257,12 +277,19 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     df["is_spP"] = (df["sprpP"] == "sp").astype(int)
     df["is_rpP"] = (df["sprpP"] == "rp").astype(int)
-    df["war_pitchingP"] = (
-        df["sp_warP"].fillna(0) * df["is_spP"]
-        + df["rp_warP"].fillna(0) * df["is_rpP"]
-    ).where(df["sp_warP"].notna())
+
+    # Primary-role potential WAR — mirror the current-side pattern at line 162+
+    # (gate by sprpP role, not by sp_warP.notna()). The previous version masked
+    # the whole expression on sp_warP existing, which incorrectly NaN'd
+    # war_pitchingP for RP-classified pitchers whose sp_warP was NaN due to
+    # the SP_WAR_MIN_STAMINA gate.
+    df["war_pitchingP"] = pd.NA
+    sp_mask_p = df["sprpP"] == "sp"
+    rp_mask_p = df["sprpP"] == "rp"
+    df.loc[sp_mask_p, "war_pitchingP"] = df.loc[sp_mask_p, "sp_warP"]
+    df.loc[rp_mask_p, "war_pitchingP"] = df.loc[rp_mask_p, "rp_warP"]
 
     non_pitcher = ~df["sprpP"].isin(["sp", "rp"])
-    df.loc[non_pitcher, ["war_pitchingP", "sp_warP", "rp_warP"]] = pd.NA
+    df.loc[non_pitcher, ["sp_warP", "rp_warP"]] = pd.NA
 
     return df

@@ -202,6 +202,9 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
+            # Nationality — used by build_system to block US (206) / Canadian (36)
+            # players from R(DLR) per OOTP DSL eligibility rules.
+            "nation_id",
             "flag",
         ],
         "filter": lambda df: df["wOBAP"] > 0.200,
@@ -215,6 +218,7 @@ EXPORT_PAGES = [
             "org",
             "minor",
             "age",
+            "throws",
             "ip",
             "sp_war",
             "rp_war",
@@ -232,6 +236,8 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
+            # Nationality — see hitters.html columns above for rationale.
+            "nation_id",
             "flag",
         ],
         "filter": lambda df: df["pwOBAP"] < 1.000,

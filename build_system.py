@@ -13,11 +13,12 @@ ROSTER_SIZES = {'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(D
 DSL_LEAGUE_ID = 234
 
 
-def compute_roster_sizes(org=None):
-    """Return ROSTER_SIZES with R(DLR) scaled by the org's DSL team count.
-    Reads teams.csv (in config.filepath); falls back to the base sizes if
-    the file is missing or unparseable."""
-    sizes = dict(ROSTER_SIZES)
+def _count_dsl_teams(org=None):
+    """Count DSL teams (league_id=234) belonging to an org. Returns 1 if
+    teams.csv is missing or org not found — most orgs have 1 or 2 DSL
+    teams, so 1 is a safe default for missing data. Used by
+    compute_roster_sizes (R(DLR) capacity scaling) and by the R(DLR)
+    best/rest sub-roster split in main()."""
     if org is None:
         from config import team_managed
         org = team_managed
@@ -31,15 +32,22 @@ def compute_roster_sizes(org=None):
         )
         from config import club_lookup
         org_id = next((k for k, v in club_lookup.items() if v == org), None)
-        if org_id is not None:
-            n_dsl = int((
-                (teams['parent_team_id'] == org_id)
-                & (teams['league_id'] == DSL_LEAGUE_ID)
-            ).sum())
-            if n_dsl >= 1:
-                sizes['R(DLR)'] = 15 * n_dsl
+        if org_id is None:
+            return 1
+        n = int(((teams['parent_team_id'] == org_id)
+                 & (teams['league_id'] == DSL_LEAGUE_ID)).sum())
+        return max(1, n)
     except Exception:
-        pass
+        return 1
+
+
+def compute_roster_sizes(org=None):
+    """Return ROSTER_SIZES with R(DLR) scaled by the org's DSL team count.
+    Reads teams.csv (in config.filepath); falls back to the base sizes if
+    the file is missing or unparseable."""
+    sizes = dict(ROSTER_SIZES)
+    n_dsl = _count_dsl_teams(org)
+    sizes['R(DLR)'] = 15 * n_dsl
     return sizes
 
 WOBA_MIN = {
@@ -100,6 +108,31 @@ PREMIUM_WOBA_RELAX = {
     'SS': 0.005,
     'CF': 0.005,
 }
+
+# Catcher rescue (primary-C bat-bypass). Step 1 catcher allocation is glove-
+# weighted by design — that's good for the catcher hierarchy but it leaves
+# weak-glove primary catchers with MLB-quality bats stuck behind defensive
+# specialists at lower levels. If a candidate's wOBA clears MLB AND their
+# best non-C MLB raw WAR is at least this high, route them through the
+# non-catcher cascade instead. They remain is_catcher() (so they still
+# satisfy backup-C / emergency-catcher needs downstream); the final
+# Hungarian then slots them at DH / 1B / corner OF where their bat plays.
+# 0.30 raw WAR ≈ a positive-WAR bat as a primary or secondary position
+# player at MLB — i.e. they'd genuinely contribute, not just fill a slot.
+CATCHER_RESCUE_MIN_NON_C_WAR = 0.30
+# Positions to consider for the rescue's "best non-C MLB WAR" check. DH
+# is included (it's the obvious destination); SS/2B/CF are not — a primary-C
+# typically can't field those, so any positive WAR there is an artifact.
+CATCHER_RESCUE_NON_C_POSITIONS = ('DH', '1B', 'LF', 'RF', '3B')
+
+
+def best_non_c_war(p):
+    """Max raw (non-scarcity-adjusted) MLB WAR across non-C positions a
+    primary-C might realistically slot into via Hungarian. NaN-skipping;
+    returns 0 if all candidate positions are NaN."""
+    vals = [p.get(pos) for pos in CATCHER_RESCUE_NON_C_POSITIONS
+            if p.get(pos) is not None]
+    return max(vals) if vals else 0
 
 HITTERS_JSON = 'outputs/hitters.json'
 INJURED_FILE = 'injured.txt'
@@ -187,15 +220,20 @@ def catcher_alloc_score(p):
     age = min(p.get('age') or 0, AGE_CAP)
     return woba + C_FLD_WEIGHT * cfld + AGE_WEIGHT * age
 
-def priority(p):
-    """Age-weighted blend of current and projected bat. Used for cascade/trim ordering."""
-    age = p['age']
+def priority(p, level=None):
+    """Cascade/trim ordering blend. At MLB the only thing that matters is
+    *current* performance — projection upside doesn't help an aging vet
+    on the active roster lose his slot to a prospect, and a young arm
+    whose ceiling is real should still earn the spot on his current bat.
+    At every other level we keep a flat 70/30 current/projected blend so
+    a prospect with same-current-bat-but-real-upside edges a player with
+    no projection — modest enough that young prospects don't get over-
+    promoted on potential alone."""
     woba = p.get('wOBA') or 0
+    if level == 'MLB':
+        return woba
     wobap = p.get('wOBAP') or 0
-    if age <= 19: return 0.3 * woba + 0.7 * wobap
-    elif age <= 21: return 0.5 * woba + 0.5 * wobap
-    elif age <= 23: return 0.7 * woba + 0.3 * wobap
-    else: return 0.9 * woba + 0.1 * wobap
+    return 0.7 * woba + 0.3 * wobap
 
 def woba_max_level(p):
     # Ceiling is current wOBA only. We tried blending wOBAP for young players
@@ -259,6 +297,25 @@ def service_lowest_level(p):
     return len(LEVELS) - 1             # 6 — no service constraint
 
 
+# OOTP nation IDs for the two countries OOTP excludes from the Dominican
+# Summer League. The DSL is for international players only — US- and
+# Canadian-born players cannot be assigned to a DSL roster, regardless of
+# age or service. Confirmed empirically: out of 2021 players currently on
+# DSL teams in a fresh save, 0 are Canadian and only 8 are American (out
+# of ~110k US-born players in the player pool).
+DSL_INELIGIBLE_NATIONS = {206, 36}  # USA, Canada
+
+
+def dsl_eligible_lowest_level(p):
+    """Highest LEVELS index (= lowest tier) the player is eligible for given
+    DSL nationality rules. US/Canadian players bottom out at R (index 5);
+    everyone else can go down to R(DLR) (index 6). Combined with the age
+    and service caps via min() for the final `_bot`."""
+    if p.get('nation_id') in DSL_INELIGIBLE_NATIONS:
+        return LEVELS.index('R')   # 5 — DSL blocked, R is the lowest tier
+    return LEVELS.index('R(DLR)')  # 6 — DSL eligible
+
+
 def projected_pos_adj(p, pos):
     """Current pos_adj + bat development runway. Fielding doesn't develop."""
     cur = p.get(f'{pos}_adj')
@@ -274,6 +331,29 @@ def projected_pos_adj(p, pos):
 # is the correct multiplier for converting a platoon wOBA delta into a
 # WAR delta on top of `pos_adj`.
 WAR_PER_WOBA_POINT = 554.7865342 / 10  # ≈ 55.48 WAR per 1.0 wOBA
+
+# Standard lineup is what gets played most often, and you face RHP roughly
+# 70-75% of the time. Non-HP starter selection weights the platoon-adjusted
+# WAR by this fraction so the standard lineup leans toward the matchup
+# that's actually in front of the team most often. Note: `wOBA` itself is
+# already a 70/30 R/L blend (HANDEDNESS_WEIGHTS in config.py), so a 0.70
+# weight here recovers the existing overall `_adj` exactly. Anything above
+# 0.70 adds a vs-RHP tilt; below subtracts. 0.725 is the midpoint of the
+# 70-75% range — a small, defensible nudge.
+LINEUP_RHP_WEIGHT = 0.725
+
+
+def weighted_platoon_pos_adj(p, pos, weight_r=LINEUP_RHP_WEIGHT):
+    """Standard-lineup score for non-HP starters: weighted blend of vs-RHP
+    and vs-LHP scarcity-adjusted WAR at `pos`. Returns None if the player
+    can't play the position."""
+    r = pos_adj_split(p, pos, 'R')
+    if r is None:
+        return None
+    l = pos_adj_split(p, pos, 'L')
+    if l is None:
+        return r
+    return weight_r * r + (1 - weight_r) * l
 
 def pos_adj_split(p, pos, vs):
     """Position-adjusted WAR with the hitting component shifted by the
@@ -309,27 +389,56 @@ def pos_adj_split(p, pos, vs):
         return base
     return base + (woba_split - woba) * WAR_PER_WOBA_POINT
 
-def fill_starters_split(pool, level, vs):
+def fill_starters_split(pool, level, vs, standard_starters=None):
     """Pick 9 starters using platoon-adjusted position scores. Same Hungarian
     over the same pool as `fill_starters`, but the score swaps in the
     handedness-specific hitting WAR.
 
-    Intentionally omits HP / force-start bonuses — these are tactical lineup
-    choices on a fixed roster, not roster-construction decisions, so platoon
-    matchups should drive the call without prospect-development overrides.
+    At MLB / AAA / AA / A+ / A this is a tactical lineup choice — the
+    handedness Hungarian picks the best bat for the matchup. At R / R(DLR)
+    the +10 dev bonus mirrors `fill_starters`: HP prospects play every day
+    regardless of matchup, since rookie ball is for development not
+    optimisation.
+
+    `standard_starters` (optional): when provided, HP prospects who are
+    starters in the standard lineup at position X are pinned to X in the
+    platoon variant — they can only play X or sit. Avoids awkward platoon-
+    only position shifts (a 3B prospect moved to CF vs LHP because his
+    platoon bat fits awkwardly elsewhere). Non-HP veterans are NOT pinned —
+    a 1B who plays 2B competently can legitimately shift across the IF in
+    a platoon. Callers who want detection-mode (e.g. HP overmatch checks)
+    leave it None.
     """
     import numpy as np
     from scipy.optimize import linear_sum_assignment
     pos_order = ['C', 'SS', '2B', 'CF', '3B', '1B', 'LF', 'RF', 'DH']
+    is_dev = level in ('R', 'R(DLR)')
+    pinned = ({p['name']: pos for pos, p in standard_starters.items()
+               if p and is_high_potential(p)}
+              if standard_starters else {})
 
     def score(p, pos):
+        # Pin HP standard starters to their standard position. Other
+        # positions are unreachable for them in the platoon — they either
+        # play their standard slot or sit on the bench.
+        pinned_pos = pinned.get(p['name'])
+        if pinned_pos is not None and pinned_pos != pos:
+            return None
         pwar = pos_adj_split(p, pos, vs)
         if pwar is None: return None
-        # Same natural-position priority tiebreak as fill_starters — keeps
-        # standard and platoon Hungarians from arbitrarily flipping
-        # equal-score swaps between two players who share a primary slot.
-        natural = (0.5 + 0.001 * priority(p)) if p.get('pos_adj') == pos else 0
-        return pwar + natural
+        # Same natural-position bonus as fill_starters: HPs get the full
+        # 0.5 anchor; non-HPs get only the tiny priority tiebreak so the
+        # platoon Hungarian picks pure handedness performance.
+        if p.get('pos_adj') == pos:
+            natural = (0.5 if is_high_potential(p) else 0) + 0.001 * priority(p)
+        else:
+            natural = 0
+        # Rookie-ball dev bonus: HPs always start in every lineup at R /
+        # R(DLR), matching the standard Hungarian. Their bat won't reliably
+        # play the platoon split anyway and they need ABs more than the
+        # team needs the marginal vs-handedness upgrade.
+        bonus = 10.0 if (is_dev and is_high_potential(p)) else 0
+        return pwar + natural + bonus
 
     n_p = len(pool)
     INF = -1e6
@@ -346,14 +455,39 @@ def fill_starters_split(pool, level, vs):
             starters[pos_order[c]] = pool[r]
     return starters
 
+
+def fill_backups(pool, starters, vs):
+    """Per-position backup at each spot in the level's vs-`vs` lineup.
+    Picks the best non-starter who can play the position (`{pos}_adj` not
+    None), scored by `pos_adj_split` for the relevant handedness — the
+    same matchup-adjusted WAR the platoon Hungarian uses. The same player
+    can be the listed backup at multiple positions: a multi-position
+    bench bat is the next-up choice at every spot they cover, and the
+    real-game pick depends on which starter actually needs a day off."""
+    pos_order = ['C', 'SS', '2B', 'CF', '3B', '1B', 'LF', 'RF', 'DH']
+    starter_names = {p['name'] for p in starters.values() if p}
+    candidates = [p for p in pool if p['name'] not in starter_names]
+    backups = {pos: None for pos in pos_order}
+    for pos in pos_order:
+        best = None
+        best_score = float('-inf')
+        for p in candidates:
+            score = pos_adj_split(p, pos, vs)
+            if score is None:
+                continue
+            if score > best_score:
+                best, best_score = p, score
+        backups[pos] = best
+    return backups
+
+
 def fill_starters(pool, level):
     import numpy as np
     from scipy.optimize import linear_sum_assignment
     pos_order = ['C', 'SS', '2B', 'CF', '3B', '1B', 'LF', 'RF', 'DH']
-    
+
     is_dev = level in ('R', 'R(DLR)')
-    use_projected = level not in ('MLB', 'AAA')
-    
+
     # DH and 1B are the two "fallback" positions Hungarian uses when a
     # surplus HP can't get their natural slot — both treat positional
     # athleticism as a non-asset. Block HPs from either unless their actual
@@ -365,28 +499,26 @@ def fill_starters(pool, level):
                 and is_high_potential(p)
                 and p.get('pos_adj') not in NON_POSITIONAL):
             return None
-        # Projection-based scoring is a *development* affordance — it counts
-        # bat-dev runway against position WAR so a real prospect's future
-        # value matters at AA-and-below. Apply it only to HPs. A non-HP at
-        # this level is here on current ability and should be ranked by
-        # current pos_adj, otherwise a non-HP with a flukily-big bat-dev
-        # delta can outrank one whose current bat is clearly better — and
-        # the platoon Hungarians (which always use current) will keep
-        # benching the projection-favoured pick, signalling the mismatch.
-        use_proj_for_p = use_projected and is_high_potential(p)
-        pwar = projected_pos_adj(p, pos) if use_proj_for_p else p.get(f'{pos}_adj')
+        # Every level optimises for runs/game using the 72.5/27.5 RHP/LHP
+        # split. HPs no longer get a projection-based score override — if a
+        # high-projection prospect at AAA can't earn their starting slot on
+        # current matchup performance, they cascade to AA where their bat
+        # plays. That's the realistic developmental progression, and it
+        # avoids overmatching young prospects with raw projections.
+        is_hp = is_high_potential(p)
+        pwar = weighted_platoon_pos_adj(p, pos)
         if pwar is None: return None
-        # Natural-position bonus, with a tiny priority-weighted tiebreak so
-        # that when two players share a primary position and identical
-        # fielding (e.g. Kepler & Moore both RF, same LF/RF/CF_fld), the
-        # higher-priority hitter deterministically wins the contested
-        # primary slot. Without this, Hungarian sees the swap as exactly
-        # equal total team WAR and arbitrarily flips between standard and
-        # platoon assignments.
-        natural = (0.5 + 0.001 * priority(p)) if p.get('pos_adj') == pos else 0
+        # Natural-position bonus: HPs get the full 0.5 anchor at their
+        # natural slot (development consistency — they should play their
+        # listed primary). Non-HPs get only a tiny priority tiebreak so
+        # the Hungarian picks pure platoon-weighted performance.
+        if p.get('pos_adj') == pos:
+            natural = (0.5 if is_hp else 0) + 0.001 * priority(p)
+        else:
+            natural = 0
         bonus = 0
-        if is_dev and is_high_potential(p):
-            bonus = 10.0
+        if is_dev and is_hp:
+            bonus = 10.0  # rookie ball: HPs always start
         elif p.get('_force_start') == level:
             bonus = 10.0
         return pwar + natural + bonus
@@ -421,10 +553,20 @@ HP_MAX_AGE = 23
 # non-premium bar to count as HP.
 PREMIUM_FLD_MIN = 1.5
 
+# Positions where an HP with elite glove gets pos_adj overridden to that
+# position. Scarcity adjustment can push pos_adj to a corner OF for a real
+# CF defender (CF_adj negative due to weak bat, RF_adj positive because of
+# a strong corner glove); without the override the Hungarian benches them
+# at their natural level in favour of corner-OF bats while a sub-floor
+# defender mans the premium spot. Catcher is excluded — Step 1 catcher
+# allocation already handles glove-aware placement. 3B is excluded because
+# it's the most bat-tolerant of the scarce positions in our scheme.
+HP_PREMIUM_FIT_POSITIONS = ('CF', 'SS', '2B')
+
 IF_POSITIONS = ('2B', '3B', 'SS')
 OF_POSITIONS = ('LF', 'CF', 'RF')
 
-def classify_bench(bench):
+def classify_bench(bench, level=None):
     """Order the bench into role-defined slots, then depth.
 
     Returns a list of (role_label, player) tuples. The first four labels
@@ -438,10 +580,15 @@ def classify_bench(bench):
                       not the best bat among viable leather.
       3. Utility OF - same shape over {LF, CF, RF}, with a +1 position-
                       count bump for CF eligibility (range as speed proxy).
-      4. Best bat  - highest priority(p) among whoever's left.
+      4. Best bat  - highest priority(p, level) among whoever's left.
     Subsequent slots are labelled 'Depth' in priority order. If no player
     fits a role (e.g. no catcher on the bench), that slot's player is None
     and the role is still included so callers can render an empty slot.
+
+    `level`: when 'MLB', priority becomes pure current wOBA (no projection
+    weight) — an MLB bench bat is judged on what they'll deliver this
+    season, not on upside. At every other level the flat 70/30 default
+    keeps a small upside boost for prospects.
     """
     pool = list(bench)
     ordered = []
@@ -498,40 +645,68 @@ def classify_bench(bench):
         )
     ordered.append(('Utility OF', take(of_score)))
 
-    # 4. Best bat
-    ordered.append(('Best bat', take(priority)))
+    # 4. Best bat — level-aware priority so MLB picks pure current bat.
+    ordered.append(('Best bat', take(lambda p: priority(p, level))))
 
-    # Depth: whoever is left, by priority
-    pool.sort(key=priority, reverse=True)
+    # Depth: whoever is left, by priority (same level-aware blend).
+    pool.sort(key=lambda p: priority(p, level), reverse=True)
     for p in pool:
         ordered.append(('Depth', p))
     return ordered
+
+def apply_hp_premium_fit_override(p):
+    """If `p` is an HP with `_fld >= PREMIUM_FLD_MIN` at any premium-fit
+    position (CF / SS / 2B), set their `pos_adj` to whichever of those
+    they defend best. Mutates the player dict. Does nothing for non-HPs
+    or HPs without elite premium-position glove. Idempotent.
+
+    Why: scarcity adjustment can hand a CF-capable bat a corner-OF
+    `pos_adj` (a CF defender with a corner-OF-quality bat ends up with
+    RF_adj > CF_adj after scarcity, even though they really play CF).
+    The Hungarian's natural-position bonus and HP enforcement then
+    bench them at a level above where their bat plays, while a sub-floor
+    defender mans CF a level below. Overriding pos_adj to the actual
+    premium glove fixes both: HP enforcement still cascades them down
+    until they start; Hungarian's natural bonus lands them at the
+    premium position instead of a corner."""
+    if not is_high_potential(p):
+        return
+    candidates = []
+    for pos in HP_PREMIUM_FIT_POSITIONS:
+        fld = p.get(f'{pos}_fld')
+        if fld is not None and fld >= PREMIUM_FLD_MIN:
+            candidates.append((fld, pos))
+    if not candidates:
+        return
+    # Best premium glove first; tie-broken by HP_PREMIUM_FIT_POSITIONS order
+    # (CF > SS > 2B) which tracks defensive scarcity.
+    candidates.sort(key=lambda fp: (-fp[0], HP_PREMIUM_FIT_POSITIONS.index(fp[1])))
+    p['pos_adj'] = candidates[0][1]
+
 
 def is_high_potential(p):
     """Minor-league prospect (minor=1, age <= HP_MAX_AGE) with elite projected
     bat for position. Age cap excludes 24+ AAAA-types whose wOBAP clears the
     threshold but who aren't real development cases.
 
-    The wOBAP threshold is .300 only for prospects who *actually* play their
-    listed premium position competently (`{pos}_fld >= PREMIUM_FLD_MIN`).
-    A player whose `pos_adj` is SS but who's a +0.4 SS defender won't stick
-    at SS as they develop — they'll move to a corner — so they shouldn't
-    inherit the premium-position discount. Those players use the .320 non-
-    premium bar instead."""
+    The wOBAP threshold is .300 only for prospects who *actually* play SOME
+    premium position competently (any `{pos}_fld >= PREMIUM_FLD_MIN` for pos
+    in PREMIUM_POS). Keying on the best premium-position glove rather than
+    just `pos_adj` matters when scarcity adjustment hands a CF-capable bat
+    a corner-OF `pos_adj` (CF + weak corner bat → RF_adj edges out CF_adj
+    even though the player is a real CF defender). A player whose only
+    premium-position fielding is below the floor — e.g. SS_fld +0.4 — won't
+    stick there as they develop and uses the .320 non-premium bar instead."""
     if p.get('minor') != 1:
         return False
     if p['age'] > HP_MAX_AGE:
         return False
     wobap = p.get('wOBAP') or 0
-    pos = p.get('pos_adj')
-    if pos in PREMIUM_POS:
-        fld = p.get(f'{pos}_fld')
-        if fld is not None and fld >= PREMIUM_FLD_MIN:
-            threshold = 0.300
-        else:
-            threshold = 0.320
-    else:
-        threshold = 0.320
+    has_premium_fld = any(
+        (p.get(f'{pos}_fld') or float('-inf')) >= PREMIUM_FLD_MIN
+        for pos in PREMIUM_POS
+    )
+    threshold = 0.300 if has_premium_fld else 0.320
     return wobap >= threshold
 
 def main(org=None):
@@ -553,7 +728,16 @@ def main(org=None):
     laa = [p for p in laa if p['name'] not in injured_names]
     overflow = []
     by_level = {lvl: [] for lvl in LEVELS}
-    
+
+    # HP premium-fit pos_adj override: a CF-capable HP whose scarcity-
+    # adjusted best position came out as a corner OF gets re-tagged to
+    # the premium position they actually defend, so downstream HP
+    # enforcement and the Hungarian put them at CF/SS/2B instead of a
+    # corner. Applied here (rather than in metrics_war) so the override
+    # is local to roster construction and doesn't affect exports.
+    for p in laa:
+        apply_hp_premium_fit_override(p)
+
     # Compute eligible range. _bot combines age and service-time floors —
     # the more restrictive (smaller index = higher level) wins. A player
     # whose service has burned through R/A/A+ can't be sent down there,
@@ -561,16 +745,35 @@ def main(org=None):
     valid_players = []
     for p in laa:
         top = woba_max_level(p)
-        bot = min(age_lowest_level(p), service_lowest_level(p))
+        bot = min(age_lowest_level(p), service_lowest_level(p),
+                  dsl_eligible_lowest_level(p))
+        # Set _top / _bot on every player (including those who go straight
+        # to overflow). The bench-refinement overflow lookup needs _top to
+        # check upper-level eligibility; before this the keys were only set
+        # on valid_players and overflow lookups crashed on stranded bats.
+        p['_top'] = top
+        p['_bot'] = bot
         if top > bot:
             overflow.append(p)
             continue
-        p['_top'] = top
-        p['_bot'] = bot
         valid_players.append(p)
 
     # Per-org roster sizes — R(DLR) scales by DSL team count (1 or 2)
     roster_sizes = compute_roster_sizes(org)
+
+    # === Catcher rescue: primary-C bat-bypass ===
+    # Identify primary catchers whose wOBA qualifies for MLB AND whose
+    # best non-C MLB WAR clears the rescue threshold. Pull them out of
+    # the Step 1 candidate pool — they go through the non-catcher cascade
+    # so the final Hungarian can place them at DH / 1B / corner OF at MLB
+    # rather than locking them into a lower level as a starting C.
+    rescued_catchers = [
+        p for p in valid_players
+        if is_catcher_candidate(p)
+        and p['_top'] == 0  # _top == MLB
+        and best_non_c_war(p) >= CATCHER_RESCUE_MIN_NON_C_WAR
+    ]
+    rescued_ids = {id(p) for p in rescued_catchers}
 
     # === STEP 1: Catchers (2/level) ===
     # Score-driven greedy allocation: rank `is_catcher_candidate` players
@@ -601,7 +804,8 @@ def main(org=None):
     # older players have less developmental runway, so when scores are
     # close they get the higher level.
     catchers = sorted(
-        [p for p in valid_players if is_catcher_candidate(p)],
+        [p for p in valid_players
+         if is_catcher_candidate(p) and id(p) not in rescued_ids],
         key=catcher_alloc_score,
         reverse=True
     )
@@ -630,15 +834,22 @@ def main(org=None):
     # still returns True for all of them downstream (so HP swaps pair
     # like-with-like and sheets label them correctly), but they go through
     # the regular cascade as if they were any other non-catcher.
-    noncatchers = [p for p in valid_players if not is_catcher_candidate(p)] + list(unassigned_c)
+    noncatchers = (
+        [p for p in valid_players if not is_catcher_candidate(p)]
+        + list(unassigned_c)
+        + rescued_catchers   # primary-C bat-bypass — see CATCHER_RESCUE_* above
+    )
+    # Sort each level's pool with that level's priority blend (MLB drops
+    # projection, others use flat 70/30) so cascade trim/pull-up consistently
+    # ranks players by what matters at the level they're competing for.
     nc_by = {lvl: [] for lvl in LEVELS}
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
     for lvl in LEVELS:
-        nc_by[lvl].sort(key=lambda p: priority(p), reverse=True)
-    
+        nc_by[lvl].sort(key=lambda p: priority(p, lvl), reverse=True)
+
     nc_slots = {lvl: roster_sizes[lvl] - len(cby[lvl]) for lvl in LEVELS}
-    
+
     # Cascade down
     for i, lvl in enumerate(LEVELS):
         target = nc_slots[lvl]
@@ -646,11 +857,12 @@ def main(org=None):
             cascaded = nc_by[lvl].pop()
             next_idx = i + 1
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                nc_by[LEVELS[next_idx]].append(cascaded)
-                nc_by[LEVELS[next_idx]].sort(key=lambda p: priority(p), reverse=True)
+                nxt = LEVELS[next_idx]
+                nc_by[nxt].append(cascaded)
+                nc_by[nxt].sort(key=lambda p: priority(p, nxt), reverse=True)
             else:
                 overflow.append(cascaded)
-    
+
     # Pull up
     for i, lvl in enumerate(LEVELS):
         target = nc_slots[lvl]
@@ -665,12 +877,12 @@ def main(org=None):
                     # filler and (worse) drag an HP into a level where they'll bench.
                     if p['_top'] > i:
                         continue
-                    if best is None or priority(p) > priority(best):
+                    if best is None or priority(p, lvl) > priority(best, lvl):
                         best, best_j = p, j
             if best is None: break
             nc_by[LEVELS[best_j]].remove(best)
             nc_by[lvl].append(best)
-            nc_by[lvl].sort(key=lambda p: priority(p), reverse=True)
+            nc_by[lvl].sort(key=lambda p: priority(p, lvl), reverse=True)
     
     if len(nc_by['R(DLR)']) > nc_slots['R(DLR)']:
         overflow.extend(nc_by['R(DLR)'][nc_slots['R(DLR)']:])
@@ -682,117 +894,98 @@ def main(org=None):
     # === STEP 3: High-potential starter enforcement ===
     # If HP benched at level X: swap with non-HP at X+1. If can't (age cap), force-start at X.
     # At rookie ball: fill_starters auto-prioritizes HPs.
-    for _iter in range(20):
-        changed = False
-        for i, lvl in enumerate(LEVELS):
-            # R / R(DLR) skip — those levels apply the +10 HP bonus inside
-            # fill_starters so HPs always start there by construction. MLB
-            # IS subject to HP cascade: if an HP gets pulled up by Step-2
-            # pull-up but Hungarian benches them, demote back to AAA where
-            # they can develop as a starter. The development cost of an HP
-            # benched at MLB outweighs the marginal Util IF/OF upgrade —
-            # mature non-HPs (no projection upside being lost) fill MLB
-            # bench slots better.
-            if lvl in ('R', 'R(DLR)'):
-                continue
-            starters, bench = fill_starters(by_level[lvl], lvl)
-            hp_benched = [p for p in bench if is_high_potential(p)]
-            # Platoon-overmatch signal: an HP standard starter who's DROPPED
-            # from the vs-RHP lineup. RHB face righties about 3x as often as
-            # lefties so vs-RHP is the dominant matchup signal. Movement
-            # within OF or between similar-family slots is fine — only a
-            # straight drop (out of the lineup entirely) flags overmatching.
-            # The vs-RHP Hungarian doesn't apply the +10 HP bonus, so an HP
-            # who can't earn a vs-RHP slot is surviving on projection alone
-            # and should cascade down. Non-HPs aren't subject to this — the
-            # existing Hungarian + bench-role pass already routes them to
-            # 1B / DH / bench when they don't earn a positional starting
-            # slot vs RHP.
-            sR = fill_starters_split(by_level[lvl], lvl, 'R')
-            sR_starter_ids = {id(p) for p in sR.values() if p}
-            hp_overmatched = [
-                p for p in starters.values()
-                if p and is_high_potential(p)
-                and id(p) not in sR_starter_ids
-            ]
-            hp_to_cascade = hp_benched + [p for p in hp_overmatched if p not in hp_benched]
-            if not hp_to_cascade: continue
+    def _enforce_hp_starters():
+        for _iter in range(20):
+            changed = False
+            for i, lvl in enumerate(LEVELS):
+                # R / R(DLR) skip — those levels apply the +10 HP bonus inside
+                # fill_starters so HPs always start there by construction. MLB
+                # IS subject to HP cascade: if an HP gets pulled up by Step-2
+                # pull-up but Hungarian benches them, demote back to AAA where
+                # they can develop as a starter.
+                if lvl in ('R', 'R(DLR)'):
+                    continue
+                starters, bench = fill_starters(by_level[lvl], lvl)
+                hp_benched = [p for p in bench if is_high_potential(p)]
+                # Platoon-overmatch signal: an HP standard starter who's
+                # DROPPED from the vs-RHP lineup. RHB face righties ~3x as
+                # often as lefties so vs-RHP is the dominant matchup signal;
+                # an HP who can't earn a vs-RHP slot is surviving on
+                # projection alone and should cascade down.
+                sR = fill_starters_split(by_level[lvl], lvl, 'R')
+                sR_starter_ids = {id(p) for p in sR.values() if p}
+                hp_overmatched = [
+                    p for p in starters.values()
+                    if p and is_high_potential(p)
+                    and id(p) not in sR_starter_ids
+                ]
+                hp_to_cascade = hp_benched + [p for p in hp_overmatched if p not in hp_benched]
+                if not hp_to_cascade:
+                    continue
 
-            for hp in hp_to_cascade:
-                # Try to demote one level first
-                cascaded = False
-                if i + 1 < len(LEVELS):
-                    next_lvl = LEVELS[i + 1]
-                    if hp['age'] <= MAX_AGE[next_lvl]:
-                        # Swap target constraints (see earlier discussion):
-                        #  - non-HP, eligible at the higher level (`_top` ≤ i),
-                        #    same catcher/non-catcher status as the HP.
-                        hp_is_c = is_catcher(hp)
-                        non_hp_in_next = [p for p in by_level[next_lvl]
-                                          if not is_high_potential(p)
-                                          and p['age'] <= MAX_AGE[lvl]
-                                          and p['_top'] <= i
-                                          and is_catcher(p) == hp_is_c]
-                        # Two demote modes:
-                        #  (a) Swap with target — only if the trade improves
-                        #      the upper level (target's current-bat advantage
-                        #      exceeds the HP's projection advantage). This is
-                        #      the wOBA-difference vs potential-difference
-                        #      check: if the HP's upside doesn't beat the
-                        #      target's current bat, the target deserves the
-                        #      upper-level slot.
-                        #  (b) Demote without swap — HP just moves down a
-                        #      level. The upper level's slot stays unfilled
-                        #      for this iteration; if the HP's projection
-                        #      doesn't justify displacing a better current bat
-                        #      we'd rather have the HP develop one level lower
-                        #      than push a real contributor out.
-                        swap_target = None
-                        if non_hp_in_next:
-                            candidate = max(non_hp_in_next, key=lambda p: priority(p))
-                            current_loss = (candidate.get('wOBA') or 0) - (hp.get('wOBA') or 0)
-                            potential_gain = (hp.get('wOBAP') or 0) - (candidate.get('wOBAP') or 0)
-                            # Swap only if HP's projection advantage at least
-                            # matches the candidate's current-bat advantage.
-                            if potential_gain >= current_loss:
-                                swap_target = candidate
-                        by_level[lvl].remove(hp)
-                        by_level[next_lvl].append(hp)
-                        if swap_target is not None:
-                            by_level[next_lvl].remove(swap_target)
-                            by_level[lvl].append(swap_target)
-                        changed = True
-                        cascaded = True
-                # Can't cascade → mark for force-start at current level (handled in final fill_starters)
-                if not cascaded:
-                    hp['_force_start'] = lvl
-        if not changed: break
+                for hp in hp_to_cascade:
+                    cascaded = False
+                    if i + 1 < len(LEVELS):
+                        next_lvl = LEVELS[i + 1]
+                        if hp['age'] <= MAX_AGE[next_lvl]:
+                            hp_is_c = is_catcher(hp)
+                            non_hp_in_next = [p for p in by_level[next_lvl]
+                                              if not is_high_potential(p)
+                                              and p['age'] <= MAX_AGE[lvl]
+                                              and p['_top'] <= i
+                                              and is_catcher(p) == hp_is_c]
+                            # Swap with target only if HP's projection
+                            # advantage at least matches the target's
+                            # current-bat advantage; otherwise demote
+                            # without swap (HP just moves down a level).
+                            swap_target = None
+                            if non_hp_in_next:
+                                candidate = max(non_hp_in_next, key=lambda p: priority(p))
+                                current_loss = (candidate.get('wOBA') or 0) - (hp.get('wOBA') or 0)
+                                potential_gain = (hp.get('wOBAP') or 0) - (candidate.get('wOBAP') or 0)
+                                if potential_gain >= current_loss:
+                                    swap_target = candidate
+                            by_level[lvl].remove(hp)
+                            by_level[next_lvl].append(hp)
+                            if swap_target is not None:
+                                by_level[next_lvl].remove(swap_target)
+                                by_level[lvl].append(swap_target)
+                            changed = True
+                            cascaded = True
+                    if not cascaded:
+                        hp['_force_start'] = lvl
+            if not changed:
+                break
+
+    def _rebalance_over_target():
+        # Demote-without-swap from HP enforcement can leave a level over
+        # ROSTER_SIZES; pop the lowest-priority non-HP non-force-start to
+        # the next level (or overflow if their _bot doesn't allow).
+        for i, lvl in enumerate(LEVELS):
+            while len(by_level[lvl]) > roster_sizes[lvl]:
+                poppable = [p for p in by_level[lvl]
+                            if not is_high_potential(p)
+                            and p.get('_force_start') != lvl]
+                if not poppable:
+                    break
+                poppable.sort(key=lambda p: priority(p, lvl))
+                cascaded = poppable[0]
+                by_level[lvl].remove(cascaded)
+                next_idx = i + 1
+                if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
+                    by_level[LEVELS[next_idx]].append(cascaded)
+                else:
+                    overflow.append(cascaded)
+
+    _enforce_hp_starters()
 
     # === STEP 3.5: Re-balance after HP cascade ===
     # HP demote-alone (no swap target) grows the destination level. With
     # service-time constraints there are often no eligible swap targets,
     # so AA / A+ etc. can balloon over their ROSTER_SIZES cap. Walk
     # top-down again and pop the lowest-priority non-HP, non-force-start
-    # player from any over-target level — they cascade down if their _bot
-    # allows, otherwise to the release pool. This honours the user's
-    # service-time framing: lower levels just see a thinner pool, with
-    # the spillover going to overflow rather than crowding the upper
-    # levels.
-    for i, lvl in enumerate(LEVELS):
-        while len(by_level[lvl]) > roster_sizes[lvl]:
-            poppable = [p for p in by_level[lvl]
-                        if not is_high_potential(p)
-                        and p.get('_force_start') != lvl]
-            if not poppable:
-                break  # everyone here is locked in — over-cap stays
-            poppable.sort(key=priority)
-            cascaded = poppable[0]
-            by_level[lvl].remove(cascaded)
-            next_idx = i + 1
-            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                by_level[LEVELS[next_idx]].append(cascaded)
-            else:
-                overflow.append(cascaded)
+    # player from any over-target level — see _rebalance_over_target above.
+    _rebalance_over_target()
 
     # === STEP 3.6: Backfill from overflow ===
     # The Step-2 cascade pushes worst-priority players DOWN through the
@@ -856,18 +1049,29 @@ def main(org=None):
             0.6 * fld_sum + 0.4 * bat_war,
         )
 
-    UTIL_ROLE_FNS = {
-        'Utility IF': _util_if_cap,
-        'Utility OF': _util_of_cap,
-    }
+    def _make_best_bat_cap(level):
+        # Pure-bat refinement role: count component is always 0 (Best bat
+        # has no multi-position prerequisite), score is the same level-
+        # aware priority blend classify_bench uses (current-only at MLB,
+        # 70/30 elsewhere). The (0, …) shape stays compatible with the
+        # (-1, -inf) "empty slot" sentinel used elsewhere in this loop.
+        def cap(p):
+            return (0, priority(p, level))
+        return cap
+
     for _iter in range(20):
         changed = False
         for i, lvl in enumerate(LEVELS):
             if i + 1 >= len(LEVELS):
                 continue
             next_lvl = LEVELS[i + 1]
+            UTIL_ROLE_FNS = {
+                'Utility IF': _util_if_cap,
+                'Utility OF': _util_of_cap,
+                'Best bat':   _make_best_bat_cap(lvl),
+            }
             _, bench = fill_starters(by_level[lvl], lvl)
-            bench_roles = classify_bench(bench)
+            bench_roles = classify_bench(bench, level=lvl)
             named_role_players = {p['name'] for _, p in bench_roles[:4] if p}
             for role, current in bench_roles[:4]:
                 cap_fn = UTIL_ROLE_FNS.get(role)
@@ -886,66 +1090,274 @@ def main(org=None):
                 # the right MLB bench piece). The HP-cascade skip at MLB
                 # stays in place as a safety net but refinement won't pull
                 # HPs up in the first place.
-                candidates = [
-                    p for p in by_level[next_lvl]
-                    if p['_top'] <= i
-                    and p['age'] <= MAX_AGE[lvl]
-                    and not is_catcher(p)
-                    and not is_high_potential(p)
-                    and p.get('_force_start') != next_lvl
-                    and (current is None or p['name'] != current['name'])
-                ]
+                # Candidate pool: next-level roster + overflow. Including
+                # overflow lets a great-glove player who got cascaded out
+                # on bat still claim a Util IF / Util OF / Best bat slot
+                # where their defensive profile actually matters (e.g.
+                # Robinson — CF_fld +5.35 — cascaded out of AZ AAA on a
+                # weak bat; he's the right Util OF whether or not the
+                # priority sort kept him in the level pool).
+                def _is_eligible_candidate(p):
+                    return (
+                        p['_top'] <= i
+                        and p['age'] <= MAX_AGE[lvl]
+                        and not is_catcher(p)
+                        and not is_high_potential(p)
+                        and p.get('_force_start') != next_lvl
+                        and (current is None or p['name'] != current['name'])
+                    )
+                candidates_below = [p for p in by_level[next_lvl] if _is_eligible_candidate(p)]
+                candidates_overflow = [p for p in overflow if _is_eligible_candidate(p)]
+                candidates = candidates_below + candidates_overflow
                 if not candidates:
                     continue
                 best_alt = max(candidates, key=lambda p: (cap_fn(p), priority(p)))
                 if cap_fn(best_alt) <= current_cap:
                     continue
-                # Refinement is always a 1-for-1 swap so roster sizes stay put.
-                # If `current` is the role-holder we already have, displace them.
-                # Otherwise (no fit on the bench at all), displace the lowest-
-                # priority bench player who isn't holding another named role —
-                # they're our most expendable depth piece. If everyone on the
-                # bench is filling a named role and the role we want is still
-                # missing, leave the role empty rather than evict a contributor.
+                from_overflow = best_alt in candidates_overflow
+
+                # If `current` is the role-holder we already have, displace
+                # them. Otherwise we need to either pull-without-displace
+                # (when the upper level is under target — fills a vacancy
+                # without forcing anyone out) or displace the lowest-
+                # priority Depth bench player. If the upper level is at /
+                # over target AND every bench player holds a named role,
+                # leave the role empty rather than evict a contributor.
                 displace = current
                 if displace is None:
+                    if len(by_level[lvl]) < roster_sizes[lvl]:
+                        # Upper level has a vacancy — promote without
+                        # displacing. Lower level (or overflow) thins by one.
+                        if from_overflow:
+                            overflow.remove(best_alt)
+                        else:
+                            by_level[next_lvl].remove(best_alt)
+                        by_level[lvl].append(best_alt)
+                        bench = bench + [best_alt]
+                        named_role_players = {p['name'] for _, p in classify_bench(bench, level=lvl)[:4] if p}
+                        changed = True
+                        continue
                     spare_bench = [p for p in bench if p['name'] not in named_role_players]
                     if not spare_bench:
                         continue
-                    displace = min(spare_bench, key=priority)
-                if displace['age'] > MAX_AGE[next_lvl]:
+                    displace = min(spare_bench, key=lambda p: priority(p, lvl))
+                # Overflow has no age cap; only enforce the next-level age
+                # cap if the displaced player would be cascaded down a level.
+                if not from_overflow and displace['age'] > MAX_AGE[next_lvl]:
                     continue
                 by_level[lvl].remove(displace)
-                by_level[next_lvl].append(displace)
-                by_level[next_lvl].remove(best_alt)
+                if from_overflow:
+                    overflow.remove(best_alt)
+                    overflow.append(displace)
+                else:
+                    by_level[next_lvl].remove(best_alt)
+                    by_level[next_lvl].append(displace)
                 by_level[lvl].append(best_alt)
                 # Also keep our local view of the bench in sync so subsequent
                 # role iterations within this pass don't double-count slots.
                 bench = [p for p in bench if p['name'] != displace['name']] + [best_alt]
-                named_role_players = {p['name'] for _, p in classify_bench(bench)[:4] if p}
+                named_role_players = {p['name'] for _, p in classify_bench(bench, level=lvl)[:4] if p}
                 changed = True
         if not changed:
             break
 
-    # Final Hungarian (overall + platoon variants on the same roster)
+    # === Premium-fit pull-up ===
+    # Top-down (AAA → A), for each premium position (CF / SS / 2B), make sure
+    # the level's starter at that position is the best HP defender available
+    # in the system who's eligible at that level. Ranking is by
+    # (-_top, _fld, priority) — higher-tier wOBA prospect wins, then better
+    # glove, then better bat. This gives "best CF prospect plays at the
+    # highest level he qualifies for" while preserving the existing catcher
+    # mechanism for C and not touching MLB / R / R(DLR) (MLB plays for
+    # current value, not glove-development; R/R(DLR) already prioritise HPs
+    # via fill_starters' is_dev bonus).
+    #
+    # Skip rule: if the incumbent is a NON-HP real defender (`_fld` ≥
+    # PREMIUM_FLD_MIN), leave them alone — we don't want to displace a
+    # quality non-HP starter (e.g. Pereira at AAA CF) just to seat an HP
+    # whose bat is meaningfully worse. HP-vs-HP swaps are allowed when the
+    # candidate strictly outranks the incumbent on the score tuple.
+    #
+    # Demotion: instead of auto-demoting the incumbent (which can drop a
+    # contributor two levels for no reason), we re-run the Hungarian and
+    # pop the lowest-priority bench player at this level. The incumbent
+    # likely shifts to a corner (Hungarian assigns by `_adj` + natural
+    # bonus); somebody less essential drops to the candidate's old level.
+    PREMIUM_FIT_PROMO_LEVELS = ('AAA', 'AA', 'A+', 'A')
+
+    def _premium_candidate_score(p, pos):
+        # Higher = better. -_top so higher-level wOBA-eligibility wins;
+        # _fld so better glove wins next; priority for bat tiebreak.
+        return (-p['_top'], p.get(f'{pos}_fld') or 0.0, priority(p))
+
+    for _iter in range(20):
+        changed = False
+        for lvl in PREMIUM_FIT_PROMO_LEVELS:
+            i = LEVELS.index(lvl)
+            starters, _ = fill_starters(by_level[lvl], lvl)
+            for pos in HP_PREMIUM_FIT_POSITIONS:
+                cur = starters.get(pos)
+                cur_fld = (cur.get(f'{pos}_fld') if cur else None) or float('-inf')
+                # Don't displace a non-HP real defender — they're quality
+                # starters whose bat carries the slot.
+                if cur is not None and not is_high_potential(cur) and cur_fld >= PREMIUM_FLD_MIN:
+                    continue
+                # Sub-floor incumbents (or empty slots) are beatable by ANY
+                # elite-glove HP candidate, regardless of _top tier. Without
+                # this, a high-_top sub-floor defender (e.g. Montgomery at
+                # AA CF, _top=MLB but CF_fld 1.29) would block a real
+                # defender (Zavala, _top=AAA, CF_fld 2.36) on tier. Real-HP
+                # incumbents (cur_fld ≥ floor) get the full (-_top, _fld,
+                # priority) comparison so a higher-tier prospect with elite
+                # glove keeps their slot vs a lower-tier one with marginally
+                # better glove.
+                if cur is None or cur_fld < PREMIUM_FLD_MIN:
+                    cur_score = (float('-inf'),) * 3
+                else:
+                    cur_score = _premium_candidate_score(cur, pos)
+
+                # Best HP candidate at a lower level with elite glove here
+                best, best_j = None, None
+                best_score = (float('-inf'),) * 3
+                for j in range(i + 1, len(LEVELS)):
+                    for p in by_level[LEVELS[j]]:
+                        if not is_high_potential(p):
+                            continue
+                        fld = p.get(f'{pos}_fld')
+                        if fld is None or fld < PREMIUM_FLD_MIN:
+                            continue
+                        if p['_top'] > i:
+                            continue  # wOBA doesn't qualify upstairs
+                        if i > p['_bot']:
+                            continue  # service/age floor blocks upstairs
+                        score = _premium_candidate_score(p, pos)
+                        if score > best_score:
+                            best, best_j, best_score = p, j, score
+                if best is None or best_score <= cur_score:
+                    continue
+
+                # vs-RHP overmatch guard: simulate the post-promotion pool
+                # and run both Hungarians. If the candidate would land in
+                # the standard lineup but get dropped from the vs-RHP
+                # lineup at this level, they're platoon-overmatched here —
+                # exactly the signal HP enforcement uses to demote, so
+                # promoting them just sets up oscillation. Use the
+                # detection-mode (un-pinned) split Hungarian; the pin is
+                # for display, not detection.
+                sim_pool = by_level[lvl] + [best]
+                sim_starters, _ = fill_starters(sim_pool, lvl)
+                sim_std_names = {p['name'] for p in sim_starters.values() if p}
+                if best['name'] in sim_std_names:
+                    sim_sR = fill_starters_split(sim_pool, lvl, 'R')
+                    sim_sR_names = {p['name'] for p in sim_sR.values() if p}
+                    if best['name'] not in sim_sR_names:
+                        continue  # would be vs-RHP overmatched at this level
+
+                # Move the candidate up.
+                by_level[LEVELS[best_j]].remove(best)
+                by_level[lvl].append(best)
+
+                # Identify someone at this level to drop. Re-run the
+                # Hungarian to know who's currently bench post-promotion;
+                # exclude HPs (don't fight HP enforcement) and named bench
+                # roles (Backup C / Util IF / Util OF / Best bat — those
+                # have already earned their slot). Fall back to any non-HP
+                # bench player if no spare exists; last resort include HPs.
+                _, new_bench = fill_starters(by_level[lvl], lvl)
+                named = {p['name'] for _, p in classify_bench(new_bench)[:4] if p}
+                pool = [p for p in new_bench if not is_high_potential(p) and p['name'] not in named]
+                if not pool:
+                    pool = [p for p in new_bench if not is_high_potential(p)]
+                if not pool:
+                    pool = list(new_bench)
+                if not pool:
+                    changed = True  # over capacity by one; loop continues
+                    continue
+                demoted = min(pool, key=priority)
+
+                # Land at the candidate's old level if service floor allows;
+                # otherwise the first level deeper than `lvl` they can play;
+                # otherwise overflow.
+                target_idx = best_j
+                if target_idx > demoted['_bot']:
+                    target_idx = None
+                    for k in range(i + 1, len(LEVELS)):
+                        if k <= demoted['_bot']:
+                            target_idx = k
+                            break
+                by_level[lvl].remove(demoted)
+                if target_idx is None:
+                    overflow.append(demoted)
+                else:
+                    by_level[LEVELS[target_idx]].append(demoted)
+                changed = True
+        if not changed:
+            break
+
+    # === Step 4.6: Re-run HP enforcement ===
+    # Bench refinement and the premium-fit pull-up can move players around
+    # in ways that bench an HP at a level (e.g. a displaced MLB player
+    # joining AAA and beating an HP for their slot in the Hungarian). The
+    # Step-3 HP enforcement that ran earlier wouldn't have caught this.
+    # Re-run it now, then rebalance any over-cap levels its demotions
+    # produced.
+    _enforce_hp_starters()
+    _rebalance_over_target()
+
+    # Final Hungarian (overall + platoon variants on the same roster).
+    # Platoon variants pin standard starters to their standard position, so
+    # an everyday 3B doesn't get shuffled to CF in vs-LHP just because his
+    # platoon bat fits awkwardly elsewhere — he plays 3B vs LHP or sits.
     rosters = {}
     for lvl in LEVELS:
         starters, bench = fill_starters(by_level[lvl], lvl)
+        sR = fill_starters_split(by_level[lvl], lvl, 'R', standard_starters=starters)
+        sL = fill_starters_split(by_level[lvl], lvl, 'L', standard_starters=starters)
         rosters[lvl] = {
             'starters': starters,
-            'starters_vsR': fill_starters_split(by_level[lvl], lvl, 'R'),
-            'starters_vsL': fill_starters_split(by_level[lvl], lvl, 'L'),
+            'starters_vsR': sR,
+            'starters_vsL': sL,
+            'backups_vsR': fill_backups(by_level[lvl], sR, 'R'),
+            'backups_vsL': fill_backups(by_level[lvl], sL, 'L'),
             'bench': bench,
-            'bench_roles': classify_bench(bench),
+            'bench_roles': classify_bench(bench, level=lvl),
             'all': by_level[lvl],
             'target': roster_sizes[lvl],
         }
+
+    # Split R(DLR) into n_dsl sub-teams (best, …, rest) by hitter priority
+    # blend so each DSL affiliate displays as its own roster. Each gets an
+    # independent Hungarian over its 15-player slice. No-op when n_dsl == 1.
+    n_dsl = _count_dsl_teams(org)
+    if n_dsl >= 2 and 'R(DLR)' in rosters:
+        full_all = rosters.pop('R(DLR)')['all']
+        # priority(p) is the cascade-ordering key for hitters — HIGHER is
+        # better (age-weighted wOBA blend). Sort descending so chunk 1 is
+        # the best 15.
+        ranked = sorted(full_all, key=priority, reverse=True)
+        chunk_size = 15
+        for k in range(n_dsl):
+            chunk = ranked[k*chunk_size:(k+1)*chunk_size]
+            starters, bench = fill_starters(chunk, 'R(DLR)')
+            sR = fill_starters_split(chunk, 'R(DLR)', 'R', standard_starters=starters)
+            sL = fill_starters_split(chunk, 'R(DLR)', 'L', standard_starters=starters)
+            rosters[f'R(DLR){k+1}'] = {
+                'starters': starters,
+                'starters_vsR': sR,
+                'starters_vsL': sL,
+                'backups_vsR': fill_backups(chunk, sR, 'R'),
+                'backups_vsL': fill_backups(chunk, sL, 'L'),
+                'bench': bench,
+                'bench_roles': classify_bench(bench, level='R(DLR)'),
+                'all': chunk,
+                'target': chunk_size,
+            }
 
     return rosters, overflow, flagged_players
 
 if __name__ == '__main__':
     rosters, overflow, flagged = main()
-    for lvl in LEVELS:
+    for lvl in rosters.keys():
         r = rosters[lvl]
         print(f"\n=== {lvl} ({len(r['all'])}) ===")
         for pos in POSITIONS:
