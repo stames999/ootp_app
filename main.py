@@ -34,7 +34,9 @@ def compute_df():
     df = add_scouted_ratings(df)
     df = count_pitches(df)
     df = is_flagged(df)
-    # `field` column is now produced by calc_war() based on POSITION_VIABILITY_GAP
+    # `field` column is produced inside calc_war(): it lists positions whose
+    # adjusted WAR is within FIELD_VIABILITY_GAP of the player's best_adj.
+    # Position eligibility itself is gated by POSITION_FLOOR (rating-based).
     df = calc_pitching_metrics(df)
     df = calc_potential_pitching_metrics(df)
     df = calc_hitting_metrics(df)

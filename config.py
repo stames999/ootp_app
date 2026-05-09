@@ -100,38 +100,30 @@ POSITION_VIABILITY_GAP = 1.5
 
 
 # ============================
-# Positional adjustments (cross-position calibration)
+# Positional adjustments (scarcity premiums)
 # ============================
-# Fixed per-position run adjustments derived from OOTP team-of-clones
-# calibration (floor/ceiling sims at all 8 fielding positions, scaled to
-# FanGraphs-standard ±12.5 range, sums to zero across the 8 positions).
-# Replaces the prior skill-aware scarcity bonus which back-fit a per-player
-# premium against the in-sample fielding distribution. The fixed approach
-# matches MLB analytics convention and was empirically validated against
-# player-level expectations in calibration/test_fixed_pos_adj.py.
+# Fixed per-position run adjustments. Values in runs/162; applied per
+# player as a flat add to bat + def, divided by RUNS_PER_WIN_FIELDING
+# (= 9.53) to convert to WAR — same divisor used for fielding _def so
+# the bat/def/pos_adj chain stays internally consistent in the fielding
+# sim's run environment.
 #
-# Values in runs/162. DH = -17.5 from FanGraphs convention (not in the
-# original 8-position calibration). Apply per player as a flat add to their
-# (bat + fld) at that position, divided by RUNS_PER_WIN to convert to WAR.
+# Calibrated 2026-05-09 via a grid sweep (calibration/pos_adj_sweep.py)
+# scoring against MLB DRS leaders 2024 landing at their MLB primary
+# position + pool-balance + Olson-not-CF hard-fail. Replaces an earlier
+# team-of-clones-derived set that conflated fielding magnitude with
+# scarcity premium.
+#
+# Test-set match rate: 74% (26/35 elite-glove DRS leaders correctly
+# placed). Remaining misplacements are OOTP rating-driven — Gimenez,
+# Edman, Hayes, etc. genuinely qualify at SS by their IF range/arm in
+# this OOTP save and no pos_adj setting reconciles them with their
+# MLB primary position.
+#
+# DH at -10 is a deliberate "no defensive contribution" cost. Anti-
+# placements (Olson must not be CF) are encoded in the sweep scoring
+# function, not enforced at runtime here.
 POSITIONAL_ADJUSTMENT_RUNS = {
-    # Grid-sweep optimum (2026-05-09). Selected from the centre of the top-10
-    # family in calibration/pos_adj_sweep.py — a 173k-combination search over
-    # all 9 positions, scored against (a) MLB Defensive Runs Saved leaders
-    # 2024 landing at their actual position in our model and (b) pool-balance
-    # / extreme-pool penalties. Test set was 33 elite-glove players whose
-    # MLB position is locked by their defense, NOT bat-driven stars whose
-    # OOTP fielding ratings can't reliably reproduce their MLB role.
-    #
-    # Match rate: 73% vs 55% under the prior team-of-clones-derived values.
-    # The 9 stubborn misplacements (Gimenez/Edman/Hayes/Urias/Garcia etc.
-    # routing to SS or 2B) are OOTP-rating-driven — their IF range/arm
-    # ratings genuinely qualify them at the more demanding position; no
-    # pos_adj setting reconciles them with MLB primary position.
-    #
-    # Material change vs prior calibration: SS premium +6.5→+12.5, RF
-    # penalty −3.7→−16.0, LF/CF/DH all repriced. This makes elite SS
-    # ~+0.7 WAR more valuable, brings RF stars back in line (no longer
-    # over-credited), and gives DH a livable population (was 0).
     "C":   7.5,
     "1B": -13.0,
     "2B": 10.0,
@@ -142,12 +134,6 @@ POSITIONAL_ADJUSTMENT_RUNS = {
     "RF": -11.0,
     "DH": -10.0,
 }
-# Final values from a multi-pass grid sweep against MLB DRS leaders +
-# Judge/Acuna as RF soft signals + Olson at CF as a hard-fail. 2B/3B
-# refined separately to lift 3B pool from 291 → ~420 (small bump 0→+2)
-# without distorting the OF balance or the SS/2B converged values.
-# Match rate: 26/35 = 74% on the elite-glove set; pools balanced; no
-# anti-violations.
 
 # ============================
 # Pitcher rating thresholds used to determine if a pitcher is a starter or reliever

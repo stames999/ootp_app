@@ -42,7 +42,7 @@ from config import (
     LEAGUE_WOBA,
     RUNS_PER_GAME_HITTING_COEFF,
     RUNS_PER_GAME_HITTING_CONST,
-    RUNS_PER_WIN,
+    RUNS_PER_WIN_HITTING,
     WOBA_SCALE,
     team_managed,
 )
@@ -137,7 +137,7 @@ def _war_from_woba(woba: pd.Series) -> pd.Series:
     """Convert wOBA to hitting WAR using the same linear conversion used in metrics_hitting.py."""
     return (
         (woba * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST
-    ) / RUNS_PER_WIN
+    ) / RUNS_PER_WIN_HITTING
 
 
 def _wrc_plus_from_woba(woba: object) -> object:

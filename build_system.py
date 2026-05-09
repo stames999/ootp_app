@@ -325,12 +325,13 @@ def projected_pos_adj(p, pos):
 
 # Linear-weights coefficient from the pipeline. war_hitting is computed
 # as (wOBA * RUNS_PER_GAME_HITTING_COEFF − RUNS_PER_GAME_HITTING_CONST) /
-# RUNS_PER_WIN in metrics_hitting.calc_hitting_metrics. Because that's
-# linear in wOBA, the WAR change per unit wOBA is just COEFF / RUNS_PER_WIN
-# — independent of the player's overall wOBA or sign of war_hitting. This
-# is the correct multiplier for converting a platoon wOBA delta into a
-# WAR delta on top of `pos_adj`.
-WAR_PER_WOBA_POINT = 554.7865342 / 10  # ≈ 55.48 WAR per 1.0 wOBA
+# RUNS_PER_WIN_HITTING in metrics_hitting.calc_hitting_metrics. Because
+# that's linear in wOBA, the WAR change per unit wOBA is just
+# COEFF / RUNS_PER_WIN_HITTING — independent of the player's overall
+# wOBA or sign of war_hitting. Imported from config so any future
+# recalibration of the hitting slope automatically flows through.
+from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H
+WAR_PER_WOBA_POINT = _COEFF / _RPW_H  # ≈ 48.33 WAR per 1.0 wOBA at 496.84/10.28
 
 # Standard lineup is what gets played most often, and you face RHP roughly
 # 70-75% of the time. Non-HP starter selection weights the platoon-adjusted

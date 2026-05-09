@@ -208,10 +208,9 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Note: position eligibility (the `field` column) is now produced by
-# metrics_war.calc_war() using POSITION_VIABILITY_GAP — a position is feasible
-# iff its WAR is within POSITION_VIABILITY_GAP of the player's best position.
-# This replaces the old rating-threshold approach.
+# Note: position eligibility is gated by POSITION_FLOOR (rating-based) in
+# metrics_war.calc_war(). The displayed `field` column is then filtered to
+# positions whose adjusted WAR is within FIELD_VIABILITY_GAP of best_adj.
 
 
 # Add a flag column for names listed in flagged.txt
