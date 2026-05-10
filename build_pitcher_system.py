@@ -134,21 +134,36 @@ def _cascade(pool, slots_for):
     level holds more than `slots_for[lvl]`, pop the worst-blend pitcher and
     push to the next level (or to leftovers if age cap blocks).
     `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
-    × DSL count) can vary."""
+    × DSL count) can vary.
+
+    Sort key combines `_bot` mobility with `pitcher_priority` so the
+    cascade prefers demoting WIDE-BOT pitchers (those with somewhere
+    to go) over NARROW-BOT vets stuck at this level. See R-09 design
+    notes (mirror of the hitter cascade change). Sort ASC by
+    `(_bot - level_idx, pitcher_priority)`: position 0 = least-mobile +
+    best-pitcher (kept), position -1 = most-mobile + worst-pitcher
+    (popped first). Within an equal-mobility tier the pop still
+    targets the worst pitcher, preserving the prior priority semantic."""
     by_level = {lvl: [] for lvl in LEVELS}
     leftovers = []
     for p in pool:
         by_level[LEVELS[p['_top']]].append(p)
+
+    def _sort_key_factory(lvl_idx, lvl_name):
+        def _key(p):
+            return (p['_bot'] - lvl_idx, pitcher_priority(p, lvl_name))
+        return _key
+
     for lvl in LEVELS:
-        by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+        by_level[lvl].sort(key=_sort_key_factory(LEVELS.index(lvl), lvl))
     for i, lvl in enumerate(LEVELS):
         while len(by_level[lvl]) > slots_for[lvl]:
-            cascaded = by_level[lvl].pop()  # last = worst blend
+            cascaded = by_level[lvl].pop()  # last = wide-bot + worst-pitcher
             next_idx = i + 1
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
                 nxt = LEVELS[next_idx]
                 by_level[nxt].append(cascaded)
-                by_level[nxt].sort(key=lambda p: pitcher_priority(p, nxt))
+                by_level[nxt].sort(key=_sort_key_factory(next_idx, nxt))
             else:
                 leftovers.append(cascaded)
     return by_level, leftovers

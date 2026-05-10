@@ -630,13 +630,26 @@ def main(org=None):
         + rescued_catchers   # primary-C bat-bypass — see CATCHER_RESCUE_* above
     )
     # Sort each level's pool with that level's priority blend (MLB drops
-    # projection, others use flat 70/30) so cascade trim/pull-up consistently
-    # ranks players by what matters at the level they're competing for.
+    # projection, others use flat 70/30) AND `_bot` mobility — players
+    # with little downward room (`_bot - i` close to 0, e.g. age- or
+    # service-locked vets stuck at this level) sort to the FRONT so they
+    # don't get cascaded down via pop(). Pop takes the LAST element =
+    # widest-bot + lowest-priority player — preferred to demote because
+    # they have somewhere to go and they're the worst contributor anyway.
+    # See R-09 design notes: this ensures a "stuck" `_bot=A+` vet
+    # doesn't end up in overflow when the cascade has wider-bot
+    # `_bot=R(DLR)` prospects available to push down instead.
     nc_by = {lvl: [] for lvl in LEVELS}
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
+
+    def _cascade_sort_key_factory(lvl_idx, lvl_name):
+        def _key(p):
+            return (p['_bot'] - lvl_idx, -priority(p, lvl_name))
+        return _key
+
     for lvl in LEVELS:
-        nc_by[lvl].sort(key=lambda p: priority(p, lvl), reverse=True)
+        nc_by[lvl].sort(key=_cascade_sort_key_factory(LEVELS.index(lvl), lvl))
 
     nc_slots = {lvl: roster_sizes[lvl] - len(cby[lvl]) for lvl in LEVELS}
 
@@ -649,7 +662,7 @@ def main(org=None):
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
                 nxt = LEVELS[next_idx]
                 nc_by[nxt].append(cascaded)
-                nc_by[nxt].sort(key=lambda p: priority(p, nxt), reverse=True)
+                nc_by[nxt].sort(key=_cascade_sort_key_factory(next_idx, nxt))
             else:
                 overflow.append(cascaded)
 
@@ -672,7 +685,7 @@ def main(org=None):
             if best is None: break
             nc_by[LEVELS[best_j]].remove(best)
             nc_by[lvl].append(best)
-            nc_by[lvl].sort(key=lambda p: priority(p, lvl), reverse=True)
+            nc_by[lvl].sort(key=_cascade_sort_key_factory(i, lvl))
     
     if len(nc_by['R(DLR)']) > nc_slots['R(DLR)']:
         overflow.extend(nc_by['R(DLR)'][nc_slots['R(DLR)']:])
