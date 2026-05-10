@@ -620,22 +620,31 @@ def main(org=None):
         + rescued_catchers   # primary-C bat-bypass — see CATCHER_RESCUE_* above
     )
     # Sort each level's pool with that level's priority blend (MLB drops
-    # projection, others use flat 70/30) AND `_bot` mobility — players
-    # with little downward room (`_bot - i` close to 0, e.g. age- or
-    # service-locked vets stuck at this level) sort to the FRONT so they
-    # don't get cascaded down via pop(). Pop takes the LAST element =
-    # widest-bot + lowest-priority player — preferred to demote because
-    # they have somewhere to go and they're the worst contributor anyway.
-    # See R-09 design notes: this ensures a "stuck" `_bot=A+` vet
-    # doesn't end up in overflow when the cascade has wider-bot
-    # `_bot=R(DLR)` prospects available to push down instead.
+    # projection, others use flat 70/30) AND a `_bot` cascadability
+    # flag. Splits the pool into two groups: stuck (cannot cascade
+    # below this level, `_bot == lvl_idx`) and cascadable (`_bot > lvl_idx`).
+    # Pop takes the worst CASCADABLE player first; stuck players are
+    # protected at the front of the queue and only get popped (to
+    # overflow) when every cascadable has already been moved.
+    #
+    # See R-11 design notes: this is a tighter version of R-09. R-09
+    # ordered cascade victims by mobility-distance, which over-
+    # punished the MOST-mobile players (typically high-quality young
+    # prospects with `_bot=R(DLR)`) — they got popped first because
+    # they had "somewhere to go" even when their priority was better
+    # than less-mobile players who could ALSO cascade. R-11 just asks
+    # "can you cascade or not", then ranks by priority within each
+    # group so the WORST cascadable player goes first.
     nc_by = {lvl: [] for lvl in LEVELS}
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
 
     def _cascade_sort_key_factory(lvl_idx, lvl_name):
         def _key(p):
-            return (p['_bot'] - lvl_idx, -priority(p, lvl_name))
+            # ASC sort: stuck (_bot == lvl_idx, can't cascade) first,
+            # cascadable (_bot > lvl_idx) last. Within each group,
+            # ordered by priority so position -1 = cascadable + WORST.
+            return (p['_bot'] > lvl_idx, -priority(p, lvl_name))
         return _key
 
     for lvl in LEVELS:

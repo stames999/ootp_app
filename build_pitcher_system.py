@@ -136,14 +136,19 @@ def _cascade(pool, slots_for):
     `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
     × DSL count) can vary.
 
-    Sort key combines `_bot` mobility with `pitcher_priority` so the
-    cascade prefers demoting WIDE-BOT pitchers (those with somewhere
-    to go) over NARROW-BOT vets stuck at this level. See R-09 design
-    notes (mirror of the hitter cascade change). Sort ASC by
-    `(_bot - level_idx, pitcher_priority)`: position 0 = least-mobile +
-    best-pitcher (kept), position -1 = most-mobile + worst-pitcher
-    (popped first). Within an equal-mobility tier the pop still
-    targets the worst pitcher, preserving the prior priority semantic."""
+    Sort key combines a `_bot` cascadability flag with `pitcher_priority`
+    so the cascade prefers demoting the WORST pitcher who CAN actually
+    cascade. Mirrors the hitter R-11 refinement: R-09 over-punished
+    most-mobile players (typically high-quality young prospects with
+    wide `_bot`) by popping them BEFORE less-mobile but better-priority
+    ones who could also cascade. R-11 just asks 'can you cascade?'
+    then ranks by priority within each group.
+
+    Sort ASC by `(_bot > level_idx, pitcher_priority)`:
+      position 0 = stuck (can't cascade) + best pitcher (kept first)
+      position -1 = cascadable + worst pitcher (popped first)
+    Stuck players only get popped (to leftovers) once every cascadable
+    has already been moved."""
     by_level = {lvl: [] for lvl in LEVELS}
     leftovers = []
     for p in pool:
@@ -151,7 +156,7 @@ def _cascade(pool, slots_for):
 
     def _sort_key_factory(lvl_idx, lvl_name):
         def _key(p):
-            return (p['_bot'] - lvl_idx, pitcher_priority(p, lvl_name))
+            return (p['_bot'] > lvl_idx, pitcher_priority(p, lvl_name))
         return _key
 
     for lvl in LEVELS:
