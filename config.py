@@ -251,6 +251,192 @@ DH_PENALTY = 0.030  # multiplicative wOBA penalty for being a DH (not playing de
 # sim runs (DH OPS consistently 0.686-0.689). Old hand-tuned value was 0.023.
 HANDEDNESS_WEIGHTS = {"R": 0.7, "L": 0.3}
 
+# ====================================================
+# Roster builder tunables — hitter cascade
+# ====================================================
+# All constants below were previously defined in build_system.py /
+# build_pitcher_system.py source. Moved here so tuning a threshold no
+# longer requires a source edit. Each block keeps the original
+# provenance / rationale comment.
+
+# Per-org slot capacities by level. R(DLR) is BASE — actual R(DLR)
+# capacity is scaled by org's DSL team count via compute_roster_sizes.
+ROSTER_SIZES_HITTER = {
+    'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15
+}
+
+# Minimum wOBA required to be eligible at each level. The cascade ranks
+# players by priority(p, lvl) and trims; a player whose wOBA is below
+# WOBA_MIN[lvl] is ineligible for that level entirely (their _top is
+# the next level down). Calibrated from observation of OOTP league
+# distributions — MLB regulars cluster .280+, AAA fringe to .250, etc.
+WOBA_MIN_HITTER = {
+    'MLB': 0.280,
+    'AAA': 0.250,
+    'AA': 0.220,
+    'A+': 0.210,
+    'A': 0.200,
+    'R': 0.165,
+    'R(DLR)': -1.0,
+}
+
+# Premium-position bat relaxation: the wOBA threshold for a level is
+# lowered by this many points when the player's primary position is C,
+# SS, or CF — the up-the-middle defensive premiums in real baseball.
+# A defensive-first profile at any of them plays at a level slightly
+# above where his pure bat would qualify, because the glove value at
+# scarce positions offsets a borderline bat. Kept small (.005 = ~5 wOBA
+# points, roughly +0.25 WAR) so a TRULY overmatched bat still can't
+# sneak up.
+PREMIUM_WOBA_RELAX = {
+    'C':  0.005,
+    'SS': 0.005,
+    'CF': 0.005,
+}
+
+# Standard lineup faces RHP roughly 70-75% of the time. Non-HP starter
+# selection weights the platoon-adjusted WAR by this fraction so the
+# standard lineup leans toward the matchup that's actually in front of
+# the team most often. Note: `wOBA` itself is already a 70/30 R/L blend
+# (HANDEDNESS_WEIGHTS), so a 0.70 weight here recovers the existing
+# overall `_adj` exactly. 0.725 is the midpoint of the 70-75% range.
+LINEUP_RHP_WEIGHT = 0.725
+
+# ====================================================
+# Catcher allocation tuning
+# ====================================================
+# Step-1 catcher allocation scores each catcher by:
+#   alloc_score = wOBA + C_FLD_WEIGHT * C_fld + AGE_WEIGHT * min(age, AGE_CAP)
+# C_fld typically ranges -2 (poor) to +5 (elite framer); wOBA in the
+# .15-.40 band. Using C_fld rather than C_adj avoids double-counting bat.
+# At C_FLD_WEIGHT=0.05 the defensive contribution maxes out around ±0.25,
+# comparable to a .025 wOBA swing.
+C_FLD_WEIGHT = 0.05
+# Older catchers preferred for higher levels (less developmental runway).
+# Small enough to act as a tiebreak for catchers within ~.012 of each
+# other rather than overriding real talent gaps. Capped at AGE_CAP so a
+# 35-year-old journeyman doesn't get an unbounded boost.
+AGE_WEIGHT = 0.002
+AGE_CAP = 30
+
+# Maximum gap (in fielding-WAR units) between a player's BEST non-C
+# fielding rating and their C_fld for them to still be considered a
+# Step-1 catcher candidate. Without this, a good-bat / bad-glove utility
+# player whose pos_adj is RF/SS/etc. but who has a fallback C rating
+# can outscore real backup catchers on the bat-driven catcher_alloc_score,
+# claim a Step-1 catcher slot at a low level, then get reassigned off C
+# by Hungarian — leaving them stuck at the wrong level. 1.5 WAR is
+# "significantly worse at C than elsewhere" — they're a fallback, not
+# a real dual-position catcher.
+C_FLD_GAP_MAX = 1.5
+
+# Catcher rescue (primary-C bat-bypass). If a primary catcher's bat
+# plays as a non-C MLB regular AND clears a meaningful WAR floor, route
+# them through the non-catcher cascade so the final Hungarian can place
+# them at DH / 1B / corner OF where their bat plays. They remain
+# is_catcher() (still satisfy backup-C / emergency-C downstream).
+#
+# Threshold raised from 0.30 to 1.5 (PIPELINE_REVIEW R-01). The 0.30
+# floor admitted defense-first backups (Heineman wOBA .302, bnw 0.60)
+# into the rescue pool — they then bat-cascaded out of MLB to AAA even
+# though their alloc_score would have won them MLB Backup C in Step-1.
+# 1.5 ≈ "real positive-WAR bat at a non-C position", filtering for
+# catchers whose secondary value at 1B/DH/corner OF actually competes
+# with MLB regulars.
+CATCHER_RESCUE_MIN_NON_C_WAR = 1.5
+# Positions to consider for the rescue's "best non-C MLB WAR" check.
+# DH is included (the obvious destination); SS/2B/CF are not — a
+# primary-C typically can't field those, so any positive WAR there is
+# an artifact.
+CATCHER_RESCUE_NON_C_POSITIONS = ('DH', '1B', 'LF', 'RF', '3B')
+
+# ====================================================
+# Hitter HP (high-potential) thresholds
+# ====================================================
+HP_MAX_AGE = 24
+# HP qualifies if EITHER projected WAR clears HP_BESTP_ADJ_THRESHOLD
+# (league-average regular floor, ~MLB-regular projected WAR) OR
+# wOBAP clears HP_WOBA_THRESHOLD (elite bat projection — even with no
+# defensive contribution at 1B/DH a wOBAP-.340 hitter is a real
+# prospect). The OR-rule combines a holistic projected-WAR signal with
+# a bat-only safety net; bestP_adj already encodes bat + def + scarcity,
+# so this naturally elevates elite gloves without a defensive premium
+# discount.
+HP_BESTP_ADJ_THRESHOLD = 2.0
+HP_WOBA_THRESHOLD = 0.340
+
+# Minimum fielding-only WAR for treating a player as a "real" defender
+# at a given position. Used in displacement / premium-fit logic, not in
+# HP determination itself.
+PREMIUM_FLD_MIN = 1.5
+
+# Positions where an HP with elite glove gets pos_adj overridden to that
+# position. Scarcity adjustment can push pos_adj to a corner OF for a
+# real CF defender (CF_adj negative due to weak bat, RF_adj positive
+# because of a strong corner glove); without the override the Hungarian
+# benches them at their natural level in favour of corner-OF bats while
+# a sub-floor defender mans the premium spot. Catcher excluded — Step-1
+# catcher allocation already handles glove-aware placement. 3B excluded
+# because it's the most bat-tolerant of the scarce positions.
+HP_PREMIUM_FIT_POSITIONS = ('CF', 'SS', '2B')
+
+# Position groupings used by Util IF / Util OF bench-role classification
+# and by Step-4 utility-promotion candidate scoring.
+IF_POSITIONS = ('2B', '3B', 'SS')
+OF_POSITIONS = ('LF', 'CF', 'RF')
+
+# ====================================================
+# Pitcher cascade tunables
+# ====================================================
+# Per-level rotation + bullpen sizes. R(DLR) is base — actual capacity
+# scales with org's DSL team count (each DSL team gets its own staff).
+SP_PER_LEVEL = 5
+RP_PER_LEVEL = 8
+
+# Maximum pwOBA a pitcher can allow and still belong at a given level.
+# Lower = better stuff, so this is a CEILING (analogous to WOBA_MIN_HITTER
+# being a floor for hitters). Calibrated against league wOBA ≈ .320:
+# MLB pitchers cluster .280-.340; AAA fringe to .365; lower minors
+# more permissive.
+PWOBA_MAX = {
+    'MLB':    0.345,
+    'AAA':    0.370,
+    'AA':     0.385,
+    'A+':     0.395,
+    'A':      0.405,
+    'R':      0.420,
+    'R(DLR)': 1.000,  # no upper limit — accepts whatever's left
+}
+
+# ====================================================
+# Bullpen handedness balance
+# ====================================================
+# Applied AFTER pitcher cascade pull-up to MLB / AAA / AA only. Lower
+# minors are skewed toward RHP and aren't worth distorting; the user's
+# real audience is the upper-minors / MLB pen. Hard 2-4 LHP, soft target 3.
+LHP_LEVELS = ('MLB', 'AAA', 'AA')
+LEFTY_MIN = 2
+LEFTY_TARGET = 3
+LEFTY_MAX = 4
+# Soft-target swap is rejected if the promoted LHP's pitcher_priority
+# blend is more than this much worse than the dropped RHP's. ~10 pwOBA
+# points — roughly the gap between a back-end MLB reliever and a top
+# AAA reliever.
+LEFTY_TARGET_MAX_COST = 0.010
+
+# ====================================================
+# Pitcher HP thresholds
+# ====================================================
+# HP pitcher = young minor-league arm whose projection puts them at
+# clearly above-MLB-rosterable quality. Mirrors the hitter HP idea:
+# minor=1, age <= cap, projection clears a meaningful bar. We use
+# pwOBAP <= HP_PITCHER_MAX_PWOBAP — a tier below the MLB roster
+# threshold (PWOBA_MAX['MLB']=.345) so HP requires "true rotation/
+# bullpen upside" rather than just "barely MLB-eligible".
+HP_PITCHER_MAX_AGE = 24
+HP_PITCHER_MAX_PWOBAP = 0.330
+
+
 # ============================
 # Columns Used from Each CSV
 # ============================

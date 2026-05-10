@@ -2,6 +2,21 @@
 import json
 
 from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H
+# Tunable thresholds — see config.py "Roster builder tunables" section
+# for full provenance / rationale comments. Imported here under the names
+# they're used by in this module (alias-imports for the few that have
+# disambiguating "_HITTER" suffixes in config to mark hitter scope).
+from config import (  # noqa: F401  (some are re-exported)
+    ROSTER_SIZES_HITTER as ROSTER_SIZES,
+    WOBA_MIN_HITTER as WOBA_MIN,
+    PREMIUM_WOBA_RELAX,
+    C_FLD_WEIGHT, AGE_WEIGHT, AGE_CAP, C_FLD_GAP_MAX,
+    CATCHER_RESCUE_MIN_NON_C_WAR, CATCHER_RESCUE_NON_C_POSITIONS,
+    LINEUP_RHP_WEIGHT,
+    HP_MAX_AGE, HP_BESTP_ADJ_THRESHOLD, HP_WOBA_THRESHOLD,
+    PREMIUM_FLD_MIN, HP_PREMIUM_FIT_POSITIONS,
+    IF_POSITIONS, OF_POSITIONS,
+)
 
 # Shared roster-construction utilities — single source of truth used by both
 # this hitter system and build_pitcher_system. Re-exported here so existing
@@ -14,7 +29,6 @@ from roster_common import (  # noqa: F401  (re-exports)
 )
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
-ROSTER_SIZES = {'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15}
 
 
 def compute_roster_sizes(org=None):
@@ -25,93 +39,6 @@ def compute_roster_sizes(org=None):
     n_dsl = _count_dsl_teams(org)
     sizes['R(DLR)'] = 15 * n_dsl
     return sizes
-
-WOBA_MIN = {
-    'MLB': 0.280,
-    'AAA': 0.250,
-    'AA': 0.220,
-    'A+': 0.210,
-    'A': 0.200,
-    'R': 0.165,
-    'R(DLR)': -1.0,
-}
-
-# Weight applied to C_fld (fielding-only WAR at C) in the catcher allocation
-# score. Score = wOBA + C_FLD_WEIGHT * C_fld + AGE_WEIGHT * min(age, AGE_CAP).
-# C_fld typically ranges from about -2 (poor) to +5 (elite framer); wOBA sits
-# in the .15-.40 band. We use C_fld rather than C_adj on purpose: C_adj
-# already folds the bat into the score, so combining it with the bat term
-# would double-count — and a great-glove / weak-bat backup (e.g. Flores:
-# C_fld +3.67, C_adj -0.33) would be wrongly demoted on his own offence.
-# C_fld isolates the defensive component. At 0.05 the defensive contribution
-# maxes out around ±0.25, comparable to a .025 wOBA swing.
-C_FLD_WEIGHT = 0.05
-# Older catchers preferred for higher levels (less developmental runway —
-# their bat needs to play where it plays now). Small enough to act as a
-# tiebreak for catchers within ~.012 of each other rather than overriding
-# real talent gaps. Capped at AGE_CAP so a 35-year-old journeyman doesn't
-# get an unbounded boost over a 28-year-old.
-AGE_WEIGHT = 0.002
-AGE_CAP = 30
-# Maximum gap (in fielding-WAR units) between a player's BEST non-C
-# fielding rating and their C_fld for them to still be considered a
-# Step-1 catcher candidate. Without this, a good-bat / bad-glove utility
-# player whose pos_adj is RF/SS/etc. but who has a fallback C rating
-# (e.g. Jared Thomas: wOBA .300, RF_fld +3.4, C_fld -0.2) can outscore
-# real backup catchers on the bat-driven catcher_alloc_score, claim a
-# Step-1 catcher slot at a low level, then get reassigned off C by
-# Hungarian — leaving them stuck at Rookie ball with an MLB-grade bat.
-# 1.5 WAR is "significantly worse at C than elsewhere" — they're a
-# fallback, not a real dual-position catcher.
-C_FLD_GAP_MAX = 1.5
-
-# Premium-position bat relaxation: the wOBA threshold for a level is lowered
-# by this many points when the player's primary position is C, SS, or CF.
-# These three are the up-the-middle defensive premiums in real baseball — a
-# defensive-first profile at any of them plays at a level slightly above
-# where his pure bat would qualify, because the glove value at scarce
-# positions offsets a borderline bat. Kept small (.005 = ~5 wOBA points,
-# roughly +0.25 WAR) so a TRULY overmatched bat still can't sneak up — this
-# admits borderline cases (Rogers .27966 vs MLB .280, Flores .24999 vs AAA
-# .250) without re-creating the broad relaxation we removed.
-PREMIUM_WOBA_RELAX = {
-    'C':  0.005,
-    'SS': 0.005,
-    'CF': 0.005,
-}
-
-# Catcher rescue (primary-C bat-bypass). Step 1 catcher allocation is glove-
-# weighted by design — that's good for the catcher hierarchy but it leaves
-# weak-glove primary catchers with MLB-quality bats stuck behind defensive
-# specialists at lower levels. If a candidate's wOBA clears MLB AND their
-# best non-C MLB raw WAR is at least this high, route them through the
-# non-catcher cascade instead. They remain is_catcher() (so they still
-# satisfy backup-C / emergency-catcher needs downstream); the final
-# Hungarian then slots them at DH / 1B / corner OF where their bat plays.
-#
-# Threshold raised from 0.30 to 1.5 (PIPELINE_REVIEW R-01). The previous
-# 0.30 floor admitted defense-first backup catchers (Heineman wOBA .302,
-# bnw 0.60) into the rescue pool — they then bat-cascaded out of MLB to
-# AAA even though their alloc_score would have won them MLB Backup C in
-# Step-1. The Step-4 Backup C refinement (commit 879e6d3) patches that
-# specific symptom; this raises the principle. 1.5 ≈ "real positive-WAR
-# bat at a non-C position", filtering for catchers whose secondary value
-# at 1B/DH/corner OF actually competes with MLB regulars. Lower-bnw
-# catchers stay in Step-1 catcher allocation where their glove value
-# (alloc_score) drives placement.
-#
-# Tried wOBA-floor variants (e.g. wOBA >= .330) — those un-rescue
-# Realmuto-tier catchers (.325 wOBA, bnw 1.70) and demote them to AAA
-# via the alloc_score-biased Step-1, worse than the original problem.
-# The bnw-only threshold is more surgical: it filters by non-C bat value
-# specifically, which is the actual signal for "this catcher's bat plays
-# off-position" rather than any wOBA proxy.
-CATCHER_RESCUE_MIN_NON_C_WAR = 1.5
-# Positions to consider for the rescue's "best non-C MLB WAR" check. DH
-# is included (it's the obvious destination); SS/2B/CF are not — a primary-C
-# typically can't field those, so any positive WAR there is an artifact.
-CATCHER_RESCUE_NON_C_POSITIONS = ('DH', '1B', 'LF', 'RF', '3B')
-
 
 def best_non_c_war(p):
     """Max raw (non-scarcity-adjusted) MLB WAR across non-C positions a
@@ -215,16 +142,6 @@ def projected_pos_adj(p, pos):
 # wOBA or sign of war_hitting. Constants imported at top of file so
 # any future recalibration of the hitting slope automatically flows through.
 WAR_PER_WOBA_POINT = _COEFF / _RPW_H  # ≈ 48.33 WAR per 1.0 wOBA at 496.84/10.28
-
-# Standard lineup is what gets played most often, and you face RHP roughly
-# 70-75% of the time. Non-HP starter selection weights the platoon-adjusted
-# WAR by this fraction so the standard lineup leans toward the matchup
-# that's actually in front of the team most often. Note: `wOBA` itself is
-# already a 70/30 R/L blend (HANDEDNESS_WEIGHTS in config.py), so a 0.70
-# weight here recovers the existing overall `_adj` exactly. Anything above
-# 0.70 adds a vs-RHP tilt; below subtracts. 0.725 is the midpoint of the
-# 70-75% range — a small, defensible nudge.
-LINEUP_RHP_WEIGHT = 0.725
 
 
 def weighted_platoon_pos_adj(p, pos, weight_r=LINEUP_RHP_WEIGHT):
@@ -433,39 +350,9 @@ def fill_starters(pool, level):
     bench = [p for p in pool if p['name'] not in used]
     return starters, bench
 
+# Note: PREMIUM_POS used internally below for HP-anchor logic. Not exported.
 PREMIUM_POS = {'C', '2B', '3B', 'SS', 'CF'}
-HP_MAX_AGE = 24
-# HP qualification rules — a prospect qualifies if EITHER:
-#   (a) bestP_adj >= HP_BESTP_ADJ_THRESHOLD  (league-average projected WAR
-#       — the 2.0 mark approximates an MLB-regular floor), OR
-#   (b) wOBAP >= HP_WOBA_THRESHOLD  (elite bat projection — even with no
-#       defensive contribution at 1B/DH a wOBAP-.340 hitter is a real
-#       prospect)
-# The OR-rule combines the holistic projected-WAR signal with a bat-only
-# safety net so true bat-elite prospects whose poor defense pulls
-# bestP_adj below 2.0 still count. bestP_adj already encodes bat +
-# defense + positional scarcity, so this naturally elevates elite gloves
-# without requiring a defensive premium discount.
-HP_BESTP_ADJ_THRESHOLD = 2.0
-HP_WOBA_THRESHOLD = 0.340
 
-# Minimum fielding-only WAR for treating a player as a "real" defender at
-# a given position. Used in displacement / premium-fit logic, no longer
-# in HP determination itself.
-PREMIUM_FLD_MIN = 1.5
-
-# Positions where an HP with elite glove gets pos_adj overridden to that
-# position. Scarcity adjustment can push pos_adj to a corner OF for a real
-# CF defender (CF_adj negative due to weak bat, RF_adj positive because of
-# a strong corner glove); without the override the Hungarian benches them
-# at their natural level in favour of corner-OF bats while a sub-floor
-# defender mans the premium spot. Catcher is excluded — Step 1 catcher
-# allocation already handles glove-aware placement. 3B is excluded because
-# it's the most bat-tolerant of the scarce positions in our scheme.
-HP_PREMIUM_FIT_POSITIONS = ('CF', 'SS', '2B')
-
-IF_POSITIONS = ('2B', '3B', 'SS')
-OF_POSITIONS = ('LF', 'CF', 'RF')
 
 def classify_bench(bench, level=None):
     """Order the bench into role-defined slots, then depth.

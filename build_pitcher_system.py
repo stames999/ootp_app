@@ -42,27 +42,21 @@ from roster_common import (
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
     _load_injured_names, _count_dsl_teams,
 )
+# Tunable thresholds — see config.py "Pitcher cascade tunables" section
+# for full provenance / rationale comments. Re-exported below where other
+# modules (build_excel, streamlit_app) historically imported them from
+# this module.
+from config import (  # noqa: F401  (re-exports)
+    SP_PER_LEVEL, RP_PER_LEVEL, PWOBA_MAX,
+    LHP_LEVELS, LEFTY_MIN, LEFTY_TARGET, LEFTY_MAX, LEFTY_TARGET_MAX_COST,
+    HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
+)
 
 PITCHERS_JSON = 'outputs/pitchers.json'
 
-SP_PER_LEVEL = 5
-RP_PER_LEVEL = 8
+# Derived: SP+RP slots per level. Kept here (not in config) because it's
+# trivially derived from the two SP/RP constants and only build_excel imports it.
 PITCHER_ROSTER_SIZE = SP_PER_LEVEL + RP_PER_LEVEL
-
-# Maximum pwOBA a pitcher can allow and still belong at a given level.
-# Lower = better stuff, so this is a CEILING (analogous to WOBA_MIN being a
-# floor for hitters). Calibrated against league wOBA ≈ .320: MLB pitchers
-# cluster .280-.340; AAA fringe to .365; lower minors more permissive. Tune
-# if rosters look over- or under-matched at any level.
-PWOBA_MAX = {
-    'MLB':    0.345,
-    'AAA':    0.370,
-    'AA':     0.385,
-    'A+':     0.395,
-    'A':      0.405,
-    'R':      0.420,
-    'R(DLR)': 1.000,  # no upper limit — accepts whatever's left
-}
 
 
 def load_team_pitchers(org=None):
@@ -121,16 +115,6 @@ def is_rp_viable(p):
     return p.get('rp_warP') is not None
 
 
-# HP pitcher = young minor-league arm whose projection puts them at clearly
-# above-MLB-rosterable quality. Mirrors the hitter HP idea: minor=1, age ≤ 23,
-# projection clears a meaningful bar. We use pwOBAP ≤ 0.330 — a tier below
-# the MLB roster threshold (.345) so HP requires "true rotation/bullpen
-# upside" rather than just "barely MLB-eligible". Tweak HP_PITCHER_MAX_PWOBAP
-# if you want a tighter / looser bar.
-HP_PITCHER_MAX_AGE = 24
-HP_PITCHER_MAX_PWOBAP = 0.330
-
-
 def is_high_potential_pitcher(p):
     if p.get('minor') != 1:
         return False
@@ -165,19 +149,6 @@ def _cascade(pool, slots_for):
             else:
                 leftovers.append(cascaded)
     return by_level, leftovers
-
-
-# Bullpen handedness balance — applied AFTER _pull_up to MLB / AAA / AA only.
-# Lower minors are skewed toward RHP and aren't worth distorting; the user's
-# real audience is the upper-minors / MLB pen. Hard 2–4 LHP, soft target 3.
-LHP_LEVELS = ('MLB', 'AAA', 'AA')
-LEFTY_MIN = 2
-LEFTY_TARGET = 3
-LEFTY_MAX = 4
-# Soft-target swap is rejected if the promoted LHP's pitcher_priority blend
-# is more than this much worse than the dropped RHP's. ~10 pwOBA points —
-# roughly the gap between a back-end MLB reliever and a top AAA reliever.
-LEFTY_TARGET_MAX_COST = 0.010
 
 
 def is_lhp(p):
