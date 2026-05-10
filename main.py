@@ -47,6 +47,7 @@ def compute_df():
     df = calc_war(df)
     df = _flag_two_way_players(df)
     df = _flag_two_way_best_side(df)
+    df = _restrict_two_way_sp_to_dh(df)
     # Sort by scarcity-adjusted WAR — that's the player's "true value"
     # accounting for positional difficulty (see metrics_war.calc_war).
     df = df.sort_values(by="best_adj", ascending=False)
@@ -54,31 +55,71 @@ def compute_df():
 
 
 def _flag_two_way_players(df):
-    """Flag players whose CURRENT batting AND pitching are both
-    admissible at SOME meaningful level. Symmetric — captures
-    Ohtani-types (OOTP `position != 1`, primary bat with real
-    scouted pitching ratings) AND pitcher-types with real current
-    bats. The OOTP `position` field is incidental; what matters is
-    whether both `wOBA` and `pwOBA` produce admissible level
-    ceilings.
+    """Flag players whose CURRENT batting AND pitching are BOTH
+    MLB-tier — i.e. a genuine two-way star like Ohtani. Tight gate
+    because OOTP's default ratings produce plausible-looking
+    wOBA / pwOBA for most players (a regular MLB position player
+    has SOME computed pwOBA from default pitching ratings; a regular
+    MLB pitcher has SOME computed wOBA from default batting). Only
+    players whose BOTH metrics clear the MLB threshold are flagged
+    as true two-way and admitted to both pools.
 
-    The `_flag_two_way_best_side()` step (called next from
-    `compute_df`) picks which side gets the roster slot based on
-    higher expected WAR contribution.
+    Thresholds:
+      - `wOBA >= WOBA_MIN_HITTER['MLB']` (.280) — real MLB-tier bat
+      - `pwOBA <= PWOBA_MAX['MLB']` (.345) — real MLB-tier arm
 
-    Thresholds borrow the cascade's own per-level admissibility:
-      - `wOBA >= WOBA_MIN_HITTER['A']` (.200) — playable at A or above
-      - `pwOBA <= PWOBA_MAX['R']` — admissible as a pitcher at R or above
-
-    Players with low CURRENT wOBA (e.g. Tolle .084, default pitcher
-    batting) won't pass the bat test → not flagged → pitcher-only.
-    Ohtani's wOBA=.424 and computed pwOBA from his real scouted
-    pitching ratings → flagged.
+    Calibration: in Rockies Rebuild + Corbin HoF, this flags ONLY
+    Shohei Ohtani (LAD, wOBA=.429, pwOBA=.310). Looser thresholds
+    were producing 99 false positives (regular MLB position players
+    and pitchers with default cross-side ratings).
     """
     from config import WOBA_MIN_HITTER, PWOBA_MAX
-    wOBA_ok = df["wOBA"].fillna(0) >= WOBA_MIN_HITTER["A"]
-    pwOBA_ok = df["pwOBA"].fillna(1.0) <= PWOBA_MAX["R"]
+    wOBA_ok = df["wOBA"].fillna(0) >= WOBA_MIN_HITTER["MLB"]
+    pwOBA_ok = df["pwOBA"].fillna(1.0) <= PWOBA_MAX["MLB"]
     df["is_two_way"] = (wOBA_ok & pwOBA_ok).astype(bool)
+    return df
+
+
+def _restrict_two_way_sp_to_dh(df):
+    """SP-viable two-way players are limited to DH on the hitter side
+    (Shohei rule — an SP can DH on non-pitching days but can't
+    field). NaN out their non-DH `*_adj`, `*_fld`, raw `*` columns
+    so the Hungarian assignment naturally places them at DH only.
+    Then fix the derived `pos_adj`, `posP_adj`, `field`, `best_adj`,
+    `bestP_adj` columns to reflect the DH-only constraint.
+
+    RP-only two-way are NOT restricted — a reliever can field on
+    days they're not pitching. (No RP-only two-way exist in current
+    data, but the rule is correct.)
+    """
+    if not df["is_two_way"].any():
+        return df
+    sp_viable = df["sp_warP"].notna() | df["sp_war"].notna()
+    mask = df["is_two_way"] & sp_viable
+    if not mask.any():
+        return df
+
+    non_dh_positions = ('C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF')
+    nan_cols = []
+    for pos in non_dh_positions:
+        nan_cols.extend([pos, f'{pos}_adj', f'{pos}_fld', f'{pos}P', f'{pos}P_adj'])
+    for col in nan_cols:
+        if col in df.columns:
+            df.loc[mask, col] = pd.NA
+
+    # Force display columns to DH
+    if 'pos_adj' in df.columns:
+        df.loc[mask, 'pos_adj'] = 'DH'
+    if 'posP_adj' in df.columns:
+        df.loc[mask, 'posP_adj'] = 'DH'
+    if 'field' in df.columns:
+        df.loc[mask, 'field'] = 'DH'
+
+    # Recompute best_adj / bestP_adj from the surviving DH columns
+    if 'DH_adj' in df.columns and 'best_adj' in df.columns:
+        df.loc[mask, 'best_adj'] = df.loc[mask, 'DH_adj']
+    if 'DHP_adj' in df.columns and 'bestP_adj' in df.columns:
+        df.loc[mask, 'bestP_adj'] = df.loc[mask, 'DHP_adj']
     return df
 
 
