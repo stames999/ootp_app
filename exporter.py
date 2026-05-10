@@ -148,6 +148,13 @@ EXPORT_PAGES = [
             # name string — name collisions across orgs (e.g. multiple
             # "Jose Rodriguez") otherwise cause cross-org confusion.
             "player_id",
+            # Two-way detection (position==1 with meaningful potential
+            # batting). Both builders see two-way players; tw_target_lvl
+            # is the better-of-two-skills level ceiling that pins them
+            # to the same level on both sides.
+            "is_two_way",
+            "tw_target_lvl",
+            "position",
             "name",
             "org",
             "minor",
@@ -217,10 +224,10 @@ EXPORT_PAGES = [
         # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
         # projects whose scouted ratings produce a sub-replacement wOBAP
         # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps pitchers out (OOTP
-        # scouts their batting too, but those rows belong on the
-        # pitchers page, not in the hitter pool).
-        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
+        # 0.185). The `position != 1` gate keeps regular pitchers out;
+        # two-way players (position == 1 AND is_two_way) are admitted
+        # since they need to appear in both hitter and pitcher pools.
+        "filter": lambda df: ((df["position"] != 1) | df.get("is_two_way", False)) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     {
@@ -228,6 +235,9 @@ EXPORT_PAGES = [
         "title": "Pitchers",
         "columns": [
             "player_id",  # see hitters page for rationale
+            "is_two_way",
+            "tw_target_lvl",
+            "position",
             "name",
             "org",
             "minor",
@@ -320,10 +330,10 @@ EXPORT_PAGES = [
         # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
         # projects whose scouted ratings produce a sub-replacement wOBAP
         # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps pitchers out (OOTP
-        # scouts their batting too, but those rows belong on the
-        # pitchers page, not in the hitter pool).
-        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
+        # 0.185). The `position != 1` gate keeps regular pitchers out;
+        # two-way players (position == 1 AND is_two_way) are admitted
+        # since they need to appear in both hitter and pitcher pools.
+        "filter": lambda df: ((df["position"] != 1) | df.get("is_two_way", False)) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     # More pages can be added here

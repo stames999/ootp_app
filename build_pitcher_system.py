@@ -601,7 +601,13 @@ def main(org=None):
     overflow = []
     valid = []
     for p in laa:
-        p['_top'] = pwoba_top_level(p)
+        # Two-way players: same `tw_target_lvl` as the hitter side so
+        # the better-of-two-skills ceiling pins both entities to the
+        # same level. See main._flag_two_way_players.
+        if p.get('is_two_way') and p.get('tw_target_lvl') is not None:
+            p['_top'] = int(p['tw_target_lvl'])
+        else:
+            p['_top'] = pwoba_top_level(p)
         p['_bot'] = min(age_lowest_level(p), service_lowest_level(p),
                         dsl_eligible_lowest_level(p))
         if p['_top'] > p['_bot']:
@@ -709,6 +715,60 @@ def main(org=None):
                 rp_by[LEVELS[next_idx]].append(worst)
             else:
                 overflow.append(worst)
+
+    # Step 5a.3: two-way pin. Mirror the hitter Step 4.7 — two-way
+    # players have `_top` set to `tw_target_lvl` (the better-of-two-
+    # skills ceiling), but cascade can have pushed them down on the
+    # weak-side priority. Move them back to `tw_target_lvl` on the
+    # appropriate side (sp_by or rp_by depending on viability), eject
+    # the worst non-two-way non-HP at the destination if over-cap.
+    def _pin_two_way_pitchers(by_dict, slots_dict, priority_fn):
+        # Move two-way players to their tw_target_lvl (better-of-skills
+        # ceiling). Skip if `_bot` blocks the move (hard OOTP rule).
+        for lvl_name in list(by_dict.keys()):
+            for p in list(by_dict[lvl_name]):
+                if not p.get('is_two_way') or p.get('tw_target_lvl') is None:
+                    continue
+                target_idx = int(p['tw_target_lvl'])
+                current_idx = LEVELS.index(lvl_name)
+                if current_idx == target_idx:
+                    continue
+                if target_idx > p.get('_bot', len(LEVELS) - 1):
+                    continue
+                by_dict[lvl_name].remove(p)
+                by_dict[LEVELS[target_idx]].append(p)
+        # Eject the worst non-two-way non-HP non-force-start at any
+        # level the move pushed over capacity. If the level is fully
+        # composed of pinned players (HPs + two-way + force-start), the
+        # over-cap is unavoidable — ALL pinning steps must yield to the
+        # two-way pin since it's the user's explicit alignment guarantee.
+        # Tests are aware of this: see test_pitcher_no_over_capacity.
+        for i, lvl in enumerate(LEVELS):
+            target = slots_dict.get(lvl, 0)
+            while len(by_dict[lvl]) > target:
+                ejectable = [
+                    q for q in by_dict[lvl]
+                    if not q.get('is_two_way')
+                    and not is_high_potential_pitcher(q)
+                    and not q.get('_force_start')
+                ]
+                if not ejectable:
+                    break
+                worst = max(ejectable, key=lambda q: priority_fn(q, lvl))
+                by_dict[lvl].remove(worst)
+                placed = False
+                for j in range(i + 1, len(LEVELS)):
+                    if j > worst.get('_bot', len(LEVELS) - 1):
+                        break
+                    if len(by_dict[LEVELS[j]]) < slots_dict.get(LEVELS[j], 0):
+                        by_dict[LEVELS[j]].append(worst)
+                        placed = True
+                        break
+                if not placed:
+                    overflow.append(worst)
+
+    _pin_two_way_pitchers(sp_by, sp_slots, pitcher_priority)
+    _pin_two_way_pitchers(rp_by, rp_slots, pitcher_priority)
 
     # Step 5b: split R(DLR) into n_dsl sub-teams (best, …, rest) by
     # pitcher_priority blend. Each DSL affiliate gets its own staff:
