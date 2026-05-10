@@ -220,19 +220,22 @@ EXPORT_PAGES = [
             "nation_id",
             "flag",
         ],
-        # Hitter pool admission. Regular hitters (`position != 1`) plus
-        # two-way players whose `tw_best_side == 'hitter'` (i.e. their
-        # bat WAR > pitcher WAR — see main._flag_two_way_best_side).
-        # The two-way clause is what lets Shohei Ohtani (LAD,
-        # position=10 DH but role=11 Starter) land at MLB on the
-        # hitter side: his hitter WAR easily beats his pitcher WAR.
-        # Tolle / Grice / Forbes — pitcher-types whose CURRENT wOBA
-        # is too low — fail the `_flag_two_way_players` test and are
+        # Hitter pool admission. Regular hitters (`position != 1`) PLUS
+        # two-way players (`is_two_way == True` — both wOBA and pwOBA
+        # admissible at some level, see main._flag_two_way_players).
+        # Two-way are admitted to BOTH the hitter AND pitcher pools so
+        # they take a roster slot on each side — this is the user's
+        # 'Ohtani gets to be SP and DH, and LAD effectively gets one
+        # extra slot to use elsewhere' semantic. A two-way player is
+        # one unique person filling two roles, so the team's unique
+        # player count is lower than the sum of its roster slots.
+        # Tolle / Grice / Forbes pitcher-types fail
+        # `_flag_two_way_players` (their CURRENT wOBA is too low —
+        # batting potential alone isn't enough) so they stay
         # pitcher-only.
         "filter": lambda df: (
             (df["position"] != 1)
-            | ((df.get("is_two_way", False).fillna(False))
-               & (df.get("tw_best_side", "") == "hitter"))
+            | df.get("is_two_way", False).fillna(False)
         ) & df["wOBAP"].notna(),
         "page_len": 100,
     },
@@ -271,19 +274,12 @@ EXPORT_PAGES = [
             "flag",
         ],
         # Pitcher pool admission. Regular pitchers (`position == 1`)
-        # plus two-way players whose `tw_best_side == 'pitcher'` (their
-        # pitcher WAR >= hitter WAR — Tolle-type players whose batting
-        # is theoretical AND failing the wOBA threshold won't reach
-        # here either; the `_flag_two_way_players` heuristic gates on
-        # CURRENT wOBA admissibility). The `pwOBAP.notna()` clause
-        # used to act as an implicit position==1 gate (since the
-        # metrics layer only computed pwOBAP for pitchers); the
-        # metrics gate is now dropped, so this clause just filters
-        # rows that genuinely lack pitching ratings — which is fine.
+        # PLUS two-way players (admitted to BOTH pools so they take
+        # a roster slot on each side — see the hitter filter above
+        # for the 'extra slot' rationale).
         "filter": lambda df: (
             (df["position"] == 1)
-            | ((df.get("is_two_way", False).fillna(False))
-               & (df.get("tw_best_side", "") == "pitcher"))
+            | df.get("is_two_way", False).fillna(False)
         ) & df["pwOBAP"].notna(),
         "page_len": 100,
     },
@@ -342,19 +338,22 @@ EXPORT_PAGES = [
             "Cfram",
             "flag",
         ],
-        # Hitter pool admission. Regular hitters (`position != 1`) plus
-        # two-way players whose `tw_best_side == 'hitter'` (i.e. their
-        # bat WAR > pitcher WAR — see main._flag_two_way_best_side).
-        # The two-way clause is what lets Shohei Ohtani (LAD,
-        # position=10 DH but role=11 Starter) land at MLB on the
-        # hitter side: his hitter WAR easily beats his pitcher WAR.
-        # Tolle / Grice / Forbes — pitcher-types whose CURRENT wOBA
-        # is too low — fail the `_flag_two_way_players` test and are
+        # Hitter pool admission. Regular hitters (`position != 1`) PLUS
+        # two-way players (`is_two_way == True` — both wOBA and pwOBA
+        # admissible at some level, see main._flag_two_way_players).
+        # Two-way are admitted to BOTH the hitter AND pitcher pools so
+        # they take a roster slot on each side — this is the user's
+        # 'Ohtani gets to be SP and DH, and LAD effectively gets one
+        # extra slot to use elsewhere' semantic. A two-way player is
+        # one unique person filling two roles, so the team's unique
+        # player count is lower than the sum of its roster slots.
+        # Tolle / Grice / Forbes pitcher-types fail
+        # `_flag_two_way_players` (their CURRENT wOBA is too low —
+        # batting potential alone isn't enough) so they stay
         # pitcher-only.
         "filter": lambda df: (
             (df["position"] != 1)
-            | ((df.get("is_two_way", False).fillna(False))
-               & (df.get("tw_best_side", "") == "hitter"))
+            | df.get("is_two_way", False).fillna(False)
         ) & df["wOBAP"].notna(),
         "page_len": 100,
     },
