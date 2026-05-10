@@ -50,6 +50,7 @@ from config import (  # noqa: F401  (re-exports)
     SP_PER_LEVEL, RP_PER_LEVEL, PWOBA_MAX,
     LHP_LEVELS, LEFTY_MIN, LEFTY_TARGET, LEFTY_MAX, LEFTY_TARGET_MAX_COST,
     HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
+    PITCHER_SWINGMAN_PULLUP_ENABLED, PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA,
 )
 
 PITCHERS_JSON = 'outputs/pitchers.json'
@@ -375,6 +376,125 @@ def _pull_up(by_level, slots_for):
             by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
 
 
+def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
+    """OPT-IN R-03 implementation: pull non-MLB SP-viable non-HP arms up
+    to the MLB bullpen if their rp_warP exceeds the worst MLB RP's
+    rp_warP by at least PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA.
+
+    OFF by default (PITCHER_SWINGMAN_PULLUP_ENABLED in config). The
+    cascade-only baseline is calibrated; this is a "developmental
+    upside" lever that biases toward calling up AAA SPs for MLB long-
+    relief auditions. Trade-off: most candidates are net-negative in
+    current-year WAR but net-positive in potential WAR.
+
+    Constraints honoured:
+      - Skips HP candidates (HP enforcement owns those slots).
+      - Skips swaps that would push MLB LHP count outside [LEFTY_MIN,
+        LEFTY_MAX] — handedness balance takes priority.
+      - Demoted MLB RP cascades to AAA bullpen (or further down to
+        first level <= their _bot, or overflow if blocked).
+
+    Side effect: candidate's old SP slot at AAA / lower is left empty
+    (not auto-backfilled). Real-world equivalent is signing a FA / new
+    call-up to fill that AAA rotation slot. Acceptable because the
+    point of the call-up is the MLB upgrade.
+
+    Mutates sp_by, rp_by, overflow in place. No-op when toggle is OFF."""
+    if not PITCHER_SWINGMAN_PULLUP_ENABLED:
+        return
+    if 'MLB' not in rp_by or not rp_by['MLB']:
+        return
+
+    for _iter in range(20):  # Bound to prevent any pathological infinite loop
+        changed = False
+        mlb_pen = rp_by['MLB']
+        # Worst MLB RP by rp_warP (skip None to avoid "lowest" being a
+        # data-anomaly entry; if everyone's rp_warP is None, give up).
+        pen_with_war = [p for p in mlb_pen if p.get('rp_warP') is not None]
+        if not pen_with_war:
+            break
+        worst_rp = min(pen_with_war, key=lambda p: p['rp_warP'])
+        worst_war = worst_rp['rp_warP']
+
+        # Best non-MLB SP-viable non-HP candidate by rp_warP, descending.
+        cands = []
+        for lvl, lst in sp_by.items():
+            if lvl == 'MLB':
+                continue
+            for p in lst:
+                if is_high_potential_pitcher(p):
+                    continue
+                if p.get('rp_warP') is None:
+                    continue
+                cands.append((p, lvl))
+        if not cands:
+            break
+        cands.sort(key=lambda c: -c[0]['rp_warP'])
+
+        # Try candidates in order; first valid swap wins this iteration.
+        for cand, cand_lvl in cands:
+            delta = cand['rp_warP'] - worst_war
+            if delta < PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA:
+                break  # Sorted descending — no further candidate qualifies
+
+            # Validate LHP balance post-swap.
+            cand_is_lhp = (cand.get('throws') == 2)
+            inc_is_lhp = (worst_rp.get('throws') == 2)
+            cur_lhp = sum(1 for p in mlb_pen if p.get('throws') == 2)
+            new_lhp = cur_lhp - (1 if inc_is_lhp else 0) + (1 if cand_is_lhp else 0)
+            if not (LEFTY_MIN <= new_lhp <= LEFTY_MAX):
+                continue  # Would break balance; try next candidate
+
+            # Execute swap.
+            sp_by[cand_lvl].remove(cand)
+            mlb_pen.remove(worst_rp)
+            mlb_pen.append(cand)
+
+            # Demoted RP cascades to AAA bullpen if their _bot allows;
+            # otherwise walk further down; otherwise overflow.
+            target_idx = LEVELS.index('AAA')
+            bot = worst_rp.get('_bot', len(LEVELS) - 1)
+            if target_idx > bot:
+                # AAA below their floor — find first eligible deeper level.
+                target_idx = None
+                for k in range(LEVELS.index('AAA') + 1, len(LEVELS)):
+                    if k <= bot:
+                        target_idx = k
+                        break
+            if target_idx is None:
+                overflow.append(worst_rp)
+            else:
+                target_lvl = LEVELS[target_idx]
+                if target_lvl in rp_by:
+                    rp_by[target_lvl].append(worst_rp)
+                else:
+                    overflow.append(worst_rp)
+
+            # Rebalance: cascade any over-cap level (the demoted RP just
+            # joined AAA / lower, possibly pushing it over). Mirrors the
+            # Step-4c rebalance pass in main(). Walk top-down popping
+            # the worst-priority RP to the next level (or overflow).
+            for i, lvl in enumerate(LEVELS):
+                if lvl not in rp_by:
+                    continue
+                while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL):
+                    worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
+                    rp_by[lvl].remove(worst)
+                    next_idx = i + 1
+                    if (next_idx < len(LEVELS)
+                            and next_idx <= worst.get('_bot', len(LEVELS) - 1)
+                            and LEVELS[next_idx] in rp_by):
+                        rp_by[LEVELS[next_idx]].append(worst)
+                    else:
+                        overflow.append(worst)
+
+            changed = True
+            break  # Re-evaluate worst RP and candidate pool from scratch
+
+        if not changed:
+            break
+
+
 def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
     """For HP pitchers in overflow, place them on a roster by displacing the
     worst-priority non-HP at the HP's natural target level. Mirrors the
@@ -475,6 +595,12 @@ def main(org=None):
     rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
     rp_by, rp_leftover = _cascade(rp_pool, rp_slots)
     _pull_up(rp_by, rp_slots)
+
+    # Step 4a: opt-in swingman pull-up (R-03). No-op when toggle is OFF.
+    # Runs BEFORE LHP balance so any AAA imbalance the swingman swap
+    # creates (cascading the demoted RP can push out an LHP) is then
+    # repaired by the LHP balance pass at the next step.
+    _swingman_pullup(sp_by, rp_by, rp_slots, overflow)
 
     # Step 4b: bullpen handedness balance — MLB / AAA / AA only.
     # Hard MIN uses strict eligibility only; if no qualified LHP exists,

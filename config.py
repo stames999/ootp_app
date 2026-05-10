@@ -425,6 +425,35 @@ LEFTY_MAX = 4
 LEFTY_TARGET_MAX_COST = 0.010
 
 # ====================================================
+# Pitcher swingman pull-up (opt-in feature toggle)
+# ====================================================
+# When enabled, after the standard RP cascade + LHP balance, pull AAA
+# (or lower) SP-viable non-HP arms up to the MLB bullpen if their
+# rp_warP exceeds the worst MLB RP's rp_warP by at least
+# PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA. The candidate's role flips
+# from SP to RP for the call-up — model treats it as a long-relief /
+# swingman audition rather than a permanent role change.
+#
+# Default OFF: the cascade-only system is the calibrated baseline.
+# R-03 investigation found 10 orgs would benefit by potential WAR but
+# most net negative in current-year WAR — turning this on biases
+# toward development upside over current-year roster stability.
+#
+# Constraints (always enforced when ON):
+#   - Candidate must be non-HP (HP enforcement owns those slots).
+#   - Swap must not break LHP balance (LHP count stays in [LEFTY_MIN,
+#     LEFTY_MAX] post-swap).
+#   - Threshold of 0.5 WARP filters out marginal noise; lower thresholds
+#     produce spurious swaps that hurt current-year value.
+#
+# Side effect: the candidate's old SP slot at AAA / lower is left empty
+# (not auto-backfilled). Real-world equivalent: org signs a FA / calls
+# someone up for that AAA rotation slot.
+PITCHER_SWINGMAN_PULLUP_ENABLED = False
+PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5
+
+
+# ====================================================
 # Pitcher HP thresholds
 # ====================================================
 # HP pitcher = young minor-league arm whose projection puts them at
