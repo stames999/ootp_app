@@ -145,18 +145,33 @@ INJURED_FILE = 'injured.txt'
 
 
 def _load_injured_names():
-    """Return the set of currently-injured player names. Sources:
-    1. OOTP `players.csv` `injury_is_injured == 1` (auto-detected).
-    2. `injured.txt` (one name per line, `#` comments) as a manual override
-       for cases where you want to mark someone unavailable for a non-injury
-       reason — additive to the OOTP list.
+    """Return `{'pids': set[int], 'names': set[str]}` enumerating
+    currently-injured players. Two sources, two channels:
+
+    1. OOTP `players.csv` `injury_is_injured == 1` (auto-detected) →
+       indexed by `player_id` (int). PID-based matching is unambiguous;
+       using name strings here caused cross-player collisions like
+       every "Jose Rodriguez"-named player in every org getting flagged
+       because ONE of them (LAD farm, age 24) was actually injured.
+
+    2. `injured.txt` (one name per line, `#` comments) → manual override
+       for non-injury exclusions. Stays name-keyed because the file is
+       hand-edited and PID lookups would be a chore. Name collisions
+       are still possible there, but the user owns the list explicitly.
+
     Both sources are optional; missing files just mean no one is flagged.
 
-    Day-to-day (DTD) injuries (`injury_dtd_injury == 1`) are NOT exclusions.
-    Those guys are still playing; OOTP just rests them a game or two. Only
-    `injury_is_injured == 1` AND no DTD flag counts as a proper IL stint
-    that pulls them out of placement.
+    Day-to-day (DTD) injuries (`injury_dtd_injury == 1`) are NOT
+    exclusions. Those guys are still playing; OOTP just rests them a
+    game or two. Only `injury_is_injured == 1` AND no DTD flag counts
+    as a proper IL stint that pulls them out of placement.
+
+    The legacy function name is kept for backward compatibility — the
+    return shape changed from `set[str]` to a dict on 2026-05-10 so
+    callers that match against this need updating (see
+    `is_player_injured` helper below).
     """
+    pids = set()
     names = set()
     # Auto: OOTP CSV. Reference config.filepath at call time so the
     # Streamlit uploader's monkey-patched temp dir is honoured.
@@ -167,7 +182,11 @@ def _load_injured_names():
                     continue
                 if row.get('injury_dtd_injury') == '1':
                     continue
-                names.add(f"{row['first_name']} {row['last_name']}")
+                try:
+                    pids.add(int(row['player_id']))
+                except (KeyError, ValueError, TypeError):
+                    # Fallback to name if pid is missing / malformed.
+                    names.add(f"{row['first_name']} {row['last_name']}")
     except (FileNotFoundError, ImportError, KeyError):
         pass
     # Manual: injured.txt
@@ -179,4 +198,19 @@ def _load_injured_names():
                     names.add(line)
     except FileNotFoundError:
         pass
-    return names
+    return {'pids': pids, 'names': names}
+
+
+def is_player_injured(p, injured):
+    """Return True if player dict `p` matches the injured-keys dict
+    returned by `_load_injured_names`. Matches first by player_id
+    (unambiguous, from OOTP CSV) and falls back to name (covers
+    injured.txt manual entries + the rare missing-pid case)."""
+    pid = p.get('player_id')
+    if pid is not None:
+        try:
+            if int(pid) in injured['pids']:
+                return True
+        except (ValueError, TypeError):
+            pass
+    return p.get('name') in injured['names']

@@ -40,7 +40,7 @@ import json
 from roster_common import (
     LEVELS, MAX_AGE,
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
-    _load_injured_names, _count_dsl_teams,
+    _load_injured_names, _count_dsl_teams, is_player_injured,
 )
 # Tunable thresholds — see config.py "Pitcher cascade tunables" section
 # for full provenance / rationale comments. Re-exported below where other
@@ -557,9 +557,9 @@ def main(org=None):
 
     # Step 0: filter international complex + injured-list (see injured.txt)
     laa = [p for p in laa if not (p.get('minor') == 0 and p['age'] < 20)]
-    injured_names = _load_injured_names()
-    flagged_players = [p for p in laa if p['name'] in injured_names]
-    laa = [p for p in laa if p['name'] not in injured_names]
+    injured = _load_injured_names()
+    flagged_players = [p for p in laa if is_player_injured(p, injured)]
+    laa = [p for p in laa if not is_player_injured(p, injured)]
 
     # Step 1: eligibility window. `_top` = current pwOBA ceiling only;
     # there's no age-based extra cap (see PITCHER_AGE_TOP removal note).

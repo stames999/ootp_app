@@ -143,6 +143,11 @@ EXPORT_PAGES = [
         "filename": "hitters.html",
         "title": "Hitters",
         "columns": [
+            # player_id is included so downstream code (build_system,
+            # tests) can match players unambiguously rather than by
+            # name string — name collisions across orgs (e.g. multiple
+            # "Jose Rodriguez") otherwise cause cross-org confusion.
+            "player_id",
             "name",
             "org",
             "minor",
@@ -208,13 +213,21 @@ EXPORT_PAGES = [
             "nation_id",
             "flag",
         ],
-        "filter": lambda df: df["wOBAP"] > 0.200,
+        # Include any non-pitcher with a computed wOBAP (regardless of
+        # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
+        # projects whose scouted ratings produce a sub-replacement wOBAP
+        # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
+        # 0.185). The `position != 1` gate keeps pitchers out (OOTP
+        # scouts their batting too, but those rows belong on the
+        # pitchers page, not in the hitter pool).
+        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     {
         "filename": "pitchers.html",
         "title": "Pitchers",
         "columns": [
+            "player_id",  # see hitters page for rationale
             "name",
             "org",
             "minor",
@@ -241,13 +254,18 @@ EXPORT_PAGES = [
             "nation_id",
             "flag",
         ],
-        "filter": lambda df: df["pwOBAP"] < 1.000,
+        # Same shape as the hitter filter — include any pitcher with
+        # a computed pwOBAP. The old `< 1.000` cutoff was effectively
+        # the same as notna() since pwOBAP tops out around 0.5 even for
+        # the worst arms, but explicit notna is clearer about intent.
+        "filter": lambda df: df["pwOBAP"].notna(),
         "page_len": 100,
     },
     {
         "filename": "hit_prospects.html",
         "title": "Hitter prospects",
         "columns": [
+            "player_id",  # see hitters page for rationale
             "name",
             "org",
             "minor",
@@ -298,7 +316,14 @@ EXPORT_PAGES = [
             "Cfram",
             "flag",
         ],
-        "filter": lambda df: df["wOBAP"] > 0.200,
+        # Include any non-pitcher with a computed wOBAP (regardless of
+        # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
+        # projects whose scouted ratings produce a sub-replacement wOBAP
+        # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
+        # 0.185). The `position != 1` gate keeps pitchers out (OOTP
+        # scouts their batting too, but those rows belong on the
+        # pitchers page, not in the hitter pool).
+        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     # More pages can be added here

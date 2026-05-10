@@ -25,6 +25,7 @@ from roster_common import (  # noqa: F401  (re-exports)
     LEVELS, MAX_AGE, SERVICE_LIMITS, DSL_LEAGUE_ID, DSL_INELIGIBLE_NATIONS,
     total_service_years, age_lowest_level, service_lowest_level,
     dsl_eligible_lowest_level, _count_dsl_teams, _load_injured_names,
+    is_player_injured,
     INJURED_FILE,
 )
 
@@ -502,9 +503,9 @@ def main(org=None):
     # roster spots. Rerun the system once they're cleared. Separate from the
     # `flag` column (which is a display marker for the HTML reports — see
     # reader.is_flagged / flagged.txt — and intentionally NOT used here).
-    injured_names = _load_injured_names()
-    flagged_players = [p for p in laa if p['name'] in injured_names]
-    laa = [p for p in laa if p['name'] not in injured_names]
+    injured = _load_injured_names()
+    flagged_players = [p for p in laa if is_player_injured(p, injured)]
+    laa = [p for p in laa if not is_player_injured(p, injured)]
     overflow = []
     by_level = {lvl: [] for lvl in LEVELS}
 
