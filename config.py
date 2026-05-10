@@ -465,11 +465,19 @@ PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5
 # HP pitcher = young minor-league arm whose projection puts them at
 # clearly above-MLB-rosterable quality. Mirrors the hitter HP idea:
 # minor=1, age <= cap, projection clears a meaningful bar. We use
-# pwOBAP <= HP_PITCHER_MAX_PWOBAP — a tier below the MLB roster
-# threshold (PWOBA_MAX['MLB']=.345) so HP requires "true rotation/
-# bullpen upside" rather than just "barely MLB-eligible".
+# pwOBAP <= HP_PITCHER_MAX_PWOBAP — sits between the AAA and MLB
+# roster ceilings (PWOBA_MAX['AAA']=.370, PWOBA_MAX['MLB']=.345) so
+# HP requires "real rotation/bullpen upside" rather than just
+# "barely MLB-eligible".
+#
+# Cap raised from .330 → .340 to bring HP pitcher count closer to HP
+# hitter count — at .330 the pitcher pool was ~half the hitter pool
+# (258 vs 561 across 30 orgs), reflecting an over-tight gate rather
+# than a real talent imbalance. .340 still keeps HP pitchers below
+# the MLB threshold (.345) so the bar means "projects at least to
+# fringe-MLB", not "currently MLB-rosterable".
 HP_PITCHER_MAX_AGE = 24
-HP_PITCHER_MAX_PWOBAP = 0.330
+HP_PITCHER_MAX_PWOBAP = 0.340
 
 
 # ============================

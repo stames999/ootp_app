@@ -180,7 +180,7 @@ All roster-construction thresholds live in `config.py` under the
 | `SP_PER_LEVEL`, `RP_PER_LEVEL` | Pitcher rotation / bullpen size | 5 / 8 |
 | `PWOBA_MAX` | Per-level pwOBA ceiling | MLB=.345, AAA=.370, ... |
 | `LHP_LEVELS`, `LEFTY_MIN/TARGET/MAX`, `LEFTY_TARGET_MAX_COST` | Bullpen handedness balance | (MLB,AAA,AA) / 2,3,4 / 0.010 |
-| `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / .330 |
+| `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / .340 |
 | `PITCHER_SWINGMAN_PULLUP_ENABLED` | **Opt-in R-03 toggle** (long-relief pull-up) | **False** |
 | `PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA` | Threshold for swingman call-up | 0.5 |
 
