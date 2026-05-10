@@ -1,3 +1,11 @@
 .DS_Store
 __pycache__
 .claude/
+
+# Local debug / scratch artifacts
+.playwright-mcp/
+.ci-snapshots/
+*.png
+
+# Generated diagnostic output (regenerated ad-hoc, not part of the pipeline)
+outputs/pitch_mix_frequencies.txt

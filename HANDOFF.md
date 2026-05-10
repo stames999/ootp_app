@@ -13,12 +13,19 @@ Streamlit web UI.
 
 - Branch `main` on the `pistachio` repo (this directory).
 - Local raw sim data at `OOTP simulation/OOTP sims.xlsx` (committed).
-- Recent HEAD progression:
-  - `e2770d4` — pre-session baseline before the WAR/fielding rebuild
-  - `513e928` — WAR recalibration + fielding tables rebuilt from sim sweeps
-  - `8a83b60` — IF saturation + LF/RF pos_adj fix + SS IFarm[65] tightening
-  - `afe62c7` — POSITIONAL_ADJUSTMENT_RUNS grid-sweep recalibration + HP rule
-  - HEAD (uncommitted) — pipeline review fixes (RUNS_PER_WIN consistency)
+- Active OOTP save: **`Rockies Rebuild.lg`** (see `config.filepath`).
+- Recent HEAD progression (all this session, 2026-05-09 → 2026-05-10):
+  - `60a3e65` — R-03 (opt-in): pitcher swingman pull-up toggle
+  - `0d13e66` — C-02: roster-builder magic numbers moved to config.py
+  - `62be25d` — C-01: extract `roster_common.py` for shared eligibility utils
+  - `e3a23b7` — R-01: tighten catcher rescue threshold (bnw 0.30 → 1.5)
+  - `cbbb8ee` — Janitor: dead code, doc drift, archive legacy calibration
+  - `988f3b4` — T-01: roster-invariant pytest harness
+  - `9fe3785` — Enforce service-time floor (`_bot`) at every demote site
+  - `4d53a62` — HP age cap raised 23 → 24 (both hitters and pitchers)
+  - `879e6d3` — Step 4: refine Backup C from below as well
+  - `8635c0d` — Streamlit: show adjusted WAR everywhere; widen platoon lineups
+  - `fa8a335` — Step 4: pick displacement target from post-promotion bench
 
 ## How to run
 
@@ -30,263 +37,253 @@ python -m streamlit run streamlit_app.py
 
 Browser opens at `http://localhost:8501`. Session-scoped gate forces a
 fresh upload every browser tab — drop in OOTP CSVs from
-`saved_games/<save>.lg/import_export/csv/`. Required: `players.csv`,
-`players_scouted_ratings.csv`. Recommended: the two
+`saved_games/Rockies Rebuild.lg/import_export/csv/`. Required:
+`players.csv`, `players_scouted_ratings.csv`. Recommended: the two
 `players_career_*_stats.csv` files (drive service-time data) **and
 `teams.csv`** (drives R(DLR) DSL-team count for the best/rest split).
 
-CLI: `python app.py refresh --csv-dir <path>` then
-`python app.py rosters --team COL`.
+CLI: `python app.py refresh` then `python app.py rosters --team COL`.
 
-## Current state of the model
+Run the test suite (~60s): `python -m pytest tests/`.
 
-### Pipeline (data flow)
+## Pipeline at a glance
 
+```mermaid
+flowchart TB
+    subgraph Input
+        CSV["OOTP CSVs<br/>(players, scouted_ratings,<br/>career_stats, teams)"]
+    end
+
+    subgraph Ingest [reader.py]
+        LOAD["load_players + add_career_stats<br/>+ add_years_at_level"]
+        SCOUT["add_scouted_ratings<br/>auto-detect head scout"]
+        FLAGS["count_pitches + is_flagged"]
+    end
+
+    subgraph Metrics
+        H["metrics_hitting<br/>linear wOBA → WAR<br/>RUNS_PER_WIN_HITTING"]
+        P["metrics_pitching<br/>multiplicative components<br/>+ component-aware WAR coeffs"]
+        F["metrics_fielding<br/>1D tables + asymmetric tanh<br/>RUNS_PER_WIN_FIELDING"]
+        W["metrics_war<br/>per-position WAR<br/>+ pos_adj scarcity premium<br/>+ FIELD_VIABILITY_GAP filter"]
+    end
+
+    subgraph Common [roster_common.py]
+        LVL["LEVELS, MAX_AGE,<br/>SERVICE_LIMITS"]
+        ELIG["age/service/dsl<br/>_lowest_level helpers"]
+        INJ["_load_injured_names<br/>_count_dsl_teams"]
+    end
+
+    subgraph Hitters [build_system.py]
+        H1["Step 0: filter complex / injured"]
+        H2["Step 1: catcher allocation<br/>by alloc_score"]
+        H3["Step 2: non-C cascade by wOBA<br/>incl. catcher rescue bypass"]
+        H4["Step 3: HP enforcement<br/>swap or _force_start"]
+        H5["Step 3.5/3.6: rebalance + backfill"]
+        H6["Step 4: bench-role refinement<br/>Backup C / Util IF / Util OF / Best bat"]
+        H7["Premium-fit pull-up<br/>HP-only at AAA/AA/A+/A"]
+        H8["Step 4.6: re-enforce HP"]
+        H9["Final Hungarian + platoons<br/>+ R(DLR) split"]
+    end
+
+    subgraph Pitchers [build_pitcher_system.py]
+        P1["Step 0: filter complex / injured"]
+        P2["Eligibility window"]
+        P3["SP cascade + pull-up"]
+        P4["RP cascade + pull-up"]
+        P4a["Step 4a: swingman pull-up<br/>(opt-in toggle, R-03)"]
+        P4b["LHP balance MLB/AAA/AA<br/>2 ≤ LHP ≤ 4"]
+        P4c["Over-cap rebalance"]
+        P5["Overflow + HP enforcement"]
+        P5b["R(DLR) split"]
+    end
+
+    subgraph Output
+        EXP["exporter.py<br/>HTML + JSON"]
+        XLSX["build_excel.py<br/>per-team xlsx"]
+        UI["streamlit_app.py<br/>5-tab web UI"]
+        OR["org_report.py<br/>platoon WAR + lineups"]
+    end
+
+    subgraph Tuning
+        CFG["config.py<br/>~25 roster tunables<br/>+ all calibration tables"]
+        TST["tests/test_roster_invariants.py<br/>13 invariants × 30 orgs<br/>= 390 cases"]
+    end
+
+    CSV --> LOAD --> SCOUT --> FLAGS
+    FLAGS --> H
+    FLAGS --> P
+    FLAGS --> F
+    H --> W
+    P --> W
+    F --> W
+    W --> EXP
+    W --> Hitters
+    W --> Pitchers
+
+    Common -.imports.-> Hitters
+    Common -.imports.-> Pitchers
+    CFG -.imports.-> Hitters
+    CFG -.imports.-> Pitchers
+    CFG -.imports.-> H
+    CFG -.imports.-> P
+    CFG -.imports.-> F
+    CFG -.imports.-> W
+
+    H1 --> H2 --> H3 --> H4 --> H5 --> H6 --> H7 --> H8 --> H9
+    P1 --> P2 --> P3 --> P4 --> P4a --> P4b --> P4c --> P5 --> P5b
+
+    Hitters --> XLSX
+    Pitchers --> XLSX
+    Hitters --> UI
+    Pitchers --> UI
+    Hitters --> OR
+    OR --> XLSX
+    OR --> UI
+
+    Hitters --> TST
+    Pitchers --> TST
 ```
-load_players → add_career_stats → add_years_at_level
-            → add_scouted_ratings → count_pitches → is_flagged
-calc_pitching_metrics  (component-aware WAR; PITCHING_WAR_COEFFS)
-calc_potential_pitching_metrics
-calc_hitting_metrics   (linear wOBA→runs; uses RUNS_PER_WIN_HITTING)
-calc_potential_hitting_metrics
-calc_fielding_metrics  (saturation + RUNS_PER_WIN_FIELDING)
-calc_war               (per-position WAR + pos_adj/RUNS_PER_WIN_FIELDING
-                        + FIELD_VIABILITY_GAP filter on the displayed `field`)
-   ├── exporter        (HTML + JSON; *_fld and *_adj cols, no _def in display)
-   ├── build_system    (hitter rosters; HP via bestP_adj OR wOBAP)
-   ├── build_pitcher_system (pitcher rosters; pitcher HP via pwOBAP)
-   ├── build_excel     (xlsx renderer; uses org_report for platoon WAR)
-   └── streamlit_app   (web UI; shows *_fld and *_adj)
-```
 
-### Runs-per-win conventions (post pipeline review)
+## Test harness (T-01)
 
-Each metric component has its own runs/win value, empirically derived from
-the calibration sims in that component's run environment:
+`tests/test_roster_invariants.py` runs `main()` for all 30 MLB orgs and
+asserts 13 invariants per org (390 total cases). Catches the entire
+class of bugs spotted this session by reading rosters manually:
 
-- `RUNS_PER_WIN_HITTING = 10.28` — used by `metrics_hitting`, `org_report`,
-  `build_system.WAR_PER_WOBA_POINT`
-- `RUNS_PER_WIN_PITCHING = 10.76` — informational; pitcher coefficients are
-  pre-scaled, formula doesn't reference this directly
-- `RUNS_PER_WIN_FIELDING = 9.53` — used by `metrics_fielding._def` divisor
-  AND `metrics_war` for `pos_adj` conversion (chain stays internally
-  consistent in the fielding sim's run environment)
-- `RUNS_PER_WIN = 10` — kept as legacy/default; no module reads it now
+- No service-floor / top-ceiling violations
+- No over-capacity rosters
+- Each HP appears at exactly one level
+- `placed + overflow + flagged + complex == loaded` (no lost players)
+- MLB has 13 hitters, SP slots respect stamina gate, LHP balance honoured
 
-### Fielding saturation (asymmetric tanh per IF position)
+`pytest tests/` runs in ~60s. **Run it after any builder change.** The
+suite caught a real over-cap bug during R-03 development before commit.
 
-`metrics_fielding._apply_saturation` applies an asymmetric tanh to the
-additive 1D-table sum. Calibrated from sim sweeps (see
-`calibration/fit_saturation.py`):
+## Tunable thresholds (config.py)
 
-| Position | Positive side | Negative side | RMSE |
-|---|---|---|---|
-| 2B | linear ~0.589× | tanh asymptote −73 | 0.37 runs/162 |
-| 3B | tanh asymptote +46 | tanh asymptote −38 | 0.56 runs/162 |
-| SS | linear ~0.618× | linear ~0.628× | 1.38 runs/162 |
+All roster-construction thresholds live in `config.py` under the
+"Roster builder tunables" section. Tweak any without source edits:
 
-Plus a 3B (RNG=55, ARM=55) interaction correction of −6.58 runs added
-BEFORE saturation — captures the ARM-gated RNG inflection that uniform
-compression couldn't explain.
+| Constant | What it controls | Default |
+|---|---|---|
+| `ROSTER_SIZES_HITTER` | Per-level hitter slot capacity | MLB→A=13, R/R(DLR)=15 |
+| `WOBA_MIN_HITTER` | Per-level wOBA eligibility floor | MLB=.280, AAA=.250, ... |
+| `PREMIUM_WOBA_RELAX` | wOBA floor relax for C/SS/CF | .005 |
+| `LINEUP_RHP_WEIGHT` | Standard-lineup vs-RHP weighting | .725 |
+| `C_FLD_WEIGHT`, `AGE_WEIGHT`, `AGE_CAP` | catcher_alloc_score components | .05 / .002 / 30 |
+| `C_FLD_GAP_MAX` | Max non-C glove gap for catcher candidate | 1.5 |
+| `CATCHER_RESCUE_MIN_NON_C_WAR` | Bnw threshold for catcher-bypass rescue | **1.5** (raised from 0.30 in R-01) |
+| `CATCHER_RESCUE_NON_C_POSITIONS` | Positions counted in bnw | DH, 1B, LF, RF, 3B |
+| `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / 2.0 / .340 |
+| `PREMIUM_FLD_MIN`, `HP_PREMIUM_FIT_POSITIONS` | Premium-glove anchor | 1.5 / (CF, SS, 2B) |
+| `IF_POSITIONS`, `OF_POSITIONS` | Position groupings for utility roles | (2B, 3B, SS) / (LF, CF, RF) |
+| `SP_PER_LEVEL`, `RP_PER_LEVEL` | Pitcher rotation / bullpen size | 5 / 8 |
+| `PWOBA_MAX` | Per-level pwOBA ceiling | MLB=.345, AAA=.370, ... |
+| `LHP_LEVELS`, `LEFTY_MIN/TARGET/MAX`, `LEFTY_TARGET_MAX_COST` | Bullpen handedness balance | (MLB,AAA,AA) / 2,3,4 / 0.010 |
+| `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / .330 |
+| `PITCHER_SWINGMAN_PULLUP_ENABLED` | **Opt-in R-03 toggle** (long-relief pull-up) | **False** |
+| `PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA` | Threshold for swingman call-up | 0.5 |
 
-`SS_INTERACTION_CORRECTION` (legacy 100-cell grid) is no longer imported;
-SS uses uniform scalar saturation now.
+## Catcher rescue rule (post R-01)
 
-### Positional adjustments (current values)
+`build_system.main` Step-1.5 ("rescue") routes a primary catcher
+through the non-catcher cascade if BOTH:
+- `_top == MLB` (wOBA clears MLB threshold), AND
+- `best_non_c_war(p) >= CATCHER_RESCUE_MIN_NON_C_WAR` (1.5)
 
-Recalibrated 2026-05-09 via a 173k-combination grid sweep
-(`calibration/pos_adj_sweep.py`) scoring against:
-- MLB DRS leaders 2024 landing at their MLB primary position (test set
-  of 35 elite-glove players)
-- Pool-balance + extreme-pool penalties
-- Olson-must-not-be-CF hard fail
-- Judge / Acuna at RF as soft signals (no hard force)
+Effect: only **bat-elite catchers** (Soderstrom, Smith, Wells,
+Langeliers, Raleigh, etc.) bypass alloc_score-based Step-1 catcher
+allocation. Defense-first backups (Heineman pre-fix wOBA .302 / bnw
+0.60) stay in Step-1 where their glove value drives placement.
 
-```python
-POSITIONAL_ADJUSTMENT_RUNS = {
-    "C":   7.5, "1B": -13.0, "2B": 10.0, "3B":  2.0,
-    "SS": 12.5, "LF":  -9.0, "CF":  -2.0, "RF": -11.0,
-    "DH": -10.0,
-}
-```
+The Step-4 Backup C refinement (commit `879e6d3`) catches any edge
+case where a high-alloc catcher is at the wrong level — e.g.,
+Heineman still ends up at MLB Backup C even when the rescue rule
+correctly excludes him.
 
-Match rate: 26/35 = 74% of elite-glove DRS leaders correctly placed.
-The 9 stubborn misplacements (Gimenez, Edman, Hayes, Urias, Garcia, etc.)
-are OOTP rating-driven — their IF range/arm genuinely qualifies them at
-SS and no pos_adj setting reconciles them with their MLB primary.
+## R-03 swingman toggle (opt-in)
 
-Notable improvements vs prior team-of-clones-derived values:
-- SS premium +6.5→+12.5 (Witt-tier WAR up ~0.65 to 6.51)
-- RF penalty −3.7→−11.0 (RF pool dropped from 3535 → 1791)
-- DH at −10 (was −17.5; pool now 682, was 0 — nobody preferred DH before)
-- 3B at +2 (was 0; pool 291→453, gives 3B/2B more balance)
+When `config.PITCHER_SWINGMAN_PULLUP_ENABLED = True`, the pitcher
+system runs an extra Step-4a pass: pulls non-MLB SP-viable non-HP
+arms up to the MLB bullpen if their `rp_warP` exceeds the worst MLB
+RP's by 0.5+ WAR, preserving MLB LHP balance. Off by default
+because most candidates are net-negative in current-year `rp_war`
+(only positive in projected `rp_warP`) — turn on if you prefer
+"call up the prospect for an MLB audition" over current-year
+roster stability.
 
-p99 across the 8 fielding positions clusters tightly in [+3.1, +4.1] —
-pos_adj equalizes top-tier value across positions cleanly.
-
-### High-potential rule
-
-In `build_system.is_high_potential`:
-```python
-return (minor=1 AND age <= 23) AND (
-    bestP_adj >= HP_BESTP_ADJ_THRESHOLD (2.0)  # league-average regular
-    OR wOBAP >= HP_WOBA_THRESHOLD (0.340)       # bat-elite safety net
-)
-```
-
-The OR rule replaces the prior wOBAP-only threshold (.300 with premium
-glove or .320 without). Effect: ~227 elite-glove SS/CF prospects
-GAIN HP status (Daniel Pierce, Druw Jones, Jose Devers, Dylan Cupp,
-Yasser Mercedes — defensive elites whose wOBAP just missed .300);
-~77 1B/DH/LF bat-only borderlines LOSE it (Antonio Sanchez, David
-Martinez, etc. — bestP_adj only 1.0-1.3 despite wOBAP .335+).
-
-Pitcher HP rule unchanged — `is_high_potential_pitcher` still uses
-pwOBAP because pitchers don't have defense to disambiguate.
-
-### Field viability filter
-
-`FIELD_VIABILITY_GAP = 2.0`. The displayed `field` column shows only
-positions whose adjusted WAR is within 2.0 WAR of the player's best.
-All per-position WARs are still computed and exported. Effect:
-- Cal Raleigh's `field`: was `C, 1B` → `C` (1B more than 2 WAR below)
-- Witt's `field`: was 7 positions → `SS, 2B, 3B`
-- Olson's `field`: was 7 positions → `CF, RF, LF, SS, 2B, 1B`
-
-`POSITION_FLOOR = 40` is the actual eligibility gate (any rating < 40
-NaN's the position). `FIELD_VIABILITY_GAP` only affects display.
+With toggle ON: 4 orgs see RHP-for-RHP swaps:
+- ATL Hamilton ↔ Kinley
+- CWS Sandlin + Paez ↔ Davitt + Tyson Miller
+- HOU Pecko ↔ Maldonado
+- PIT Bubba Chandler ↔ Darrell-Hicks
 
 ## Critical files
 
 | File | Role |
 |---|---|
-| `config.py` | All constants. `POSITIONAL_ADJUSTMENT_RUNS` (grid-sweep), `FIELDING_SATURATION`, `FIELDING_INTERACTION_CORRECTION`, `FIELD_VIABILITY_GAP=2`, `HP_BESTP_ADJ_THRESHOLD=2.0`, `HP_WOBA_THRESHOLD=0.34`, `RUNS_PER_WIN_HITTING/PITCHING/FIELDING`, `FIELDING_RUN_VALUES_VS_REPLACEMENT` (full 1D tables) |
-| `metrics_pitching.py` | Multiplicative `adjust_rates`, component-aware WAR, role-mask gating |
-| `metrics_hitting.py` | Linear `wOBA → runs → WAR` via RUNS_PER_WIN_HITTING |
-| `metrics_fielding.py` | Vectorized table lookup + 3B (55,55) correction + asymmetric-tanh saturation, RUNS_PER_WIN_FIELDING |
-| `metrics_war.py` | Per-position bat+def+pos_adj; `field` built post-pos_adj with FIELD_VIABILITY_GAP filter |
-| `build_system.py` | Hitter rosters. New HP rule via bestP_adj OR wOBAP. WAR_PER_WOBA_POINT now imported from config (no more stale hard-coded constant) |
-| `build_pitcher_system.py` | Pitcher rosters. `is_high_potential_pitcher` via pwOBAP, unchanged. |
-| `build_excel.py` | xlsx renderer. Uses org_report for platoon WAR + lineup. |
-| `org_report.py` | Platoon-WAR helpers + lineup builder. `_war_from_woba` now uses RUNS_PER_WIN_HITTING (was a bug). |
-| `streamlit_app.py` | 5-tab UI. Hitters tab shows `*_fld` (adjusted fielding) — no `_def` columns anywhere. |
-| `exporter.py` | Adds `bestP_adj` to hitters export so build_system can read it. |
+| `config.py` | All constants + roster tunables (post C-02) |
+| `roster_common.py` | Shared eligibility utils (LEVELS, MAX_AGE, age/service/dsl floors, injured.txt loader, DSL counter). Both builders import. **(post C-01)** |
+| `metrics_pitching.py` | Multiplicative components, role-mask gating, component-aware WAR |
+| `metrics_hitting.py` | Linear wOBA → runs → WAR |
+| `metrics_fielding.py` | 1D table sums + 3B (55,55) interaction + asymmetric-tanh saturation |
+| `metrics_war.py` | Per-position bat+def+pos_adj; `field` filtered by FIELD_VIABILITY_GAP |
+| `build_system.py` | Hitter rosters. Step 0–4.6, premium-fit pull-up, R(DLR) split |
+| `build_pitcher_system.py` | Pitcher rosters. SP/RP cascades + pull-up + LHP balance + opt-in swingman |
+| `build_excel.py` | xlsx renderer; uses org_report for platoon WAR + lineups |
+| `org_report.py` | Platoon-WAR helpers + lineup builder (uses `RUNS_PER_WIN_HITTING`) |
+| `streamlit_app.py` | 5-tab UI. Hitters tabs show `*_fld` and `*_adj`; platoon lineups stacked vertically |
+| `exporter.py` | Adds `bestP_adj` + per-position `*_fld` to JSON exports |
+| `tests/test_roster_invariants.py` | 390-case regression harness (T-01) |
+| `tests/conftest.py` | Pytest fixtures + per-org parametrize hook |
+| `outputs/PIPELINE_REVIEW.md` | Full methodology / code-quality review (34 findings, prioritised) |
+| `calibration/pos_adj_sweep.py` | Grid sweep that produced current `POSITIONAL_ADJUSTMENT_RUNS` |
 | `calibration/fit_saturation.py` | Per-position saturation fit |
-| `calibration/pos_adj_sweep.py` | Grid sweep that produced current POSITIONAL_ADJUSTMENT_RUNS |
-| `calibration/scarcity_check_unfiltered.py` | Empirical p99 / scarcity per position |
-| `calibration/top10_per_pos.py` | Spot-check the top players per position post-export |
+| `calibration/fit_pitcher_v2.py` | Produced current `PITCHING_WAR_COEFFS` |
+| `calibration/validate*.py`, `*_check.py`, `test_fixed_pos_adj.py` | Active validation scripts |
+| `calibration/archive/` | Superseded calibration scripts + stale CSVs (post janitor) |
 
-## Sample WAR values (post-recalibration)
+## Sample WAR values (Rockies Rebuild save)
 
-### Top SS (formerly the headline issue, now reasonable)
-| Player | best_adj |
-|---|---|
-| Bobby Witt Jr. (KC) | **6.51** |
-| Jacob Wilson (OAK) | 6.31 |
-| Geraldo Perdomo (AZ) | 5.41 |
-| Maikel Garcia (KC) | 5.31 |
-| Marcelo Mayer (BOS) | 5.31 |
-| Francisco Lindor (NYM) | 4.91 |
+### Top hitters by position
+| Pos | Player | best_adj |
+|---|---|---|
+| SS | Bobby Witt Jr. (KC) | ~6.5 |
+| 3B | Corey Seager (TEX) | ~6.2 |
+| RF | Kyle Tucker (LAD) | ~7.2 |
+| CF | Roman Anthony (BOS, rookie) | ~7.7 |
+| C | Cal Raleigh (SEA) | ~5.4 |
 
-### Top 3B
-Seager 6.21, De La Cruz 6.11, Chapman 5.71, Henderson 5.51, Ramirez 4.91
-(Note: Seager/De La Cruz/Henderson are MLB SS but their OOTP IF
-range/arm gives them slightly more 3B value than SS — borderline cases.)
-
-### Top RF
-Tucker 7.15, Soto 6.25, Ohtani 6.25, Judge 5.75, Tatis 5.75, Betts 5.65
-
-### Top CF
-Roman Anthony 7.69 (rookie), Merrill 6.09, Buxton 5.99, J Rodriguez 5.69
-
-### Top C
-Raleigh 5.39, Kirk 5.09, Wells 4.89, Baldwin 4.09, Contreras 3.99
-
-### Top SP / RP (unchanged from prior session)
+### Top pitchers
 | Pitcher | sp_war |
 |---|---|
-| Tarik Skubal (LAA) | ~5.6 |
+| Tarik Skubal (DET) | ~5.6 |
 | Garrett Crochet (BOS) | ~4.9 |
 | Paul Skenes (PIT) | ~4.7 |
 
-## Pool sizes (where each player's best position lands)
-
-| Pos | Pool |
-|---|---|
-| RF | 1791 |
-| C | 1116 |
-| 2B | 919 |
-| CF | 741 |
-| DH | 682 |
-| 1B | 609 |
-| LF | 599 |
-| 3B | 453 |
-| SS | 206 |
-
-DH alive (was 0 pre-recalibration), SS realistic (was 27), RF no longer
-absurdly dominant (was 3535).
-
-## Known limitations (carried forward)
-
-### Infield cross-position routing of MLB-locked players
-Some MLB-2B Gold Glovers (Gimenez, Turang, Donovan) and MLB-3B Gold
-Glovers (Hayes, Urias, Garcia) route to SS in our model because their
-OOTP IF range/arm makes them SS-eligible AND SS pos_adj is highest.
-No pos_adj setting fixes this — it's an OOTP-engine rating distribution
-quirk. ~9 misplacements out of 35 elite-glove DRS leaders.
-
-### Catcher framing engine plateau
-OOTP's engine plateaus framing value above Cfram=65 (+8 runs ceiling
-regardless of higher rating). Real MLB FRV says elite framers worth +30.
-Genuine OOTP engine limitation. C pos_adj is +7.5 vs FG's +12.5 partly
-because of this.
-
-### OOTP wOBA distribution differs from MLB
-OOTP's wOBA distribution runs ~22 points lower than MLB for star hitters
-(Witt OOTP .354 vs MLB .376). Plus our hitting slope (496.84) is flatter
-than MLB-equivalent (~520). Net effect: elite hitters land ~1-2 WAR
-below FG-comparable MLB values. Acceptable as an internal-consistency
-choice — WAR comparisons within an OOTP save are correct.
-
-### Pitcher RP WAR is workload-only, no leverage adjustment
-`rp_war = sp_war × 0.3333` implies ~67 IP for an RP. Doesn't apply
-FanGraphs' leverage multiplier for closers/setup men. Multiply elite
-RP WAR by ~1.5-2× to get FG-comparable.
-
-### `calibration/fielding_sim.csv` is stale
-The legacy LSQ-fit fielding tables were calibrated from this file. The
-current 1D tables came from direct sim sweeps in chat (data pasted in,
-not stored in CSV).
-
 ## What's still pending
 
-1. **2B/3B/SS interaction-grid refinement** — the current saturation +
-   3B (55,55) cell handles most cases, but Hayes/Urias/Garcia routing
-   to SS suggests 3B might benefit from a richer 2D RNG×ARM grid.
-   Would need new sim data.
-2. **OF fielding tables: RF table edge over LF** — at typical OF skill
-   levels RF gives ~3 runs more than LF, structurally favoring RF in
-   pool size. Mitigated by pos_adj but not eliminated.
-3. **Pitcher RP leverage adjustment** — would let elite closers'
-   `rp_war` match FG's leverage-adjusted ~3-4 WAR.
-4. **`metrics_fielding._vec_closest_rating` fallback baselines** — hard-
-   coded 50, 60 in metrics_fielding.py for missing IFrange/IFarm columns.
-   Safe fallback (rarely hit) but should reference config constants.
+See `outputs/PIPELINE_REVIEW.md` for the full prioritised action list.
+Highlights of what's NOT done:
+
+1. **M-03 (pitcher RP leverage WAR)** — currently `rp_war = sp_war × 0.333` (workload only). FG applies leverage multiplier (~1.5-2× for closers). Acceptable as cosmetic / external-comparability gap; explicitly skipped this session.
+2. **M-05 (IF cross-position routing)** — ~9/35 elite-glove DRS leaders mismatch (Hayes/Urias/Garcia routed to SS by OOTP IF range/arm distribution). Needs a 2D RNG×ARM grid for 2B / SS — requires new sim data.
+3. **C-05 / C-06 (metrics duplication, vectorize df.apply)** — code-quality items; not user-visible.
+4. **C-09 (rename injured.txt / flagged.txt)** — disambiguate; future-bug-prevention only.
+5. **R-04 (pitcher platoon staff variants)** — pwOBAR / pwOBAL exist but not used for vsR/vsL rotation construction.
+
+## Methodology limitations (carried forward)
+
+- **OOTP wOBA distribution offset**: OOTP star hitters cluster ~22 wOBA points below MLB (Witt OOTP .354 vs MLB .376). Hitting slope flatter than MLB-equivalent. Acceptable as internal-consistency choice — within-OOTP rankings correct.
+- **Catcher framing engine plateau**: OOTP caps framing at +8 runs (Cfram ≥ 65 collapse). C `pos_adj` is +7.5 vs FG's +12.5 partly because of this. Engine constraint, not our model.
+- **Pitcher RP WAR is workload-only**: see M-03 above.
 
 ## Quick smoke test
 
 ```powershell
 python app.py refresh
-
-# COL hitters
-python -X utf8 -c "from build_system import main, is_high_potential; r,o,_=main(org='COL'); placed=sum(len(r[lvl]['all']) for lvl in r); hps=sum(1 for lvl in r for p in r[lvl]['all'] if is_high_potential(p)); print(f'COL: placed={placed}, overflow={len(o)}, HPs={hps}')"
-
-# AZ pitchers
-python -X utf8 -c "from build_pitcher_system import main; r,o,_=main(org='AZ'); print(f'AZ: rosters={list(r.keys())}, overflow={len(o)}')"
-
-# Top players per position (visual check)
-python -X utf8 calibration/top10_per_pos.py
+python -m pytest tests/                      # 390 cases, ~60s
+python -X utf8 calibration/top10_per_pos.py  # spot-check top players per position
 ```
 
-Expected: COL 94 placed / 40 overflow / ~22 HPs; AZ pitchers all 7
-levels populated. Top SS = Witt 6.51, top RF = Tucker 7.15.
+Expected: pytest 390/390 pass. Top SS = Witt ~6.5, top RF = Tucker ~7.2.
