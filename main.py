@@ -3,6 +3,8 @@
 # its unique features (batting order, R/G estimate) are now rendered directly
 # in the xlsx by build_excel.py. The function still lives in exporter.py and
 # can be called manually if needed.
+import pandas as pd
+
 from exporter import export_html_pages, export_json_pages
 from metrics_fielding import calc_fielding_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
@@ -44,6 +46,7 @@ def compute_df():
     df = calc_fielding_metrics(df)
     df = calc_war(df)
     df = _flag_two_way_players(df)
+    df = _flag_two_way_best_side(df)
     # Sort by scarcity-adjusted WAR — that's the player's "true value"
     # accounting for positional difficulty (see metrics_war.calc_war).
     df = df.sort_values(by="best_adj", ascending=False)
@@ -51,58 +54,55 @@ def compute_df():
 
 
 def _flag_two_way_players(df):
-    """Flag players who are scouted as both pitchers AND meaningful hitters.
+    """Flag players whose CURRENT batting AND pitching are both
+    admissible at SOME meaningful level. Symmetric — captures
+    Ohtani-types (OOTP `position != 1`, primary bat with real
+    scouted pitching ratings) AND pitcher-types with real current
+    bats. The OOTP `position` field is incidental; what matters is
+    whether both `wOBA` and `pwOBA` produce admissible level
+    ceilings.
 
-    OOTP marks `position == 1` for any pitcher, including Ohtani-types whose
-    batting is also competitive. The hitter pipeline filters out
-    `position == 1` rows, so without this flag a two-way player's bat is
-    invisible to roster construction. We mark them with `is_two_way = True`
-    and pre-compute their level ceiling on the better-of-two-skills basis,
-    so both builders can pin them to the same level.
+    The `_flag_two_way_best_side()` step (called next from
+    `compute_df`) picks which side gets the roster slot based on
+    higher expected WAR contribution.
 
-    Heuristic — must satisfy ALL of:
-      - `position == 1` (OOTP marks them as a pitcher)
-      - `age <= 24` (active prospects, not legacy conversions). OOTP often
-        keeps stale batting ratings on older converted-from-position-player
-        pitchers; the age cap filters them out. Real two-way prospects
-        develop young.
-      - `powP, eyeP, gapP >= 40` (meaningful potential — OOTP defaults
-        pitcher batting to 5-25; clearing 40 across all three rate skills
-        means a deliberate two-way scouting profile)
-      - `wOBAP >= 0.270` (a holistic check — not just individual ratings).
-        Roughly the threshold for a useful bench bat in the lower minors.
+    Thresholds borrow the cascade's own per-level admissibility:
+      - `wOBA >= WOBA_MIN_HITTER['A']` (.200) — playable at A or above
+      - `pwOBA <= PWOBA_MAX['R']` — admissible as a pitcher at R or above
 
-    Calibration: with these gates ~1 in 230 pitchers is flagged in a
-    typical save (~30-40 across the full population) — matches the user's
-    observation that Caden Grice / Patrick Forbes were the two AZ
-    two-way players in the Corbin HoF save.
+    Players with low CURRENT wOBA (e.g. Tolle .084, default pitcher
+    batting) won't pass the bat test → not flagged → pitcher-only.
+    Ohtani's wOBA=.424 and computed pwOBA from his real scouted
+    pitching ratings → flagged.
     """
-    import numpy as np
-    is_pitcher = df["position"] == 1
-    young = df["age"].fillna(99) <= 24
-    bat_ok = (
-        (df["powP"].fillna(0) >= 40)
-        & (df["eyeP"].fillna(0) >= 40)
-        & (df["gapP"].fillna(0) >= 40)
-    )
-    woba_ok = df["wOBAP"].fillna(0) >= 0.270
-    df["is_two_way"] = (is_pitcher & young & bat_ok & woba_ok).astype(bool)
+    from config import WOBA_MIN_HITTER, PWOBA_MAX
+    wOBA_ok = df["wOBA"].fillna(0) >= WOBA_MIN_HITTER["A"]
+    pwOBA_ok = df["pwOBA"].fillna(1.0) <= PWOBA_MAX["R"]
+    df["is_two_way"] = (wOBA_ok & pwOBA_ok).astype(bool)
+    return df
 
-    # Two-way effective top: the LOWER index (= higher level) of the
-    # hitter-side and pitcher-side ceilings — the better skill drives
-    # promotion. Stored as integer level index; non-two-way rows get NaN.
-    from build_system import woba_max_level
-    from build_pitcher_system import pwoba_top_level
 
-    def combined_top(row):
-        if not row.get("is_two_way"):
-            return np.nan
-        d = row.to_dict()
-        h_top = woba_max_level(d)
-        p_top = pwoba_top_level(d)
-        return min(h_top, p_top)
+def _flag_two_way_best_side(df):
+    """For each two-way player, pick the side with higher expected WAR
+    contribution. Approximates the marginal-replacement comparison —
+    the side where the player's absence would force the team to fill
+    the slot with a weaker replacement.
 
-    df["tw_target_lvl"] = df.apply(combined_top, axis=1)
+    Hitter side: `war_hitting` (bat-only WAR at full MLB workload).
+    Pitcher side: max of `sp_war` and `rp_war` (whichever role they
+    qualify for, take the better).
+
+    Two-way players are admitted to ONLY their best-side pool by the
+    exporter filters. The user's intent: 'they should only count on
+    whichever side allows the best player to come into the team'.
+    """
+    hitter_war = df["war_hitting"].fillna(-99)
+    sp = df["sp_war"].fillna(-99) if "sp_war" in df.columns else -99
+    rp = df["rp_war"].fillna(-99) if "rp_war" in df.columns else -99
+    pitcher_war = pd.concat([df["sp_war"], df["rp_war"]], axis=1).max(axis=1).fillna(-99)
+    df["tw_best_side"] = ""
+    df.loc[df["is_two_way"] & (hitter_war > pitcher_war), "tw_best_side"] = "hitter"
+    df.loc[df["is_two_way"] & (hitter_war <= pitcher_war), "tw_best_side"] = "pitcher"
     return df
 
 

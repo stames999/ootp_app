@@ -22,13 +22,17 @@ PITCHER_SKILL_COLS_POTENTIAL = ["ctrlP", "pbabipP", "hraP", "stuffP"]
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish role using OOTP's classifier (position == 1) plus a single
-    # stamina threshold for SP vs RP. Pitch-count is no longer in the gate —
-    # stamina alone determines whether a pitcher can carry a starter's
-    # workload. Below MINIMUM_STARTER_STAMINA they're a reliever; at or
-    # above they're a potential starter regardless of pitch-mix breadth.
+    # Establish role using stamina alone — pwOBA / WAR are now computed
+    # for every player so two-way prospects (OOTP `position != 1` with
+    # real scouted pitching ratings, e.g. Shohei Ohtani at LAD with
+    # position=10 but role=11) get a valid role tag too. Below
+    # MINIMUM_STARTER_STAMINA they're a reliever; at or above they're a
+    # potential starter regardless of pitch-mix breadth. Position
+    # players without scouted pitching ratings will still be filtered
+    # out at downstream pool admission (see exporter.py + the sub-floor
+    # gate below that NaN's their sp_war / rp_war).
     def identify_role(row):
-        if row.get("position") != 1:
+        if pd.isna(row.get("stamina")):
             return ""
         if row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"
@@ -94,27 +98,32 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     rates_l = df.apply(lambda row: adjust_rates(row, "L"), axis=1)
     df = pd.concat([df, rates_r, rates_l], axis=1)
 
-    # Compute pwOBA for any OOTP-labelled pitcher (position == 1). Position
-    # players have other position codes; their emergency-pitcher ratings
-    # are uniform low values that aren't meaningful as MLB metrics.
-    pitcher_capable = df["position"] == 1
-
+    # Compute pwOBA for EVERY player (not just `position == 1`). Real
+    # two-way players have OOTP `position != 1` but genuine scouted
+    # pitching ratings (e.g. Shohei Ohtani: position=10 DH, role=11
+    # Starter, stuff=70). They need a computed pwOBA so the symmetric
+    # `_flag_two_way_players` heuristic can flag them. Position
+    # players with no scouted pitching ratings will produce a
+    # very-bad pwOBA from default low ratings — they get filtered out
+    # at pool admission (exporter.py: `position == 1 OR is_two_way`)
+    # and at the sub-floor gate below that NaN's their sp_war /
+    # rp_war.
     df["pwOBAR"] = (
         PITCHING_WOBA_WEIGHTS["hr_vs_wOBA_weight"] * df["hr_vsR"] +
         PITCHING_WOBA_WEIGHTS["bb_vs_wOBA_weight"] * df["bb_vsR"] +
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vsR"]
-    ).where(pitcher_capable)
+    )
 
     df["pwOBAL"] = (
         PITCHING_WOBA_WEIGHTS["hr_vs_wOBA_weight"] * df["hr_vsL"] +
         PITCHING_WOBA_WEIGHTS["bb_vs_wOBA_weight"] * df["bb_vsL"] +
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vsL"]
-    ).where(pitcher_capable)
+    )
 
     df["pwOBA"] = (
         df["pwOBAR"] * HANDEDNESS_WEIGHTS["R"] +
         df["pwOBAL"] * HANDEDNESS_WEIGHTS["L"]
-    ).where(pitcher_capable)
+    )
 
     # Base WAR at full-season (SP) IP. Both sp_war and rp_war are populated
     # for every eligible pitcher so users can compare role-fit: an SP with
@@ -139,7 +148,7 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
         + PITCHING_WAR_COEFFS["bb_pct_coef"] * bb_pct
         + PITCHING_WAR_COEFFS["k_pct_coef"] * k_pct
         + PITCHING_WAR_COEFFS["h_nothr_pct_coef"] * c_pct
-    ).where(pitcher_capable).round(1)
+    ).round(1)
 
     df["sp_war"] = base_war
     df["rp_war"] = (base_war * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
@@ -175,11 +184,12 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # Calculate pitching metrics based on potential ratings (no handedness)
 def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish potential role using OOTP's classifier (position == 1)
-    # plus stamina alone for SP vs RP. Mirrors the current-side gate —
-    # stamina is the binding constraint for rotation viability.
+    # Establish potential role using stamina alone — pwOBAP / sp_warP /
+    # rp_warP are computed for everyone so two-way prospects with
+    # `position != 1` (e.g. Ohtani at LAD) still get a valid role tag.
+    # Same logic as `calc_pitching_metrics.identify_role`.
     def identify_role(row):
-        if row.get("position") != 1:
+        if pd.isna(row.get("stamina")):
             return ""
         if row["stamina"] >= MINIMUM_STARTER_STAMINA:
             return "sp"

@@ -153,7 +153,7 @@ EXPORT_PAGES = [
             # is the better-of-two-skills level ceiling that pins them
             # to the same level on both sides.
             "is_two_way",
-            "tw_target_lvl",
+            "tw_best_side",
             "position",
             "name",
             "org",
@@ -220,17 +220,20 @@ EXPORT_PAGES = [
             "nation_id",
             "flag",
         ],
-        # Include any non-pitcher with a computed wOBAP (regardless of
-        # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
-        # projects whose scouted ratings produce a sub-replacement wOBAP
-        # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps pitchers out. Two-way
-        # players (position == 1 AND is_two_way) are intentionally
-        # excluded here: they take a roster slot ONLY on the pitcher
-        # side; their bat is informational (shown as a badge / note on
-        # the pitcher view) rather than competing with regular hitters
-        # for bench slots. See R-10 design notes.
-        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
+        # Hitter pool admission. Regular hitters (`position != 1`) plus
+        # two-way players whose `tw_best_side == 'hitter'` (i.e. their
+        # bat WAR > pitcher WAR — see main._flag_two_way_best_side).
+        # The two-way clause is what lets Shohei Ohtani (LAD,
+        # position=10 DH but role=11 Starter) land at MLB on the
+        # hitter side: his hitter WAR easily beats his pitcher WAR.
+        # Tolle / Grice / Forbes — pitcher-types whose CURRENT wOBA
+        # is too low — fail the `_flag_two_way_players` test and are
+        # pitcher-only.
+        "filter": lambda df: (
+            (df["position"] != 1)
+            | ((df.get("is_two_way", False).fillna(False))
+               & (df.get("tw_best_side", "") == "hitter"))
+        ) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     {
@@ -239,7 +242,7 @@ EXPORT_PAGES = [
         "columns": [
             "player_id",  # see hitters page for rationale
             "is_two_way",
-            "tw_target_lvl",
+            "tw_best_side",
             "position",
             "name",
             "org",
@@ -267,11 +270,21 @@ EXPORT_PAGES = [
             "nation_id",
             "flag",
         ],
-        # Same shape as the hitter filter — include any pitcher with
-        # a computed pwOBAP. The old `< 1.000` cutoff was effectively
-        # the same as notna() since pwOBAP tops out around 0.5 even for
-        # the worst arms, but explicit notna is clearer about intent.
-        "filter": lambda df: df["pwOBAP"].notna(),
+        # Pitcher pool admission. Regular pitchers (`position == 1`)
+        # plus two-way players whose `tw_best_side == 'pitcher'` (their
+        # pitcher WAR >= hitter WAR — Tolle-type players whose batting
+        # is theoretical AND failing the wOBA threshold won't reach
+        # here either; the `_flag_two_way_players` heuristic gates on
+        # CURRENT wOBA admissibility). The `pwOBAP.notna()` clause
+        # used to act as an implicit position==1 gate (since the
+        # metrics layer only computed pwOBAP for pitchers); the
+        # metrics gate is now dropped, so this clause just filters
+        # rows that genuinely lack pitching ratings — which is fine.
+        "filter": lambda df: (
+            (df["position"] == 1)
+            | ((df.get("is_two_way", False).fillna(False))
+               & (df.get("tw_best_side", "") == "pitcher"))
+        ) & df["pwOBAP"].notna(),
         "page_len": 100,
     },
     {
@@ -329,17 +342,20 @@ EXPORT_PAGES = [
             "Cfram",
             "flag",
         ],
-        # Include any non-pitcher with a computed wOBAP (regardless of
-        # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
-        # projects whose scouted ratings produce a sub-replacement wOBAP
-        # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps pitchers out. Two-way
-        # players (position == 1 AND is_two_way) are intentionally
-        # excluded here: they take a roster slot ONLY on the pitcher
-        # side; their bat is informational (shown as a badge / note on
-        # the pitcher view) rather than competing with regular hitters
-        # for bench slots. See R-10 design notes.
-        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
+        # Hitter pool admission. Regular hitters (`position != 1`) plus
+        # two-way players whose `tw_best_side == 'hitter'` (i.e. their
+        # bat WAR > pitcher WAR — see main._flag_two_way_best_side).
+        # The two-way clause is what lets Shohei Ohtani (LAD,
+        # position=10 DH but role=11 Starter) land at MLB on the
+        # hitter side: his hitter WAR easily beats his pitcher WAR.
+        # Tolle / Grice / Forbes — pitcher-types whose CURRENT wOBA
+        # is too low — fail the `_flag_two_way_players` test and are
+        # pitcher-only.
+        "filter": lambda df: (
+            (df["position"] != 1)
+            | ((df.get("is_two_way", False).fillna(False))
+               & (df.get("tw_best_side", "") == "hitter"))
+        ) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     # More pages can be added here
