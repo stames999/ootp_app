@@ -432,8 +432,13 @@ def write_pitcher_sheet(ws, lvl, roster):
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
     row += 1
 
-    sp_target = roster.get('sp_target', SP_PER_LEVEL)
-    rp_target = roster.get('rp_target', RP_PER_LEVEL)
+    # Roster dict carries 'sp_target'/'rp_target' set by the pitcher
+    # builder; the SP_PER_LEVEL / RP_PER_LEVEL fallback is per-level
+    # since they're now dicts. Strip any R(DLR) sub-team suffix for the
+    # lookup (R(DLR)1, R(DLR)2, ... → R(DLR)).
+    base_lvl = 'R(DLR)' if lvl.startswith('R(DLR)') else lvl
+    sp_target = roster.get('sp_target', SP_PER_LEVEL.get(base_lvl, 5))
+    rp_target = roster.get('rp_target', RP_PER_LEVEL.get(base_lvl, 8))
     for i in range(sp_target):
         if i < len(roster['starters']):
             write_pitcher_row(row, roster['starters'][i], f'SP{i+1}', 'sp_warP', sp_note)

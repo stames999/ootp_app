@@ -166,7 +166,7 @@ All roster-construction thresholds live in `config.py` under the
 
 | Constant | What it controls | Default |
 |---|---|---|
-| `ROSTER_SIZES_HITTER` | Per-level hitter slot capacity | MLB→A=13, R/R(DLR)=15 |
+| `ROSTER_SIZES_HITTER` | Per-level hitter slot capacity | MLB=13, AAA/AA=15, A+/A/R/R(DLR)=16 |
 | `WOBA_MIN_HITTER` | Per-level wOBA eligibility floor | MLB=.280, AAA=.250, ... |
 | `PREMIUM_WOBA_RELAX` | wOBA floor relax for C/SS/CF | .005 |
 | `LINEUP_RHP_WEIGHT` | Standard-lineup vs-RHP weighting | .725 |
@@ -177,7 +177,7 @@ All roster-construction thresholds live in `config.py` under the
 | `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / 2.0 / .330 |
 | `PREMIUM_FLD_MIN`, `HP_PREMIUM_FIT_POSITIONS` | Premium-glove anchor | 1.5 / (CF, SS, 2B) |
 | `IF_POSITIONS`, `OF_POSITIONS` | Position groupings for utility roles | (2B, 3B, SS) / (LF, CF, RF) |
-| `SP_PER_LEVEL`, `RP_PER_LEVEL` | Pitcher rotation / bullpen size | 5 / 8 |
+| `SP_PER_LEVEL`, `RP_PER_LEVEL` | Per-level rotation / bullpen size (dicts) | MLB=5/8, AAA/AA=5/10, A+/A/R/R(DLR)=6/10 |
 | `PWOBA_MAX` | Per-level pwOBA ceiling | MLB=.345, AAA=.370, ... |
 | `LHP_LEVELS`, `LEFTY_MIN/TARGET/MAX`, `LEFTY_TARGET_MAX_COST` | Bullpen handedness balance | (MLB,AAA,AA) / 2,3,4 / 0.010 |
 | `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / .340 |

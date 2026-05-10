@@ -388,8 +388,8 @@ with tab_overview:
         st.subheader('MLB pitching staff')
 
         rotation = rp['MLB']['starters']
-        sp_target = rp['MLB'].get('sp_target', SP_PER_LEVEL)
-        rp_target = rp['MLB'].get('rp_target', RP_PER_LEVEL)
+        sp_target = rp['MLB'].get('sp_target', SP_PER_LEVEL['MLB'])
+        rp_target = rp['MLB'].get('rp_target', RP_PER_LEVEL['MLB'])
         st.markdown(f'**Rotation** ({len(rotation)} of {sp_target} filled)')
         rrows = []
         for i in range(sp_target):

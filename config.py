@@ -261,8 +261,16 @@ HANDEDNESS_WEIGHTS = {"R": 0.7, "L": 0.3}
 
 # Per-org slot capacities by level. R(DLR) is BASE — actual R(DLR)
 # capacity is scaled by org's DSL team count via compute_roster_sizes.
+#
+# Sizes (post-2026-05 expansion):
+#   MLB                = 13 (active-roster minimum, unchanged)
+#   AAA / AA           = 15 (was 13; the extra two slots match real-world
+#                            AAA/AA roster depth and reduce A-level
+#                            under-fill from cascade exhaustion)
+#   A+ / A / R / R(DLR)= 16 (was 13/13/15/15; matches the pitcher staff
+#                            sizing of 6 SP + 10 RP at these levels)
 ROSTER_SIZES_HITTER = {
-    'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15
+    'MLB': 13, 'AAA': 15, 'AA': 15, 'A+': 16, 'A': 16, 'R': 16, 'R(DLR)': 16
 }
 
 # Minimum wOBA required to be eligible at each level. The cascade ranks
@@ -396,8 +404,19 @@ OF_POSITIONS = ('LF', 'CF', 'RF')
 # ====================================================
 # Per-level rotation + bullpen sizes. R(DLR) is base — actual capacity
 # scales with org's DSL team count (each DSL team gets its own staff).
-SP_PER_LEVEL = 5
-RP_PER_LEVEL = 8
+#
+# Sizes (post-2026-05 expansion to match hitter ROSTER_SIZES_HITTER):
+#   MLB                = 5 SP + 8 RP = 13 (unchanged, active-roster spec)
+#   AAA / AA           = 5 SP + 10 RP = 15 (was 5+8; +2 RP for depth)
+#   A+ / A / R / R(DLR)= 6 SP + 10 RP = 16 (was 5+8; 6 SP for development
+#                            depth — minor-league rotations realistically
+#                            cycle 6+ starters across a season)
+SP_PER_LEVEL = {
+    'MLB': 5, 'AAA': 5, 'AA': 5, 'A+': 6, 'A': 6, 'R': 6, 'R(DLR)': 6,
+}
+RP_PER_LEVEL = {
+    'MLB': 8, 'AAA': 10, 'AA': 10, 'A+': 10, 'A': 10, 'R': 10, 'R(DLR)': 10,
+}
 
 # Maximum pwOBA a pitcher can allow and still belong at a given level.
 # Lower = better stuff, so this is a CEILING (analogous to WOBA_MIN_HITTER

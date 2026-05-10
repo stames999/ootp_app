@@ -75,13 +75,14 @@ def test_hitter_no_service_violations(org, hitter_results):
 
 
 def test_hitter_no_top_violations(org, hitter_results):
-    """No hitter is placed at level i where i < _top.
+    """No hitter placed more than 1 level above _top.
 
-    `_top` is the highest level the player's wOBA qualifies for
-    (with the C/SS/CF premium relax applied). Hitter cascade and pull-up
-    both enforce `_top <= i` strictly — there's no "stretch up" allowance
-    for hitters. (Pitchers DO have a +1 stretch in `_pull_up` — that's
-    why pitchers have a separate, looser test below.)
+    `_top` is the highest level the player's wOBA qualifies for (with
+    the C/SS/CF premium relax applied). Step 3.6 pull-up Pass 2 allows
+    a non-HP "+1 stretch" — a player whose wOBA only qualifies them
+    for R can fill an open A slot when no truly-A-qualified body is
+    available, mirroring the pitcher SP/RP pull-up. So a 1-level top
+    violation is INTENTIONAL; anything deeper is a bug.
     """
     rosters, _, _ = hitter_results[org]
     violations = []
@@ -89,10 +90,10 @@ def test_hitter_no_top_violations(org, hitter_results):
         i = _level_index(lvl_name)
         for p in r['all']:
             top = p.get('_top')
-            if top is not None and i < top:
+            if top is not None and (top - i) > 1:
                 violations.append(
                     f"  {p['name']} at {lvl_name} (i={i}); "
-                    f"_top={H_LEVELS[top]} (i={top}); "
+                    f"_top={H_LEVELS[top]} (i={top}); stretch={top - i} levels; "
                     f"wOBA={p.get('wOBA'):.3f}, pos_adj={p.get('pos_adj')}"
                 )
     assert not violations, (

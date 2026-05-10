@@ -56,8 +56,10 @@ from config import (  # noqa: F401  (re-exports)
 PITCHERS_JSON = 'outputs/pitchers.json'
 
 # Derived: SP+RP slots per level. Kept here (not in config) because it's
-# trivially derived from the two SP/RP constants and only build_excel imports it.
-PITCHER_ROSTER_SIZE = SP_PER_LEVEL + RP_PER_LEVEL
+# trivially derived from the two SP/RP per-level dicts and only
+# build_excel imports it. Now a {level: int} dict since SP_PER_LEVEL /
+# RP_PER_LEVEL became per-level dicts in the 2026-05 expansion.
+PITCHER_ROSTER_SIZE = {lvl: SP_PER_LEVEL[lvl] + RP_PER_LEVEL[lvl] for lvl in LEVELS}
 
 
 def load_team_pitchers(org=None):
@@ -477,7 +479,7 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             for i, lvl in enumerate(LEVELS):
                 if lvl not in rp_by:
                     continue
-                while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL):
+                while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
                     worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
                     rp_by[lvl].remove(worst)
                     next_idx = i + 1
@@ -578,12 +580,14 @@ def main(org=None):
             valid.append(p)
 
     # Per-org pitcher capacities. R(DLR) scales by DSL team count (each
-    # DSL team has its own staff = SP_PER_LEVEL + RP_PER_LEVEL slots).
-    sp_slots = {lvl: SP_PER_LEVEL for lvl in LEVELS}
-    rp_slots = {lvl: RP_PER_LEVEL for lvl in LEVELS}
+    # DSL team has its own staff = SP_PER_LEVEL[R(DLR)] + RP_PER_LEVEL[R(DLR)]
+    # slots). SP_PER_LEVEL / RP_PER_LEVEL are now per-level dicts, so each
+    # level reads its own SP/RP capacity directly.
+    sp_slots = {lvl: SP_PER_LEVEL[lvl] for lvl in LEVELS}
+    rp_slots = {lvl: RP_PER_LEVEL[lvl] for lvl in LEVELS}
     n_dsl = max(1, _count_dsl_teams(org))
-    sp_slots['R(DLR)'] = SP_PER_LEVEL * n_dsl
-    rp_slots['R(DLR)'] = RP_PER_LEVEL * n_dsl
+    sp_slots['R(DLR)'] = SP_PER_LEVEL['R(DLR)'] * n_dsl
+    rp_slots['R(DLR)'] = RP_PER_LEVEL['R(DLR)'] * n_dsl
 
     # Step 2-3: SP cascade + pull-up
     sp_pool = [p for p in valid if is_sp_viable(p)]
@@ -616,7 +620,7 @@ def main(org=None):
     for i, lvl in enumerate(LEVELS):
         if lvl not in rp_by:
             continue
-        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL):
+        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
             worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
             rp_by[lvl].remove(worst)
             next_idx = i + 1
@@ -651,14 +655,16 @@ def main(org=None):
 
     # Step 5b: split R(DLR) into n_dsl sub-teams (best, …, rest) by
     # pitcher_priority blend. Each DSL affiliate gets its own staff:
-    # SP_PER_LEVEL rotation + RP_PER_LEVEL bullpen. For n_dsl == 1 this
-    # is a no-op and the single 'R(DLR)' key is preserved.
+    # SP_PER_LEVEL['R(DLR)'] rotation + RP_PER_LEVEL['R(DLR)'] bullpen.
+    # For n_dsl == 1 this is a no-op and the single 'R(DLR)' key is preserved.
     if n_dsl >= 2 and 'R(DLR)' in sp_by:
+        dsl_sp = SP_PER_LEVEL['R(DLR)']
+        dsl_rp = RP_PER_LEVEL['R(DLR)']
         sp_full = sorted(sp_by.pop('R(DLR)'), key=lambda p: pitcher_priority(p, 'R(DLR)'))
         rp_full = sorted(rp_by.pop('R(DLR)'), key=lambda p: pitcher_priority(p, 'R(DLR)'))
         for k in range(n_dsl):
-            sp_by[f'R(DLR){k+1}'] = sp_full[k*SP_PER_LEVEL:(k+1)*SP_PER_LEVEL]
-            rp_by[f'R(DLR){k+1}'] = rp_full[k*RP_PER_LEVEL:(k+1)*RP_PER_LEVEL]
+            sp_by[f'R(DLR){k+1}'] = sp_full[k*dsl_sp:(k+1)*dsl_sp]
+            rp_by[f'R(DLR){k+1}'] = rp_full[k*dsl_rp:(k+1)*dsl_rp]
 
     # Tag roles + present each level's lists in blend order (best first).
     # Iterate the actual keys (not LEVELS) so the R(DLR) split is preserved.
@@ -674,11 +680,12 @@ def main(org=None):
         for p in rp_by[lvl]:
             p['_role'] = 'RP'
         # For R(DLR) sub-teams the per-team capacity is the standard
-        # SP_PER_LEVEL / RP_PER_LEVEL; for un-split levels we use the
-        # slots_for value (which already accounts for any scaling).
+        # SP_PER_LEVEL['R(DLR)'] / RP_PER_LEVEL['R(DLR)']; for un-split
+        # levels we use the slots_for value (already accounts for any
+        # scaling).
         if lvl.startswith('R(DLR)') and lvl != 'R(DLR)':
-            sp_target = SP_PER_LEVEL
-            rp_target = RP_PER_LEVEL
+            sp_target = SP_PER_LEVEL['R(DLR)']
+            rp_target = RP_PER_LEVEL['R(DLR)']
         else:
             sp_target = sp_slots[lvl]
             rp_target = rp_slots[lvl]
