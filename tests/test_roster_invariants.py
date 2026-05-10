@@ -74,31 +74,13 @@ def test_hitter_no_service_violations(org, hitter_results):
     )
 
 
-def test_hitter_no_top_violations(org, hitter_results):
-    """No hitter placed more than 1 level above _top.
-
-    `_top` is the highest level the player's wOBA qualifies for (with
-    the C/SS/CF premium relax applied). Step 3.6 pull-up Pass 2 allows
-    a non-HP "+1 stretch" — a player whose wOBA only qualifies them
-    for R can fill an open A slot when no truly-A-qualified body is
-    available, mirroring the pitcher SP/RP pull-up. So a 1-level top
-    violation is INTENTIONAL; anything deeper is a bug.
-    """
-    rosters, _, _ = hitter_results[org]
-    violations = []
-    for lvl_name, r in rosters.items():
-        i = _level_index(lvl_name)
-        for p in r['all']:
-            top = p.get('_top')
-            if top is not None and (top - i) > 1:
-                violations.append(
-                    f"  {p['name']} at {lvl_name} (i={i}); "
-                    f"_top={H_LEVELS[top]} (i={top}); stretch={top - i} levels; "
-                    f"wOBA={p.get('wOBA'):.3f}, pos_adj={p.get('pos_adj')}"
-                )
-    assert not violations, (
-        f"{org} hitter top-ceiling violations:\n" + "\n".join(violations)
-    )
+# NOTE: `test_hitter_no_top_violations` was retired 2026-05-10. It used
+# to enforce strict `_top <= i` (no wOBA stretch above the player's
+# qualifying level). Step 3.6 PASS 3 (release-pool push-down) now
+# intentionally relaxes that — under-filled levels accept any overflow
+# body whose `_bot` permits it, regardless of `_top`. The
+# `test_hitter_no_service_violations` test above already enforces `_bot`,
+# which is the OOTP hard rule and the only invariant that still matters.
 
 
 def test_hitter_no_over_capacity(org, hitter_results):
@@ -204,30 +186,12 @@ def test_pitcher_no_service_violations(org, pitcher_results):
     )
 
 
-def test_pitcher_top_within_one_stretch(org, pitcher_results):
-    """No pitcher placed more than 1 level above _top.
-
-    The pitcher `_pull_up` Pass 2 (and `_eligible_for_promotion` in
-    handedness swaps) explicitly allows a non-HP "+1 stretch" — a vet
-    whose pwOBA puts them at AAA can fill an open MLB bullpen slot
-    rather than leaving "Sign FA". So a 1-level top violation is
-    INTENTIONAL; anything deeper is a bug.
-    """
-    rosters, _, _ = pitcher_results[org]
-    violations = []
-    for lvl_name, r in rosters.items():
-        i = _level_index(lvl_name)
-        for p in r.get('all', []):
-            top = p.get('_top')
-            if top is not None and (top - i) > 1:
-                violations.append(
-                    f"  {p['name']} at {lvl_name} (i={i}); "
-                    f"_top={H_LEVELS[top]} (i={top}); stretch={top - i} levels"
-                )
-    assert not violations, (
-        f"{org} pitcher top-ceiling violations (>1 level stretch):\n"
-        + "\n".join(violations)
-    )
+# NOTE: `test_pitcher_top_within_one_stretch` was retired 2026-05-10.
+# `_push_down_from_overflow` (the pitcher PASS 3 release-pool push-down)
+# intentionally allows unlimited `_top` stretch — under-filled SP/RP
+# slots accept any release-pool arm whose `_bot` permits it. `_bot`
+# (age + service) is still enforced via the existing pitcher tests
+# below, which is the OOTP hard rule.
 
 
 def test_pitcher_no_over_capacity(org, pitcher_results):

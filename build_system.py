@@ -784,34 +784,52 @@ def main(org=None):
     # player from any over-target level — see _rebalance_over_target above.
     _rebalance_over_target()
 
-    # === STEP 3.6: Two-pass pull-up (mirrors pitcher SP/RP pull-up) ===
+    # === STEP 3.6: Three-pass pull-up + push-down ===
     # The Step-2 cascade pushes worst-priority players DOWN through the
     # levels until they hit overflow, but it doesn't reach back UP to
     # fill gaps that emerge later (HP demotions, service-locked players
     # that couldn't fit lower, etc.).
     #
-    # PASS 1: strict eligibility — any level under ROSTER_SIZES pulls
-    # the highest-priority overflow body whose `_top <= i <= _bot`.
-    # No stretch above the player's wOBA-qualified ceiling.
+    # PASS 1 (strict): any level under ROSTER_SIZES pulls the
+    #   highest-priority overflow body whose `_top <= i <= _bot`. No
+    #   stretch above the player's wOBA-qualified ceiling.
     #
-    # PASS 2: +1 stretch — if PASS 1 left a level still under target,
-    # allow non-HP players whose `_top` is exactly ONE level below the
-    # under-filled level (`_top == i + 1`) to fill the gap. Mirrors the
-    # pitcher `_pull_up` Pass 2 stretch: an under-filled minor-league
-    # roster is worse for org depth than a marginal pull-up. Catchers
-    # and HPs are excluded — Step 1 already optimised catchers, HPs
-    # have their own enforcement and shouldn't be force-promoted.
+    # PASS 2 (+1 stretch): if PASS 1 left a level still under target,
+    #   allow non-HP non-catcher players whose `_top` is exactly ONE
+    #   level below the under-filled level (`_top == i + 1`) to fill
+    #   the gap. Mirrors the pitcher `_pull_up` Pass 2 stretch.
     #
-    # Both passes also pull from already-placed lower levels (not just
-    # overflow), since most orgs have thin overflow pools and the
-    # candidate is usually placed at R / R(DLR) by the cascade.
-    def _pullup_eligible(p, i, allow_stretch):
-        if is_catcher(p):
-            return False
+    # PASS 3 (release-pool push-down): for any level still under target,
+    #   pull ANY overflow body whose `_bot >= i` — regardless of `_top`.
+    #   Catchers are eligible (Hungarian can route them to any
+    #   position they `field`-qualify for). Only the OOTP hard rule
+    #   (`_bot`: age + service + DSL nation) is respected. This is what
+    #   the user calls "push down using release pool players to ensure
+    #   all rosters fill" — release-pool players land wherever a slot
+    #   exists, even if their wOBA is well below the level's nominal
+    #   threshold. An empty roster slot is worse for org-depth display
+    #   than an over-leveled body.
+    #
+    # PASS 1 + PASS 2 also pull from already-placed lower levels (not
+    # just overflow), since most orgs have thin overflow pools and the
+    # candidate is usually placed at R / R(DLR) by the cascade. PASS 3
+    # only pulls from overflow — we never demote a placed player to
+    # fill a gap (that would just shift the gap downward).
+    def _pullup_eligible(p, i, allow_stretch, allow_push_down=False):
         if p.get('_bot') is None or i > p['_bot']:
             return False
         if p.get('_force_start'):
             return False
+        # Catchers are excluded from PASS 1/2 because Step 1 already
+        # optimised catcher allocation; allowing them here would
+        # double-count. PASS 3 (release-pool push-down) lets catchers
+        # in — by then we're filling otherwise-empty slots and the
+        # Hungarian can route a catcher to any non-C position they
+        # `field`-qualify for.
+        if is_catcher(p) and not allow_push_down:
+            return False
+        if allow_push_down:
+            return True   # _bot is the only constraint
         top = p.get('_top')
         if top is None:
             return False
@@ -821,19 +839,24 @@ def main(org=None):
             return True   # non-HP +1 stretch
         return False
 
-    def _try_fill_level(i, lvl, allow_stretch):
+    def _try_fill_level(i, lvl, allow_stretch, allow_push_down=False):
         """Fill `lvl` from overflow first, then from already-placed
-        lower levels. Returns when level is at target or no more
-        eligible candidates exist."""
+        lower levels (PASSES 1/2 only — PASS 3 stays in overflow).
+        Returns when level is at target or no more eligible candidates."""
         target = roster_sizes[lvl]
         # Pass A: from overflow
         while len(by_level[lvl]) < target:
-            candidates = [p for p in overflow if _pullup_eligible(p, i, allow_stretch)]
+            candidates = [
+                p for p in overflow
+                if _pullup_eligible(p, i, allow_stretch, allow_push_down)
+            ]
             if not candidates:
                 break
             best = max(candidates, key=priority)
             overflow.remove(best)
             by_level[lvl].append(best)
+        if allow_push_down:
+            return  # don't pull placed players for push-down
         # Pass B: from lower placed levels
         while len(by_level[lvl]) < target:
             best, best_lvl = None, None
@@ -849,13 +872,15 @@ def main(org=None):
             by_level[best_lvl].remove(best)
             by_level[lvl].append(best)
 
-    # Strict pass first (preserves the original "no stretch up" semantic
-    # for orgs whose pool is deep enough to fill without stretch).
+    # PASS 1: strict (no stretch).
     for i, lvl in enumerate(LEVELS):
         _try_fill_level(i, lvl, allow_stretch=False)
-    # Then the +1 stretch pass for any remaining under-fill.
+    # PASS 2: +1 stretch.
     for i, lvl in enumerate(LEVELS):
         _try_fill_level(i, lvl, allow_stretch=True)
+    # PASS 3: release-pool push-down (overflow only, _bot only).
+    for i, lvl in enumerate(LEVELS):
+        _try_fill_level(i, lvl, allow_stretch=True, allow_push_down=True)
 
     # === STEP 4: Bench-role refinement ===
     # The priority cascade picks rosters by bat alone, so a level can end

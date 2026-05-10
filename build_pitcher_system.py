@@ -378,6 +378,36 @@ def _pull_up(by_level, slots_for):
             by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
 
 
+def _push_down_from_overflow(by_level, slots_for, overflow, role):
+    """Release-pool push-down for pitcher staffs: any level still under
+    target after cascade + pull-up gets filled from `overflow`, ignoring
+    `_top` (pitcher analogue of build_system.py's hitter PASS 3).
+    Respects only the OOTP hard rule (`_bot`: age + service + DSL nation).
+    `role` is 'SP' or 'RP' so the right viability check applies.
+
+    Why no `_top` constraint: at this stage we've already exhausted all
+    in-tier and +1-stretch candidates. The remaining gap is between
+    "leave the slot empty" and "fill with a sub-threshold release-pool
+    arm". An empty slot is worse for org-depth display.
+    """
+    viability = {'SP': is_sp_viable, 'RP': is_rp_viable}[role]
+    for i, lvl in enumerate(LEVELS):
+        target = slots_for.get(lvl, 0)
+        while len(by_level[lvl]) < target:
+            candidates = [
+                p for p in overflow
+                if viability(p)
+                and p.get('_bot') is not None
+                and i <= p['_bot']
+            ]
+            if not candidates:
+                break
+            best = min(candidates, key=lambda p: pitcher_priority(p, lvl))
+            overflow.remove(best)
+            by_level[lvl].append(best)
+            by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+
+
 def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
     """OPT-IN R-03 implementation: pull non-MLB SP-viable non-HP arms up
     to the MLB bullpen if their rp_warP exceeds the worst MLB RP's
@@ -652,6 +682,33 @@ def main(org=None):
     rp_pool_names = {p['name'] for p in rp_pool}
     _enforce_hp_pitchers(sp_by, sp_slots, sp_pool_names, overflow)
     _enforce_hp_pitchers(rp_by, rp_slots, rp_pool_names, overflow)
+
+    # Step 5a.1: release-pool push-down. Any SP / RP slot still under
+    # target after cascade + pull-up + HP enforcement gets filled from
+    # `overflow`, ignoring `_top` and respecting only `_bot`. Mirrors
+    # the hitter Step 3.6 PASS 3. Run BEFORE the R(DLR) split so any
+    # released arms reach R(DLR) before chunking into sub-teams.
+    _push_down_from_overflow(sp_by, sp_slots, overflow, role='SP')
+    _push_down_from_overflow(rp_by, rp_slots, overflow, role='RP')
+
+    # Step 5a.2: re-enforce LHP balance. The push-down can fill an
+    # LHP-reserved bullpen slot with a non-LHP (push-down sees only
+    # `_bot`, not handedness), undoing Step 4b's work. Re-run the LHP
+    # balance + over-cap rebalance to restore the invariant — any
+    # slots that genuinely have no LHP filler available end up tagged
+    # `sign_lhp` again rather than silently filled by a RHP.
+    lhp_shortfalls = _enforce_lhp_balance(rp_by, overflow, rp_slots)
+    for i, lvl in enumerate(LEVELS):
+        if lvl not in rp_by:
+            continue
+        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
+            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
+            rp_by[lvl].remove(worst)
+            next_idx = i + 1
+            if next_idx < len(LEVELS) and next_idx <= worst['_bot']:
+                rp_by[LEVELS[next_idx]].append(worst)
+            else:
+                overflow.append(worst)
 
     # Step 5b: split R(DLR) into n_dsl sub-teams (best, …, rest) by
     # pitcher_priority blend. Each DSL affiliate gets its own staff:
