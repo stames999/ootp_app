@@ -174,7 +174,7 @@ All roster-construction thresholds live in `config.py` under the
 | `C_FLD_GAP_MAX` | Max non-C glove gap for catcher candidate | 1.5 |
 | `CATCHER_RESCUE_MIN_NON_C_WAR` | Bnw threshold for catcher-bypass rescue | **1.5** (raised from 0.30 in R-01) |
 | `CATCHER_RESCUE_NON_C_POSITIONS` | Positions counted in bnw | DH, 1B, LF, RF, 3B |
-| `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / 2.0 / .340 |
+| `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / 2.0 / .330 |
 | `PREMIUM_FLD_MIN`, `HP_PREMIUM_FIT_POSITIONS` | Premium-glove anchor | 1.5 / (CF, SS, 2B) |
 | `IF_POSITIONS`, `OF_POSITIONS` | Position groupings for utility roles | (2B, 3B, SS) / (LF, CF, RF) |
 | `SP_PER_LEVEL`, `RP_PER_LEVEL` | Pitcher rotation / bullpen size | 5 / 8 |

@@ -357,13 +357,19 @@ HP_MAX_AGE = 24
 # HP qualifies if EITHER projected WAR clears HP_BESTP_ADJ_THRESHOLD
 # (league-average regular floor, ~MLB-regular projected WAR) OR
 # wOBAP clears HP_WOBA_THRESHOLD (elite bat projection — even with no
-# defensive contribution at 1B/DH a wOBAP-.340 hitter is a real
+# defensive contribution at 1B/DH a wOBAP-.330 hitter is a real
 # prospect). The OR-rule combines a holistic projected-WAR signal with
 # a bat-only safety net; bestP_adj already encodes bat + def + scarcity,
 # so this naturally elevates elite gloves without a defensive premium
 # discount.
+#
+# wOBAP threshold lowered from .340 → .330 to catch borderline-elite bat
+# projects whose `bestP_adj` gets dragged down by a corner-OF / DH
+# position tag — they'd qualify as HP and then get the premium-fit
+# pos_adj override if their `field` list includes CF / SS / 2B.
+# Reference: a wOBAP .330 hitter is roughly a 105-110 wRC+ projected bat.
 HP_BESTP_ADJ_THRESHOLD = 2.0
-HP_WOBA_THRESHOLD = 0.340
+HP_WOBA_THRESHOLD = 0.330
 
 # Minimum fielding-only WAR for treating a player as a "real" defender
 # at a given position. Used in displacement / premium-fit logic, not in
