@@ -840,7 +840,7 @@ $.fn.dataTable.ext.order['numeric-empty-last-desc'] = function(settings, col) {{
 $(document).ready(function(){{
     var ascCols = ['pwOBA','pwOBAR','pwOBAL'];
     // Columns that can contain blanks (position WARs NaN'd by the
-    // POSITION_VIABILITY_GAP filter in calc_war). Use the empty-last-desc
+    // POSITION_FLOOR filter in calc_war). Use the empty-last-desc
     // sorter so blanks sink to the bottom regardless of sort direction.
     var descCols = ['sp_war','rp_war',
         'C_def','CF_def','RF_def','LF_def','SS_def','2B_def','3B_def',

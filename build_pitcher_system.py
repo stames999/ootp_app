@@ -73,10 +73,6 @@ def load_team_pitchers(org=None):
     d = json.load(open(PITCHERS_JSON))
     return [r for r in d['rows'] if r['org'] == org]
 
-# Back-compat alias.
-def load_laa_pitchers():
-    return load_team_pitchers('LAA')
-
 
 def pitcher_priority(p, level=None):
     """Cascade-ordering key for pitchers. Lower = better (matches the

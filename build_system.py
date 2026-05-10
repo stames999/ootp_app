@@ -1,6 +1,8 @@
 """LAA hitter assignment v3 - wOBA-driven with overflow cascade."""
 import json
 
+from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H
+
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 LEVELS = ['MLB', 'AAA', 'AA', 'A+', 'A', 'R', 'R(DLR)']
 ROSTER_SIZES = {'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15}
@@ -145,9 +147,6 @@ def load_team(org=None):
     d = json.load(open(HITTERS_JSON))
     return [r for r in d['rows'] if r['org'] == org]
 
-# Back-compat alias for any code still calling load_laa().
-def load_laa():
-    return load_team('LAA')
 
 def _load_injured_names():
     """Return the set of currently-injured player names. Sources:
@@ -328,9 +327,8 @@ def projected_pos_adj(p, pos):
 # RUNS_PER_WIN_HITTING in metrics_hitting.calc_hitting_metrics. Because
 # that's linear in wOBA, the WAR change per unit wOBA is just
 # COEFF / RUNS_PER_WIN_HITTING — independent of the player's overall
-# wOBA or sign of war_hitting. Imported from config so any future
-# recalibration of the hitting slope automatically flows through.
-from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H
+# wOBA or sign of war_hitting. Constants imported at top of file so
+# any future recalibration of the hitting slope automatically flows through.
 WAR_PER_WOBA_POINT = _COEFF / _RPW_H  # ≈ 48.33 WAR per 1.0 wOBA at 496.84/10.28
 
 # Standard lineup is what gets played most often, and you face RHP roughly
@@ -483,6 +481,13 @@ def fill_backups(pool, starters, vs):
 
 
 def fill_starters(pool, level):
+    # Hungarian assignment over (player, position) cost matrix. Maximises
+    # total team WAR via scipy's linear_sum_assignment (Jonker-Volgenant).
+    # When two assignments produce identical totals (e.g. Schwarber-1B /
+    # Harper-DH where both players have the same 1B_fld so swapping them
+    # is mathematically a wash) the solver's tiebreaker is internal row/
+    # column order — it is NOT deterministic from the user's perspective
+    # and isn't a "preferred" placement. See PIPELINE_REVIEW R-08 / M-10.
     import numpy as np
     from scipy.optimize import linear_sum_assignment
     pos_order = ['C', 'SS', '2B', 'CF', '3B', '1B', 'LF', 'RF', 'DH']
@@ -894,8 +899,20 @@ def main(org=None):
         by_level[lvl] = cby[lvl] + nc_by[lvl]
     
     # === STEP 3: High-potential starter enforcement ===
-    # If HP benched at level X: swap with non-HP at X+1. If can't (age cap), force-start at X.
-    # At rookie ball: fill_starters auto-prioritizes HPs.
+    # If HP benched at level X: swap with non-HP at X+1. If can't (age cap
+    # or service-floor blocks demotion), set `_force_start = X` so the HP
+    # stays put and is treated as a starter at X by downstream passes.
+    # At rookie ball: fill_starters auto-prioritizes HPs via the +10 dev bonus.
+    #
+    # `_force_start` semantics (set here, honoured by):
+    #   - fill_starters: force_start == lvl gives the player a +10 Hungarian
+    #     bonus at lvl, virtually guaranteeing a starting slot.
+    #   - _rebalance_over_target: excludes force_start players from the
+    #     "poppable" set so they don't get cascaded back down.
+    #   - Step-4 candidate filter: excludes force_start players from being
+    #     promoted as utility candidates (they're already locked at a level).
+    # The flag is reset by `p.pop('_force_start', None)` at the top of main()
+    # so it doesn't leak between roster builds on the same player dict.
     def _enforce_hp_starters():
         for _iter in range(20):
             changed = False
@@ -1391,6 +1408,12 @@ def main(org=None):
     # Split R(DLR) into n_dsl sub-teams (best, …, rest) by hitter priority
     # blend so each DSL affiliate displays as its own roster. Each gets an
     # independent Hungarian over its 15-player slice. No-op when n_dsl == 1.
+    #
+    # Sub-team keys are 'R(DLR)1', 'R(DLR)2', … — when downstream code
+    # (e.g. test invariants, build_excel) needs the underlying LEVELS index
+    # for one of these keys it must collapse the suffix back to 'R(DLR)'.
+    # See `_level_index` in tests/test_roster_invariants.py for the canonical
+    # remap; the same convention is used in build_pitcher_system.
     n_dsl = _count_dsl_teams(org)
     if n_dsl >= 2 and 'R(DLR)' in rosters:
         full_all = rosters.pop('R(DLR)')['all']

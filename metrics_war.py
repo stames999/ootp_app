@@ -6,7 +6,6 @@ from config import (
     FIELD_VIABILITY_GAP,
     POSITION_FLOOR,
     POSITION_FLOOR_EXEMPT,
-    POSITION_VIABILITY_GAP,
     POSITIONAL_ADJUSTMENT_RUNS,
     RUNS_PER_WIN_FIELDING,
 )
@@ -61,16 +60,6 @@ def _apply_position_floor(df):
         violation = (df[relevant_cols].fillna(0) < POSITION_FLOOR).any(axis=1)
         df.loc[violation, pos] = np.nan
         df.loc[violation, f"{pos}P"] = np.nan
-
-
-def _apply_viability(df, war_columns, best_col):
-    """
-    NaN out any position WAR more than POSITION_VIABILITY_GAP wins below
-    `best_col`. Mutates `df` in place.
-    """
-    for col in war_columns:
-        outside = (df[best_col] - df[col]) > POSITION_VIABILITY_GAP
-        df.loc[outside, col] = np.nan
 
 
 def _build_field(df, position_cols, gap_col=None, best_col=None,

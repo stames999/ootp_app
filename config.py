@@ -5,7 +5,7 @@ from pathlib import Path
 # =============
 
 filepath = Path(
-    "C:/Users/sfwea/OneDrive/Documents/Out of the Park Developments/OOTP Baseball 27/saved_games/New Game 6.lg/import_export/csv")
+    "C:/Users/sfwea/OneDrive/Documents/Out of the Park Developments/OOTP Baseball 27/saved_games/Rockies Rebuild.lg/import_export/csv")
 # Derive the project root from config.py's own location so the pipeline writes
 # outputs/ alongside this file regardless of whether we're running from the
 # main repo or a git worktree. Previously hardcoded to the main repo, which
@@ -94,10 +94,6 @@ POSITION_FLOOR_EXEMPT = ["1B"]
 # their best fit."
 FIELD_VIABILITY_GAP = 2.0
 
-# Legacy constant kept for backwards-compatibility with any code that
-# imports it; not currently used as a hard eligibility filter.
-POSITION_VIABILITY_GAP = 1.5
-
 
 # ============================
 # Positional adjustments (scarcity premiums)
@@ -123,6 +119,14 @@ POSITION_VIABILITY_GAP = 1.5
 # DH at -10 is a deliberate "no defensive contribution" cost. Anti-
 # placements (Olson must not be CF) are encoded in the sweep scoring
 # function, not enforced at runtime here.
+#
+# Catcher caveat: C is +7.5 here vs FanGraphs' +12.5. Partly because
+# OOTP's catcher framing engine plateaus at +8 runs (Cfram >= 65 collapse
+# to the same value), so elite framers — worth ~+30 in real MLB FRV —
+# are invisible to our model. The +7.5 is what survives once the engine-
+# capped framing tier blends with the other catcher contributions; raising
+# it to FG's +12.5 would over-credit average catchers without recovering
+# the framing tail.
 POSITIONAL_ADJUSTMENT_RUNS = {
     "C":   7.5,
     "1B": -13.0,
@@ -141,13 +145,10 @@ POSITIONAL_ADJUSTMENT_RUNS = {
 
 PITCH_MINIMUM_RATING = 45  # rating floor used by count_pitches for `pitches` / `pitchesP` columns
 MINIMUM_STARTER_STAMINA = 40  # stamina ≥ 40 → SP-viable; below → RP-only
-# Pitcher classification (sprp / sprpP) now uses ONLY position == 1 (from OOTP)
-# and the stamina threshold above. The pitch-count thresholds below are
-# deprecated — kept as constants in case other notes reference them, but no
-# code path reads them. Stamina alone is the rotation-viability signal;
-# one-pitch specialists with low stamina correctly land in the RP bucket.
-MINIMUM_STARTER_PITCHES = 3  # deprecated — stamina is the SP/RP gate
-MINIMUM_RELIEVER_PITCHES = 1  # deprecated — position == 1 admits all pitchers
+# Pitcher classification (sprp / sprpP) uses ONLY position == 1 (from OOTP)
+# and the stamina threshold above. Stamina alone is the rotation-viability
+# signal; one-pitch specialists with low stamina correctly land in the RP
+# bucket regardless of pitch count.
 
 # ============================
 # Pitcher skill rating floor
@@ -177,19 +178,30 @@ SP_WAR_MIN_STAMINA = 36
 # Metric Constants
 # =================
 
-RUNS_PER_WIN = 10  # generic / legacy default
 # Component-specific runs-per-win values, empirically derived from the
 # calibration sim environments. Each value is the slope of the
 # (runs/162 → wins/162) regression in that component's sim env. R² > 0.97
 # in all three. Used so each component's WAR reflects the actual win
 # value of runs in the environment it was measured against, rather than a
 # one-size-fits-all conversion.
+#
+# Where each is read (verified 2026-05-10 in the pipeline review):
+# - RUNS_PER_WIN_HITTING:  metrics_hitting (war_hitting / DH_hitting),
+#                          org_report._war_from_woba,
+#                          build_system.WAR_PER_WOBA_POINT
+# - RUNS_PER_WIN_FIELDING: metrics_fielding._def divisor AND metrics_war
+#                          for pos_adj conversion (chain-consistent —
+#                          fielding tables and pos_adj live in the same
+#                          run environment, so no double-conversion)
+# - RUNS_PER_WIN_PITCHING: NOT directly read by any module — pitcher
+#                          WAR uses PITCHING_WAR_COEFFS which are pre-
+#                          scaled empirically (no RPW divisor). Kept here
+#                          as documentation of the pitching sim's run env.
 RUNS_PER_WIN_HITTING = 10.28   # hitting sim baseline RS/G = 4.38
 RUNS_PER_WIN_PITCHING = 10.76  # pitching sim baseline RS/G = 4.40 (origin-forced fit)
 RUNS_PER_WIN_FIELDING = 9.53   # fielding sim baseline RS/G = 4.16
 
 REPLACEMENT_LEVEL_WOBA = 0.290  # FanGraphs convention; sets hitting WAR zero point
-REPLACEMENT_LEVEL_PITCHER_WOBA = 0.36
 
 # Component-aware WAR coefficients for pitchers. Refitted from OOTP team-of-
 # clones sims (CTRL + HRA sweeps, 23 points, RMSE 0.15 WAR). Inputs are
@@ -417,9 +429,9 @@ COLUMNS_TO_BLANK_BEFORE_EXPORT = [
     # Pitcher-side columns that are NaN for hitters, sub-floor pitchers, or
     # (sp_war / sp_warP only) below SP_WAR_MIN_STAMINA
     "pwOBA", "pwOBAR", "pwOBAL", "sp_war", "rp_war", "sp_warP", "rp_warP",
-    # Position-WAR columns can be NaN when calc_war() filters via
-    # POSITION_VIABILITY_GAP. Blanking lets DataTables sort numerically and
-    # avoids the literal string "nan" appearing in cells.
+    # Position-WAR columns can be NaN when calc_war() applies POSITION_FLOOR
+    # (any relevant rating < 40 NaNs the position; 1B exempt). Blanking lets
+    # DataTables sort numerically and avoids the literal string "nan" in cells.
     "C", "CF", "RF", "LF", "SS", "2B", "3B", "1B", "DH",
     # Potential-WAR counterparts
     "CP", "CFP", "RFP", "LFP", "SSP", "2BP", "3BP", "1BP", "DHP",
@@ -1398,8 +1410,7 @@ FIELDING_RUN_VALUES_VS_REPLACEMENT = {
     #
     # Saturation: additive sum overstates extreme combos by ~40% on both sides.
     # Corrected at runtime via FIELDING_SATURATION["SS"] (uniform linear
-    # ~0.6× compression both sides — the legacy SS_INTERACTION_CORRECTION
-    # grid is no longer used).
+    # ~0.6× compression both sides).
     "SS": {
         "IFrange": {  # plateau ~-21 below 60 (with mild floor at -27), ~+16 above 60
             20: -27.0,
@@ -1699,116 +1710,4 @@ FIELDING_INTERACTION_CORRECTION = {
         # (IFrange, IFarm) → runs added before saturation
         (55, 55): -6.58,
     },
-}
-
-
-# DEPRECATED: superseded by FIELDING_SATURATION above. The legacy SS grid
-# was calibrated against the previous LSQ-fit 1D tables and is now stale.
-# SS saturation is uniform (~0.6× compression both sides) and captured
-# cleanly by the FIELDING_SATURATION["SS"] linear scaling; no 2D grid
-# needed. Kept here for historical reference; metrics_fielding no longer
-# imports it.
-SS_INTERACTION_CORRECTION = {
-    # Keys: (IFrange_rating, IFarm_rating); values: runs/162 correction
-    # to add on top of the additive sum for this position.
-    (30, 30): 12.2,
-    (30, 35): 12.2,
-    (30, 40): 12.2,
-    (30, 45): 12.2,
-    (30, 50): 7.7,
-    (30, 55): 7.7,
-    (30, 60): 7.7,
-    (30, 65): -1.2,
-    (30, 70): -7.2,
-    (30, 75): -9.0,
-    (35, 30): 12.2,
-    (35, 35): 12.2,
-    (35, 40): 12.2,
-    (35, 45): 12.2,
-    (35, 50): 7.7,
-    (35, 55): 7.7,
-    (35, 60): 7.7,
-    (35, 65): -1.2,
-    (35, 70): -7.2,
-    (35, 75): -9.0,
-    (40, 30): 12.2,
-    (40, 35): 12.2,
-    (40, 40): 12.2,
-    (40, 45): 12.2,
-    (40, 50): 7.7,
-    (40, 55): 7.7,
-    (40, 60): 7.7,
-    (40, 65): -1.2,
-    (40, 70): -7.2,
-    (40, 75): -9.0,
-    (45, 30): 12.2,
-    (45, 35): 12.2,
-    (45, 40): 12.2,
-    (45, 45): 5.5,
-    (45, 50): 4.6,
-    (45, 55): 4.6,
-    (45, 60): 4.6,
-    (45, 65): -1.2,
-    (45, 70): -7.2,
-    (45, 75): -9.0,
-    (50, 30): 6.6,
-    (50, 35): 6.6,
-    (50, 40): 6.6,
-    (50, 45): -0.5,
-    (50, 50): -0.5,
-    (50, 55): 0.4,
-    (50, 60): 0.4,
-    (50, 65): -12.9,
-    (50, 70): -17.6,
-    (50, 75): -17.6,
-    (55, 30): 2.1,
-    (55, 35): 2.1,
-    (55, 40): 2.1,
-    (55, 45): 0.4,
-    (55, 50): -1.1,
-    (55, 55): -1.5,
-    (55, 60): -9.2,
-    (55, 65): -5.7,
-    (55, 70): -1.3,
-    (55, 75): 13.1,
-    (60, 30): -11.1,
-    (60, 35): -11.1,
-    (60, 40): -11.1,
-    (60, 45): -9.1,
-    (60, 50): -10.5,
-    (60, 55): -1.4,
-    (60, 60): 6.2,
-    (60, 65): 17.0,
-    (60, 70): 15.9,
-    (60, 75): 14.4,
-    (65, 30): -19.0,
-    (65, 35): -19.0,
-    (65, 40): -19.0,
-    (65, 45): -9.9,
-    (65, 50): 5.6,
-    (65, 55): 11.3,
-    (65, 60): 6.7,
-    (65, 65): 3.2,
-    (65, 70): 3.9,
-    (65, 75): 0.7,
-    (70, 30): 5.3,
-    (70, 35): 5.3,
-    (70, 40): 5.3,
-    (70, 45): 8.8,
-    (70, 50): 7.6,
-    (70, 55): 5.5,
-    (70, 60): -2.3,
-    (70, 65): -3.4,
-    (70, 70): -6.7,
-    (70, 75): -10.1,
-    (75, 30): 6.8,
-    (75, 35): 6.8,
-    (75, 40): 6.8,
-    (75, 45): 6.8,
-    (75, 50): 8.1,
-    (75, 55): 8.1,
-    (75, 60): 8.1,
-    (75, 65): -3.4,
-    (75, 70): -6.6,
-    (75, 75): -6.6,
 }

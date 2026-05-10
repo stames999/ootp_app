@@ -70,14 +70,13 @@ def calc_fielding_metrics(df):
 
     Each column represents estimated runs saved vs replacement at that position.
     Computed for every player regardless of feasibility — eligibility filtering
-    is handled downstream by metrics_war.calc_war() via POSITION_VIABILITY_GAP.
+    is handled downstream by metrics_war.calc_war() via POSITION_FLOOR
+    (any rating < 40 NaNs the position; 1B exempt).
 
     For 2B/3B/SS, an asymmetric-tanh saturation is applied to the additive
     sum to correct the over-prediction at extreme rating combos. 3B also
     has a (RNG, ARM) interaction grid added before saturation.
     """
-    added_columns = []
-
     for position, ratings_dict in FIELDING_RUN_VALUES_VS_REPLACEMENT.items():
         total_def_column = f"{position}_def"
 
@@ -109,7 +108,5 @@ def calc_fielding_metrics(df):
             total = _apply_saturation(total, sat_params)
 
         df[total_def_column] = (total / RUNS_PER_WIN_FIELDING).round(1)
-        added_columns.append(total_def_column)
 
-    print(f"Added fielding columns: {added_columns}")
     return df

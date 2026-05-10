@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 # Note: filepath / pistachio_filepath are referenced as `config.filepath`
@@ -211,10 +212,6 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
 # Note: position eligibility is gated by POSITION_FLOOR (rating-based) in
 # metrics_war.calc_war(). The displayed `field` column is then filtered to
 # positions whose adjusted WAR is within FIELD_VIABILITY_GAP of best_adj.
-
-
-# Add a flag column for names listed in flagged.txt
-import numpy as np
 
 
 def detect_head_scout_id(csv_dir):
