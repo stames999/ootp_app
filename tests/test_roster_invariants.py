@@ -84,30 +84,20 @@ def test_hitter_no_service_violations(org, hitter_results):
 
 
 def test_hitter_no_over_capacity(org, hitter_results):
-    """No level's hitter roster exceeds its target capacity (modulo
-    two-way pin slack).
+    """No level's hitter roster exceeds its target capacity.
 
     Targets are `ROSTER_SIZES[lvl]` with R(DLR) scaled by the org's DSL
     team count (`compute_roster_sizes`). HP demote-without-swap and
     Step-4 refinement can grow a level temporarily; Step 3.5 / 3.6 / 4.6
-    rebalance passes are supposed to bring it back to target.
-
-    Two-way pin (Step 4.7) intentionally accepts a +N over-cap when N
-    two-way players land at a level whose remaining pool is ALL HPs /
-    pinned (no ejectable non-two-way non-HP available). The pin must
-    win — it's the user's explicit "two-way at same level" guarantee —
-    so this test allows over-cap by EXACTLY the two-way count.
+    rebalance passes are supposed to bring it back to target. Violation
+    means one of those rebalance passes failed.
     """
     rosters, _, _ = hitter_results[org]
-    violations = []
-    for lvl, r in rosters.items():
-        n = len(r['all'])
-        target = r['target']
-        n_tw = sum(1 for p in r['all'] if p.get('is_two_way'))
-        if n > target + n_tw:
-            violations.append(
-                f"  {lvl}: {n} hitters > target {target} (+{n_tw} two-way slack)"
-            )
+    violations = [
+        f"  {lvl}: {len(r['all'])} hitters > target {r['target']}"
+        for lvl, r in rosters.items()
+        if len(r['all']) > r['target']
+    ]
     assert not violations, (
         f"{org} hitter rosters over capacity:\n" + "\n".join(violations)
     )
@@ -205,33 +195,23 @@ def test_pitcher_no_service_violations(org, pitcher_results):
 
 
 def test_pitcher_no_over_capacity(org, pitcher_results):
-    """No level's SP or RP roster exceeds its per-level target (modulo
-    two-way pin slack).
+    """No level's SP or RP roster exceeds its per-level target.
 
     Targets come from the SP_PER_LEVEL / RP_PER_LEVEL constants, with
     R(DLR) scaled by DSL team count. The Step-4c rebalance after LHP
-    handedness adjustment is the most common site that could overrun.
-
-    Two-way pin (Step 5a.3) intentionally accepts a +N over-cap when N
-    two-way players land in an SP / RP roster fully composed of HPs /
-    pinned arms. The pin must win — it's the user's explicit "two-way
-    at same level" guarantee — so this test allows over-cap by exactly
-    the two-way count in that roster.
+    handedness adjustment is the most common site that could overrun;
+    this test catches that.
     """
     rosters, _, _ = pitcher_results[org]
     violations = []
     for lvl_name, r in rosters.items():
-        sp = r.get('starters', [])
-        rp = r.get('bullpen', [])
-        sp_tw = sum(1 for p in sp if p.get('is_two_way'))
-        rp_tw = sum(1 for p in rp if p.get('is_two_way'))
-        if len(sp) > r.get('sp_target', 0) + sp_tw:
+        if len(r.get('starters', [])) > r.get('sp_target', 0):
             violations.append(
-                f"  {lvl_name} SP: {len(sp)} > target {r['sp_target']} (+{sp_tw} two-way slack)"
+                f"  {lvl_name} SP: {len(r['starters'])} > target {r['sp_target']}"
             )
-        if len(rp) > r.get('rp_target', 0) + rp_tw:
+        if len(r.get('bullpen', [])) > r.get('rp_target', 0):
             violations.append(
-                f"  {lvl_name} RP: {len(rp)} > target {r['rp_target']} (+{rp_tw} two-way slack)"
+                f"  {lvl_name} RP: {len(r['bullpen'])} > target {r['rp_target']}"
             )
     assert not violations, (
         f"{org} pitcher rosters over capacity:\n" + "\n".join(violations)

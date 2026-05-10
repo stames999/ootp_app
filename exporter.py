@@ -224,10 +224,13 @@ EXPORT_PAGES = [
         # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
         # projects whose scouted ratings produce a sub-replacement wOBAP
         # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps regular pitchers out;
-        # two-way players (position == 1 AND is_two_way) are admitted
-        # since they need to appear in both hitter and pitcher pools.
-        "filter": lambda df: ((df["position"] != 1) | df.get("is_two_way", False)) & df["wOBAP"].notna(),
+        # 0.185). The `position != 1` gate keeps pitchers out. Two-way
+        # players (position == 1 AND is_two_way) are intentionally
+        # excluded here: they take a roster slot ONLY on the pitcher
+        # side; their bat is informational (shown as a badge / note on
+        # the pitcher view) rather than competing with regular hitters
+        # for bench slots. See R-10 design notes.
+        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     {
@@ -330,10 +333,13 @@ EXPORT_PAGES = [
         # value). The previous `> 0.200` cutoff hid deep-R / R(DLR)
         # projects whose scouted ratings produce a sub-replacement wOBAP
         # — e.g. Robert Lantigua (AZ ACL, age 18, ratings 25-30 → wOBAP
-        # 0.185). The `position != 1` gate keeps regular pitchers out;
-        # two-way players (position == 1 AND is_two_way) are admitted
-        # since they need to appear in both hitter and pitcher pools.
-        "filter": lambda df: ((df["position"] != 1) | df.get("is_two_way", False)) & df["wOBAP"].notna(),
+        # 0.185). The `position != 1` gate keeps pitchers out. Two-way
+        # players (position == 1 AND is_two_way) are intentionally
+        # excluded here: they take a roster slot ONLY on the pitcher
+        # side; their bat is informational (shown as a badge / note on
+        # the pitcher view) rather than competing with regular hitters
+        # for bench slots. See R-10 design notes.
+        "filter": lambda df: (df["position"] != 1) & df["wOBAP"].notna(),
         "page_len": 100,
     },
     # More pages can be added here

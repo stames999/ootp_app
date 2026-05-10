@@ -524,17 +524,7 @@ def main(org=None):
     # even if they're young enough.
     valid_players = []
     for p in laa:
-        # Two-way players (position == 1 with meaningful potential bat
-        # ratings — see main._flag_two_way_players) use the
-        # better-of-two-skills ceiling stored as `tw_target_lvl` rather
-        # than the wOBA-derived ceiling. Their pwOBAP often qualifies
-        # them for a much higher level than their wOBA alone, and the
-        # user wants both entities pinned to the same level — see
-        # post-build sync in main._sync_two_way_players.
-        if p.get('is_two_way') and p.get('tw_target_lvl') is not None:
-            top = int(p['tw_target_lvl'])
-        else:
-            top = woba_max_level(p)
+        top = woba_max_level(p)
         bot = min(age_lowest_level(p), service_lowest_level(p),
                   dsl_eligible_lowest_level(p))
         # Set _top / _bot on every player (including those who go straight
@@ -1252,59 +1242,15 @@ def main(org=None):
     _enforce_hp_starters()
     _rebalance_over_target()
 
-    # === Step 4.7: Two-way pin ===
-    # Two-way players have `_top` already set to `tw_target_lvl` (the
-    # better-of-two-skills ceiling — see main._flag_two_way_players),
-    # but the cascade may have pushed them DOWN below it because their
-    # weak-side priority (e.g. wOBA .277 for a primarily-pitcher
-    # two-way) sorts them poorly within their tw_target_lvl pool.
-    # The user wants both entities (hitter and pitcher) pinned at the
-    # better-skill level, so we move any two-way player back up to
-    # `tw_target_lvl`. Eject the worst non-two-way non-HP at the
-    # destination if over-cap; the displaced player cascades to the
-    # next level whose `_bot` permits, or to overflow.
-    for lvl_name in list(by_level.keys()):
-        for p in list(by_level[lvl_name]):
-            if not p.get('is_two_way') or p.get('tw_target_lvl') is None:
-                continue
-            target_idx = int(p['tw_target_lvl'])
-            current_idx = LEVELS.index(lvl_name)
-            if current_idx == target_idx:
-                continue
-            # _bot is the OOTP hard rule (age + service + DSL nation);
-            # never pin a player below it. A US-born two-way prospect
-            # whose tw_target_lvl is R(DLR) can be flagged by the
-            # heuristic but isn't actually DSL-eligible — leave them
-            # at whatever level the cascade already placed them.
-            if target_idx > p.get('_bot', len(LEVELS) - 1):
-                continue
-            # Move two-way player to its target level.
-            by_level[lvl_name].remove(p)
-            by_level[LEVELS[target_idx]].append(p)
-    # Re-balance any level the two-way pin pushed over capacity.
-    for i, lvl in enumerate(LEVELS):
-        target = roster_sizes[lvl]
-        while len(by_level[lvl]) > target:
-            ejectable = [
-                q for q in by_level[lvl]
-                if not q.get('is_two_way')
-                and not is_high_potential(q)
-                and not q.get('_force_start')
-            ]
-            if not ejectable:
-                break  # accept over-cap if only pinned players remain
-            worst = min(ejectable, key=lambda q: priority(q, lvl))
-            by_level[lvl].remove(worst)
-            placed = False
-            for j in range(i + 1, len(LEVELS)):
-                if j > worst.get('_bot', len(LEVELS) - 1):
-                    break
-                if len(by_level[LEVELS[j]]) < roster_sizes[LEVELS[j]]:
-                    by_level[LEVELS[j]].append(worst)
-                    placed = True
-                    break
-            if not placed:
-                overflow.append(worst)
+    # NOTE: Step 4.7 (two-way pin) was retired in R-10. Two-way pitchers
+    # (position == 1 with meaningful potential bat) no longer appear in
+    # the hitter cascade at all — they're excluded by the hitter export
+    # filter (exporter.py) and take a roster slot ONLY on the pitcher
+    # side. Their bat is informational ("can also play 1B / DH") rather
+    # than competing with regular hitters for bench slots. The previous
+    # pin was over-promoting prospects whose pitcher pwOBA only
+    # marginally cleared the MLB cap, displacing competitively-better
+    # MLB non-HP arms (e.g. BOS's Tolle pinned to MLB SP over Bello).
 
     # Final Hungarian (overall + platoon variants on the same roster).
     # Platoon variants pin standard starters to their standard position, so
