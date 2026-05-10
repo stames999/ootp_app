@@ -119,9 +119,25 @@ PREMIUM_WOBA_RELAX = {
 # non-catcher cascade instead. They remain is_catcher() (so they still
 # satisfy backup-C / emergency-catcher needs downstream); the final
 # Hungarian then slots them at DH / 1B / corner OF where their bat plays.
-# 0.30 raw WAR ≈ a positive-WAR bat as a primary or secondary position
-# player at MLB — i.e. they'd genuinely contribute, not just fill a slot.
-CATCHER_RESCUE_MIN_NON_C_WAR = 0.30
+#
+# Threshold raised from 0.30 to 1.5 (PIPELINE_REVIEW R-01). The previous
+# 0.30 floor admitted defense-first backup catchers (Heineman wOBA .302,
+# bnw 0.60) into the rescue pool — they then bat-cascaded out of MLB to
+# AAA even though their alloc_score would have won them MLB Backup C in
+# Step-1. The Step-4 Backup C refinement (commit 879e6d3) patches that
+# specific symptom; this raises the principle. 1.5 ≈ "real positive-WAR
+# bat at a non-C position", filtering for catchers whose secondary value
+# at 1B/DH/corner OF actually competes with MLB regulars. Lower-bnw
+# catchers stay in Step-1 catcher allocation where their glove value
+# (alloc_score) drives placement.
+#
+# Tried wOBA-floor variants (e.g. wOBA >= .330) — those un-rescue
+# Realmuto-tier catchers (.325 wOBA, bnw 1.70) and demote them to AAA
+# via the alloc_score-biased Step-1, worse than the original problem.
+# The bnw-only threshold is more surgical: it filters by non-C bat value
+# specifically, which is the actual signal for "this catcher's bat plays
+# off-position" rather than any wOBA proxy.
+CATCHER_RESCUE_MIN_NON_C_WAR = 1.5
 # Positions to consider for the rescue's "best non-C MLB WAR" check. DH
 # is included (it's the obvious destination); SS/2B/CF are not — a primary-C
 # typically can't field those, so any positive WAR there is an artifact.
