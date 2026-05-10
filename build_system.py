@@ -3,44 +3,18 @@ import json
 
 from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H
 
+# Shared roster-construction utilities — single source of truth used by both
+# this hitter system and build_pitcher_system. Re-exported here so existing
+# callers (build_excel, streamlit_app, tests) don't need import-path churn.
+from roster_common import (  # noqa: F401  (re-exports)
+    LEVELS, MAX_AGE, SERVICE_LIMITS, DSL_LEAGUE_ID, DSL_INELIGIBLE_NATIONS,
+    total_service_years, age_lowest_level, service_lowest_level,
+    dsl_eligible_lowest_level, _count_dsl_teams, _load_injured_names,
+    INJURED_FILE,
+)
+
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
-LEVELS = ['MLB', 'AAA', 'AA', 'A+', 'A', 'R', 'R(DLR)']
 ROSTER_SIZES = {'MLB': 13, 'AAA': 13, 'AA': 13, 'A+': 13, 'A': 13, 'R': 15, 'R(DLR)': 15}
-
-# Per-org override for level capacities. Most orgs in OOTP have 2 DSL
-# affiliates (~28 of 30 in current saves) and a single complex team
-# (ACL or FCL); a couple of orgs have only 1 DSL team. We size R(DLR)
-# at 15 × #DSL_teams so two-DSL orgs (AZ, COL, etc.) don't dump a whole
-# DSL roster's worth of players into overflow.
-DSL_LEAGUE_ID = 234
-
-
-def _count_dsl_teams(org=None):
-    """Count DSL teams (league_id=234) belonging to an org. Returns 1 if
-    teams.csv is missing or org not found — most orgs have 1 or 2 DSL
-    teams, so 1 is a safe default for missing data. Used by
-    compute_roster_sizes (R(DLR) capacity scaling) and by the R(DLR)
-    best/rest sub-roster split in main()."""
-    if org is None:
-        from config import team_managed
-        org = team_managed
-    try:
-        import config as _config
-        import pandas as _pd
-        teams = _pd.read_csv(
-            _config.filepath / 'teams.csv',
-            usecols=['parent_team_id', 'league_id'],
-            low_memory=False,
-        )
-        from config import club_lookup
-        org_id = next((k for k, v in club_lookup.items() if v == org), None)
-        if org_id is None:
-            return 1
-        n = int(((teams['parent_team_id'] == org_id)
-                 & (teams['league_id'] == DSL_LEAGUE_ID)).sum())
-        return max(1, n)
-    except Exception:
-        return 1
 
 
 def compute_roster_sizes(org=None):
@@ -60,11 +34,6 @@ WOBA_MIN = {
     'A': 0.200,
     'R': 0.165,
     'R(DLR)': -1.0,
-}
-
-MAX_AGE = {
-    'R(DLR)': 21, 'R': 22, 'A': 23, 'A+': 24,
-    'AA': 99, 'AAA': 99, 'MLB': 99,
 }
 
 # Weight applied to C_fld (fielding-only WAR at C) in the catcher allocation
@@ -153,7 +122,6 @@ def best_non_c_war(p):
     return max(vals) if vals else 0
 
 HITTERS_JSON = 'outputs/hitters.json'
-INJURED_FILE = 'injured.txt'
 
 def load_team(org=None):
     """Load hitters for a single org. Defaults to config.team_managed."""
@@ -163,43 +131,6 @@ def load_team(org=None):
     d = json.load(open(HITTERS_JSON))
     return [r for r in d['rows'] if r['org'] == org]
 
-
-def _load_injured_names():
-    """Return the set of currently-injured player names. Sources:
-    1. OOTP `players.csv` `injury_is_injured == 1` (auto-detected).
-    2. `injured.txt` (one name per line, `#` comments) as a manual override
-       for cases where you want to mark someone unavailable for a non-injury
-       reason — additive to the OOTP list.
-    Both sources are optional; missing files just mean no one is flagged."""
-    names = set()
-    # Auto: OOTP CSV. Reference config.filepath at call time so the
-    # Streamlit uploader's monkey-patched temp dir is honoured.
-    # Day-to-day (DTD) injuries — flagged by `injury_dtd_injury == 1` —
-    # are NOT exclusions. Those guys are still playing; OOTP just rests
-    # them a game or two. Only `injury_is_injured == 1` AND no DTD flag
-    # counts as a proper IL stint that pulls them out of placement.
-    try:
-        import config
-        import csv
-        with open(config.filepath / 'players.csv', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                if row.get('injury_is_injured') != '1':
-                    continue
-                if row.get('injury_dtd_injury') == '1':
-                    continue
-                names.add(f"{row['first_name']} {row['last_name']}")
-    except (FileNotFoundError, ImportError, KeyError):
-        pass
-    # Manual: injured.txt
-    try:
-        with open(INJURED_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    names.add(line)
-    except FileNotFoundError:
-        pass
-    return names
 
 def is_catcher(p):
     return p.get('C_adj') is not None
@@ -268,68 +199,6 @@ def woba_max_level(p):
         if woba >= WOBA_MIN[lvl] - relax:
             return LEVELS.index(lvl)
     return len(LEVELS) - 1
-
-def age_lowest_level(p):
-    age = p['age']
-    for lvl in reversed(LEVELS):
-        if age <= MAX_AGE[lvl]:
-            return LEVELS.index(lvl)
-    return 0
-
-# OOTP service-time limits per level (cumulative pro service years).
-# The threshold is INCLUSIVE: a player with exactly 5 yrs total can still
-# play A+, but with 6 yrs they can no longer. Above the limit, that level
-# is no longer eligible — must be at a higher level. AA / AAA / MLB have
-# no service-time limit. yrs_<LEVEL> columns come from
-# reader.add_years_at_level (one year per calendar season, credited to
-# the highest level reached that year).
-SERVICE_LIMITS = {
-    'A+':     5,
-    'A':      4,
-    'R':      3,
-    'R(DLR)': 3,
-}
-
-
-def total_service_years(p):
-    """Sum of yrs_<LEVEL> across all levels — cumulative pro experience."""
-    return sum(p.get(f'yrs_{l}', 0) or 0 for l in LEVELS)
-
-
-def service_lowest_level(p):
-    """Highest LEVELS index (= lowest level) the player is still eligible
-    for given their cumulative service. > 5 yrs blocks A+ and below; > 4
-    blocks A and below; > 3 blocks R / R(DLR). Returns the deepest index
-    they can still play; combine with age_lowest_level via min() for the
-    final `_bot`."""
-    s = total_service_years(p)
-    if s > SERVICE_LIMITS['A+']:
-        return LEVELS.index('AA')      # 2 — A+ exhausted, AA-or-above only
-    if s > SERVICE_LIMITS['A']:
-        return LEVELS.index('A+')      # 3 — A exhausted
-    if s > SERVICE_LIMITS['R']:
-        return LEVELS.index('A')       # 4 — R/DSL exhausted
-    return len(LEVELS) - 1             # 6 — no service constraint
-
-
-# OOTP nation IDs for the two countries OOTP excludes from the Dominican
-# Summer League. The DSL is for international players only — US- and
-# Canadian-born players cannot be assigned to a DSL roster, regardless of
-# age or service. Confirmed empirically: out of 2021 players currently on
-# DSL teams in a fresh save, 0 are Canadian and only 8 are American (out
-# of ~110k US-born players in the player pool).
-DSL_INELIGIBLE_NATIONS = {206, 36}  # USA, Canada
-
-
-def dsl_eligible_lowest_level(p):
-    """Highest LEVELS index (= lowest tier) the player is eligible for given
-    DSL nationality rules. US/Canadian players bottom out at R (index 5);
-    everyone else can go down to R(DLR) (index 6). Combined with the age
-    and service caps via min() for the final `_bot`."""
-    if p.get('nation_id') in DSL_INELIGIBLE_NATIONS:
-        return LEVELS.index('R')   # 5 — DSL blocked, R is the lowest tier
-    return LEVELS.index('R(DLR)')  # 6 — DSL eligible
-
 
 def projected_pos_adj(p, pos):
     """Current pos_adj + bat development runway. Fielding doesn't develop."""

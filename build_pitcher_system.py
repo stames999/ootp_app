@@ -37,7 +37,7 @@ Notes / limitations:
 """
 import json
 
-from build_system import (
+from roster_common import (
     LEVELS, MAX_AGE,
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
     _load_injured_names, _count_dsl_teams,
