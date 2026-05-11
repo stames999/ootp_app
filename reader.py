@@ -36,8 +36,17 @@ def load_players() -> pd.DataFrame:
     # Map numeric org values to team abbreviations using the club lookup
     # first flag minor leaguers for whom team and organisaition IDs are different
     df["minor"] = (df["org"] != df["team_id"]).astype(int)
-    df["org"] = df["org"].map(club_lookup)
-    # map numeric organization_id to abbreviation
+    # Build the team_id → abbr map from teams.csv (level=1 rows) so
+    # historical / alt-history saves get the right abbreviations (a 2004
+    # historical save has ANA / FLA / MON / TBD, not the hardcoded
+    # LAA / MIA / WSH / TB). Falls back to the hardcoded `club_lookup`
+    # when teams.csv is missing — modern saves keep working unchanged.
+    # Updates `config.club_lookup` in place so downstream reverse lookups
+    # (roster_common._count_dsl_teams) see the same mapping.
+    detected = detect_club_lookup(config.filepath)
+    if detected is not None:
+        config.club_lookup = detected
+    df["org"] = df["org"].map(config.club_lookup)
     return df
 
 
@@ -212,6 +221,37 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
 # Note: position eligibility is gated by POSITION_FLOOR (rating-based) in
 # metrics_war.calc_war(). The displayed `field` column is then filtered to
 # positions whose adjusted WAR is within FIELD_VIABILITY_GAP of best_adj.
+
+
+def detect_club_lookup(csv_dir):
+    """Build a `{team_id: abbr}` map from teams.csv (level=1 rows only).
+
+    Replaces the hardcoded `config.club_lookup` at runtime so historical
+    OOTP saves get the correct abbreviations (e.g. 2004 had ANA / FLA /
+    MON / TBD, not LAA / MIA / WSH / TB). Modern saves keep working —
+    the hardcoded map happens to match a current-day OOTP team layout,
+    but level=1 derivation is authoritative for any save.
+
+    Returns None if teams.csv is missing or doesn't have the level/abbr
+    columns; callers fall back to the hardcoded `config.club_lookup` in
+    that case.
+    """
+    from pathlib import Path as _Path
+    f = _Path(csv_dir) / 'teams.csv'
+    if not f.exists():
+        return None
+    try:
+        df = pd.read_csv(
+            f,
+            usecols=['team_id', 'abbr', 'level'],
+            low_memory=False,
+        )
+    except (ValueError, KeyError):
+        return None
+    mlb = df[df['level'] == 1]
+    if mlb.empty:
+        return None
+    return {int(r.team_id): str(r.abbr) for r in mlb.itertuples(index=False)}
 
 
 def detect_head_scout_id(csv_dir):

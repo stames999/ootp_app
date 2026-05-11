@@ -128,15 +128,24 @@ FIELD_VIABILITY_GAP = 2.0
 # it to FG's +12.5 would over-credit average catchers without recovering
 # the framing tail.
 POSITIONAL_ADJUSTMENT_RUNS = {
-    "C":   7.5,
-    "1B": -13.0,
-    "2B": 10.0,
-    "3B":  2.0,
-    "SS": 12.5,
-    "LF":  -9.0,
-    "CF":  -2.0,
-    "RF": -11.0,
-    "DH": -10.0,
+    # Calibrated per-position to align sim top-5 mean `<pos>_adj`
+    # with FG 2025 top-5 mean WAR per position. The sim engine's
+    # fielding tables (FIELDING_RUN_VALUES_VS_REPLACEMENT) are left
+    # untouched — they encode team-of-clones measurements and shouldn't
+    # be reshaped. Per-position positional constants are the
+    # appropriate calibration knob: each one shifts the whole position's
+    # WAR distribution by a constant, preserving within-position ranking
+    # and shape. Pos_adj here is therefore a CALIBRATION constant, not
+    # the FG-standard scarcity convention (which we deviate from).
+    "C":    12.5,
+    "1B":    -7.5,
+    "2B":     2.5,
+    "3B":     2.5,
+    "SS":     7.5,
+    "LF":   -13.5,
+    "CF":   -11.0,
+    "RF":   -16.5,
+    "DH":   -17.5,
 }
 
 # ============================
@@ -376,7 +385,7 @@ HP_MAX_AGE = 24
 # position tag — they'd qualify as HP and then get the premium-fit
 # pos_adj override if their `field` list includes CF / SS / 2B.
 # Reference: a wOBAP .330 hitter is roughly a 105-110 wRC+ projected bat.
-HP_BESTP_ADJ_THRESHOLD = 2.0
+HP_BESTP_ADJ_THRESHOLD = 1.5
 HP_WOBA_THRESHOLD = 0.330
 
 # Minimum fielding-only WAR for treating a player as a "real" defender
@@ -496,7 +505,7 @@ PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5
 # the MLB threshold (.345) so the bar means "projects at least to
 # fringe-MLB", not "currently MLB-rosterable".
 HP_PITCHER_MAX_AGE = 24
-HP_PITCHER_MAX_PWOBAP = 0.340
+HP_PITCHER_MAX_PWOBAP = 0.335
 
 
 # ============================

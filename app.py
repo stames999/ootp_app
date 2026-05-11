@@ -34,11 +34,20 @@ def _apply_csv_dir(args):
     import config
     if getattr(args, 'csv_dir', None):
         config.filepath = Path(args.csv_dir)
-    from reader import detect_head_scout_id
+    from reader import detect_head_scout_id, detect_club_lookup
     detected = detect_head_scout_id(config.filepath)
     if detected is not None and detected != config.ID:
         config.ID = detected
         print(f'Using head-scout coach_id {detected} (auto-detected).')
+    # Auto-derive {team_id: abbr} from teams.csv so historical / alt-history
+    # saves (2004 KC = ANA / FLA / MON / TBD, etc.) display the correct
+    # team abbreviations. Matters for the `rosters` standalone path which
+    # doesn't call load_players(); refresh / Streamlit upload also call
+    # detect_club_lookup inside load_players, so this is belt-and-braces.
+    lookup = detect_club_lookup(config.filepath)
+    if lookup is not None and lookup != config.club_lookup:
+        config.club_lookup = lookup
+        print(f'Loaded {len(lookup)} team abbreviations from teams.csv (auto-detected).')
 
 
 def cmd_refresh(args):
