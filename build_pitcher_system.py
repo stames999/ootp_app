@@ -41,7 +41,6 @@ from roster_common import (
     LEVELS, MAX_AGE,
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
     _load_injured_names, _count_dsl_teams, is_player_injured,
-    is_mlb_tenure_protected,
 )
 # Tunable thresholds — see config.py "Pitcher cascade tunables" section
 # for full provenance / rationale comments. Re-exported below where other
@@ -131,17 +130,15 @@ def is_high_potential_pitcher(p):
     return pwobap <= HP_PITCHER_MAX_PWOBAP
 
 
-def _cascade(pool, slots_for, war_key='sp_war'):
+def _cascade(pool, slots_for, war_key=None):
     """Initial placement at each pitcher's `_top`, then cascade-down: while a
     level holds more than `slots_for[lvl]`, pop the worst-blend pitcher and
     push to the next level (or to leftovers if age cap blocks).
     `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
     × DSL count) can vary.
 
-    `war_key` selects the WAR column used by the MLB tenure quality
-    gate — 'sp_war' for the SP cascade (default), 'rp_war' for the
-    RP cascade. Lets the quality gate compare apples-to-apples within
-    the same pool.
+    `war_key` is kept for backwards-compat signature but unused since
+    R-27 (was used by the now-removed MLB tenure quality gate).
 
     Sort key combines a `_bot` cascadability flag with `pitcher_priority`
     so the cascade prefers demoting the WORST pitcher who CAN actually
@@ -161,33 +158,12 @@ def _cascade(pool, slots_for, war_key='sp_war'):
     for p in pool:
         by_level[LEVELS[p['_top']]].append(p)
 
-    _MLB_IDX = LEVELS.index('MLB')
-    import config
-
     def _sort_key_factory(lvl_idx, lvl_name):
-        # R-24 MLB tenure quality gate: compute baseline WAR from the
-        # truly-young arms at this level (yrs_MLB <
-        # MLB_TENURE_PROTECTED_YRS, definitely-not-protected). 3-4 year
-        # vets are protected only if their war_key is within
-        # MLB_TENURE_QUALITY_GATE_WAR of this baseline.
-        baseline_war = None
-        if lvl_idx == _MLB_IDX:
-            young = [p for p in by_level[lvl_name]
-                     if (p.get('yrs_MLB') or 0)
-                     < getattr(config, 'MLB_TENURE_PROTECTED_YRS', 3)]
-            if young:
-                baseline_war = max((p.get(war_key) or 0) for p in young)
-
+        # R-27: purely meritocratic cascade — no MLB tenure protection.
+        # HP MLB block (R-20) is the only soft placement rule;
+        # everyone else competes on current priority alone.
         def _key(p):
             cascadable = p['_bot'] > lvl_idx
-            # MLB tenure protection — two-tier (R-24):
-            #   5+ years -> always protected (anchor vet)
-            #   3-4 years -> protected only if `war_key` is within
-            #                MLB_TENURE_QUALITY_GATE_WAR of the
-            #                org's best young cascadable arm at MLB
-            if (lvl_idx == _MLB_IDX
-                    and is_mlb_tenure_protected(p, baseline_war, war_key)):
-                cascadable = False
             return (cascadable, pitcher_priority(p, lvl_name))
         return _key
 

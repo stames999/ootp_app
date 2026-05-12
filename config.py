@@ -396,34 +396,12 @@ HP_WOBA_THRESHOLD = 0.330
 # at MLB if cascade puts them there).
 HP_MIN_LEVEL_INDEX = 1   # AAA — prospects never start at MLB
 
-# MLB-tenure protection (two-tier model — refined R-24 from the
-# previous flat-3-year rule). Approximates option-year exhaustion and
-# veteran roster status:
-#
-#   yrs_MLB >= MLB_TENURE_ANCHOR_YRS (5):
-#     ALWAYS protected ("anchor vet"). 5+ year veterans have full
-#     refusal rights in real MLB and aren't demoted absent contract
-#     buyouts. Held at MLB regardless of how poor their current year is.
-#
-#   MLB_TENURE_PROTECTED_YRS (3) <= yrs_MLB < MLB_TENURE_ANCHOR_YRS:
-#     CONDITIONALLY protected. These are option-exhausted but still
-#     demotable. They're protected from cascade ONLY IF their current
-#     WAR is within MLB_TENURE_QUALITY_GATE_WAR of the best cascadable
-#     player at MLB (i.e., they're competitive with the young arms
-#     pushing them). A 3-4 year vet who is clearly worse than a young
-#     arm trying to come up gets cascaded to make room.
-#
-#   yrs_MLB < MLB_TENURE_PROTECTED_YRS:
-#     NOT protected — cascade by normal priority.
-#
-# This fix the R-15 design flaw where a 3-year vet with sp_war=1.1
-# (e.g. Waguespack at MIL) was holding a roster spot from a
-# clearly-better young arm (e.g. Misiorowski sp_war=2.6) purely on
-# tenure. Now the quality gate forces marginal vets to defend their
-# spot on merit.
-MLB_TENURE_PROTECTED_YRS = 3
-MLB_TENURE_ANCHOR_YRS = 5
-MLB_TENURE_QUALITY_GATE_WAR = 0.5
+# MLB-tenure protection removed in R-27. The HP MLB block (R-20) is
+# the only soft placement rule — everyone else is fair game based on
+# current priority. The earlier two-tier tenure model (R-15 / R-24)
+# created more problems than it solved: marginal vets held MLB slots
+# from better cascadable players even with the quality gate active.
+# Meritocratic cascade is simpler and gives the right outcome anyway.
 
 # Minimum fielding-only WAR for treating a player as a "real" defender
 # at a given position. Used in displacement / premium-fit logic, not in

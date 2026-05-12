@@ -57,44 +57,6 @@ def total_service_years(p):
     return sum(p.get(f'yrs_{l}', 0) or 0 for l in LEVELS)
 
 
-def is_mlb_tenure_protected(p, baseline_war=None, war_key=None):
-    """Two-tier MLB tenure protection. Approximates option-year
-    exhaustion + veteran roster status.
-
-    Tier 1 — anchor vets (yrs_MLB >= MLB_TENURE_ANCHOR_YRS, default 5):
-        Always protected, no quality check. 5+ year MLB veterans have
-        real refusal rights and aren't demoted without a contract
-        buyout.
-
-    Tier 2 — conditional vets (MLB_TENURE_PROTECTED_YRS <= yrs_MLB <
-                                 MLB_TENURE_ANCHOR_YRS, default 3-4):
-        Protected ONLY IF their current WAR (read via `war_key` from
-        the player dict) is within MLB_TENURE_QUALITY_GATE_WAR of
-        `baseline_war` — the best cascadable player at MLB. Lets
-        clearly-better young arms displace marginal 3-4 year vets.
-
-    `baseline_war` and `war_key` are passed by the cascade sort
-    factory when called at the MLB level. If either is None
-    (level != MLB, or backward-compat callers), behaves like the
-    pre-R-24 simple flat-3-year rule.
-
-    Used by build_system / build_pitcher_system cascade-sort to treat
-    these players as "stuck" at MLB regardless of their `_bot` floor."""
-    yrs = p.get('yrs_MLB', 0) or 0
-    soft_min = getattr(config, 'MLB_TENURE_PROTECTED_YRS', 3)
-    anchor_min = getattr(config, 'MLB_TENURE_ANCHOR_YRS', 5)
-    quality_gate = getattr(config, 'MLB_TENURE_QUALITY_GATE_WAR', 0.5)
-    if yrs < soft_min:
-        return False
-    if yrs >= anchor_min:
-        return True
-    # 3-4 year tier — conditional on quality.
-    if baseline_war is None or war_key is None:
-        return True   # backward-compat: no quality gate available
-    player_war = p.get(war_key) or 0
-    return player_war >= (baseline_war - quality_gate)
-
-
 def service_lowest_level(p):
     """Highest LEVELS index (= lowest level) the player is still eligible
     for given their cumulative service. > 5 yrs blocks A+ and below; > 4
