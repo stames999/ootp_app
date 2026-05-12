@@ -25,9 +25,10 @@ from roster_common import (  # noqa: F401  (re-exports)
     LEVELS, MAX_AGE, SERVICE_LIMITS, DSL_LEAGUE_ID, DSL_INELIGIBLE_NATIONS,
     total_service_years, age_lowest_level, service_lowest_level,
     dsl_eligible_lowest_level, _count_dsl_teams, _load_injured_names,
-    is_player_injured,
+    is_player_injured, is_mlb_tenure_protected,
     INJURED_FILE,
 )
+from config import HP_MIN_LEVEL_INDEX
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 
@@ -639,12 +640,22 @@ def main(org=None):
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
 
+    _MLB_IDX = LEVELS.index('MLB')
+
     def _cascade_sort_key_factory(lvl_idx, lvl_name):
         def _key(p):
             # ASC sort: stuck (_bot == lvl_idx, can't cascade) first,
             # cascadable (_bot > lvl_idx) last. Within each group,
             # ordered by priority so position -1 = cascadable + WORST.
-            return (p['_bot'] > lvl_idx, -priority(p, lvl_name))
+            cascadable = p['_bot'] > lvl_idx
+            # MLB tenure protection: at MLB, veterans with yrs_MLB >=
+            # MLB_TENURE_PROTECTED_YRS are treated as "stuck" regardless
+            # of their `_bot`. Proxies the real-world cost of demoting
+            # an option-exhausted veteran. Soft protection — they're
+            # still cascadable if no non-veteran alternative remains.
+            if lvl_idx == _MLB_IDX and is_mlb_tenure_protected(p):
+                cascadable = False
+            return (cascadable, -priority(p, lvl_name))
         return _key
 
     for lvl in LEVELS:
@@ -692,7 +703,29 @@ def main(org=None):
     
     for lvl in LEVELS:
         by_level[lvl] = cby[lvl] + nc_by[lvl]
-    
+
+    # === HARD BLOCK: HPs are never placed on the MLB roster ===
+    # Prospects develop in the minors regardless of projection. Any HP
+    # who ended up at MLB after the cascade (because their `_top` was
+    # MLB and Hungarian routed them there) is pushed down to AAA — or
+    # deeper if their `_bot` index is past AAA. The Step-3 HP
+    # enforcement below then operates at AAA for these players.
+    # Controlled by HP_MIN_LEVEL_INDEX in config.py (default 1 = AAA).
+    if HP_MIN_LEVEL_INDEX > 0:
+        mlb_hps = [p for p in by_level[LEVELS[0]] if is_high_potential(p)]
+        for hp in mlb_hps:
+            # Target = max(HP_MIN_LEVEL_INDEX, hp._bot). The HP can't
+            # go ABOVE their _bot floor either; if _bot blocks AAA we
+            # honour it (HPs with non-zero MLB service shouldn't exist
+            # in practice but we don't want to crash).
+            target_idx = max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX))
+            target_idx = min(target_idx, len(LEVELS) - 1)
+            target_lvl = LEVELS[target_idx]
+            if target_lvl == LEVELS[0]:
+                continue  # _bot pinned them to MLB — give up the block
+            by_level[LEVELS[0]].remove(hp)
+            by_level[target_lvl].append(hp)
+
     # === STEP 3: High-potential starter enforcement ===
     # If HP benched at level X: swap with non-HP at X+1. If can't (age cap
     # or service-floor blocks demotion), set `_force_start = X` so the HP
@@ -772,6 +805,21 @@ def main(org=None):
                             changed = True
                             cascaded = True
                     if not cascaded:
+                        # Defence-in-depth: HPs never `_force_start` at MLB.
+                        # The pre-Step-3 hard block above already moves any
+                        # MLB-cascade HP down; this guard catches any HP
+                        # that snuck back to MLB via pull-up logic later.
+                        if lvl == LEVELS[0] and HP_MIN_LEVEL_INDEX > 0:
+                            target_idx = min(
+                                max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX)),
+                                len(LEVELS) - 1,
+                            )
+                            target_lvl = LEVELS[target_idx]
+                            if target_lvl != LEVELS[0]:
+                                by_level[lvl].remove(hp)
+                                by_level[target_lvl].append(hp)
+                                hp['_force_start'] = target_lvl
+                                continue
                         hp['_force_start'] = lvl
             if not changed:
                 break
@@ -841,6 +889,11 @@ def main(org=None):
         if p.get('_bot') is None or i > p['_bot']:
             return False
         if p.get('_force_start'):
+            return False
+        # Hard block: HPs never pulled up above HP_MIN_LEVEL_INDEX.
+        # Defaults to AAA (index 1) so HPs are blocked from MLB
+        # promotion via any of the three pull-up passes.
+        if HP_MIN_LEVEL_INDEX > 0 and i < HP_MIN_LEVEL_INDEX and is_high_potential(p):
             return False
         # Catchers are excluded from PASS 1/2 because Step 1 already
         # optimised catcher allocation; allowing them here would

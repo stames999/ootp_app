@@ -389,6 +389,22 @@ HP_MAX_AGE = 24
 HP_BESTP_ADJ_THRESHOLD = 1.5
 HP_WOBA_THRESHOLD = 0.330
 
+# HP players are never placed on the MLB roster regardless of projection.
+# Prospects develop at AAA or below; the builder's HP-enforcement logic
+# clamps their target level to this index (or deeper if their _bot
+# forces lower). 1 = AAA. Set to 0 to disable the block (HPs can land
+# at MLB if cascade puts them there).
+HP_MIN_LEVEL_INDEX = 1   # AAA — prospects never start at MLB
+
+# Players with yrs_MLB >= this threshold are treated as "established
+# MLBers" by the cascade sort — they get the same uncascadable
+# priority as players whose _bot forbids cascade, so the cascade only
+# pops them from MLB if every alternative is exhausted. Proxy for
+# option-year exhaustion and veteran roster status (3+ MLB seasons
+# usually means options are used up under MLB rules). Soft protection:
+# extreme over-cap scenarios can still demote them.
+MLB_TENURE_PROTECTED_YRS = 3
+
 # Minimum fielding-only WAR for treating a player as a "real" defender
 # at a given position. Used in displacement / premium-fit logic, not in
 # HP determination itself.

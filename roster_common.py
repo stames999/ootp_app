@@ -57,6 +57,23 @@ def total_service_years(p):
     return sum(p.get(f'yrs_{l}', 0) or 0 for l in LEVELS)
 
 
+def is_mlb_tenure_protected(p):
+    """True if a player has accumulated enough MLB seasons that they
+    should not be casually cascaded off the MLB roster. Proxy for
+    option-year exhaustion + veteran roster status — by the time a
+    player has 3 (config.MLB_TENURE_PROTECTED_YRS) MLB seasons, real
+    teams generally don't demote them without a clear plan (options
+    exhausted, no-trade rights accumulating, contract structure).
+
+    Used by build_system / build_pitcher_system cascade-sort to treat
+    these players as "stuck" at MLB regardless of their `_bot` floor,
+    so the cascade only pops them when every alternative is exhausted.
+    Soft protection — does NOT prevent demotion if the MLB roster has
+    no cascadable alternatives at all."""
+    threshold = getattr(config, 'MLB_TENURE_PROTECTED_YRS', 3)
+    return (p.get('yrs_MLB', 0) or 0) >= threshold
+
+
 def service_lowest_level(p):
     """Highest LEVELS index (= lowest level) the player is still eligible
     for given their cumulative service. > 5 yrs blocks A+ and below; > 4

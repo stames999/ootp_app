@@ -41,6 +41,7 @@ from roster_common import (
     LEVELS, MAX_AGE,
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
     _load_injured_names, _count_dsl_teams, is_player_injured,
+    is_mlb_tenure_protected,
 )
 # Tunable thresholds — see config.py "Pitcher cascade tunables" section
 # for full provenance / rationale comments. Re-exported below where other
@@ -51,6 +52,7 @@ from config import (  # noqa: F401  (re-exports)
     LHP_LEVELS, LEFTY_MIN, LEFTY_TARGET, LEFTY_MAX, LEFTY_TARGET_MAX_COST,
     HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
     PITCHER_SWINGMAN_PULLUP_ENABLED, PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA,
+    HP_MIN_LEVEL_INDEX,
 )
 
 PITCHERS_JSON = 'outputs/pitchers.json'
@@ -154,9 +156,19 @@ def _cascade(pool, slots_for):
     for p in pool:
         by_level[LEVELS[p['_top']]].append(p)
 
+    _MLB_IDX = LEVELS.index('MLB')
+
     def _sort_key_factory(lvl_idx, lvl_name):
         def _key(p):
-            return (p['_bot'] > lvl_idx, pitcher_priority(p, lvl_name))
+            cascadable = p['_bot'] > lvl_idx
+            # MLB tenure protection: at MLB, veterans with yrs_MLB >=
+            # MLB_TENURE_PROTECTED_YRS are treated as "stuck" regardless
+            # of their `_bot`. Mirrors the hitter cascade — soft
+            # protection that only cascades the veteran when no
+            # non-veteran cascadable remains.
+            if lvl_idx == _MLB_IDX and is_mlb_tenure_protected(p):
+                cascadable = False
+            return (cascadable, pitcher_priority(p, lvl_name))
         return _key
 
     for lvl in LEVELS:
@@ -187,6 +199,10 @@ def _eligible_for_promotion(p, i, want_lhp, allow_stretch):
     if is_lhp(p) != want_lhp:
         return False
     if i > p['_bot']:
+        return False
+    # Hard HP block: HP pitchers can't be promoted above HP_MIN_LEVEL_INDEX
+    # (defaults to AAA = 1, so MLB is blocked).
+    if HP_MIN_LEVEL_INDEX > 0 and i < HP_MIN_LEVEL_INDEX and is_high_potential_pitcher(p):
         return False
     if p['_top'] <= i:
         return True
@@ -369,6 +385,12 @@ def _pull_up(by_level, slots_for):
                         continue
                     if p['_top'] > i:
                         continue
+                    # Hard HP block — HPs never pulled up above
+                    # HP_MIN_LEVEL_INDEX (default 1 = AAA), so they
+                    # can't backfill an MLB slot via the strict pull-up.
+                    if (HP_MIN_LEVEL_INDEX > 0 and i < HP_MIN_LEVEL_INDEX
+                            and is_high_potential_pitcher(p)):
+                        continue
                     if best is None or pitcher_priority(p, lvl) < pitcher_priority(best, lvl):
                         best, best_j = p, j
             if best is None:
@@ -547,6 +569,29 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             break
 
 
+def _block_hps_at_mlb(by_level):
+    """Hard HP block: move any HP pitcher currently at MLB to AAA (or
+    deeper if their `_bot` won't allow AAA). Run AFTER cascade and
+    AFTER pull-up — prospects develop in the minors regardless of
+    projection or pull-up signals.
+
+    Mirrors the hitter pre-Step-3 block in build_system.py. Controlled
+    by HP_MIN_LEVEL_INDEX in config.py (default 1 = AAA)."""
+    if HP_MIN_LEVEL_INDEX <= 0:
+        return
+    mlb_lvl = LEVELS[0]
+    mlb_hps = [p for p in by_level.get(mlb_lvl, [])
+               if is_high_potential_pitcher(p)]
+    for hp in mlb_hps:
+        target_idx = max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX))
+        target_idx = min(target_idx, len(LEVELS) - 1)
+        target_lvl = LEVELS[target_idx]
+        if target_lvl == mlb_lvl:
+            continue  # `_bot` pinned them to MLB — give up the block
+        by_level[mlb_lvl].remove(hp)
+        by_level.setdefault(target_lvl, []).append(hp)
+
+
 def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
     """For HP pitchers in overflow, place them on a roster by displacing the
     worst-priority non-HP at the HP's natural target level. Mirrors the
@@ -573,7 +618,11 @@ def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
         key=lambda p: (p.get('pwOBAP') or 1.0)
     )
     for hp in hps:
-        for idx in range(hp['_top'], hp['_bot'] + 1):
+        # Hard block: HP pitchers never start at MLB regardless of `_top`.
+        # Skip the MLB level by clamping the search range to start at
+        # max(HP_MIN_LEVEL_INDEX, hp._top). Defaults to AAA (index 1).
+        start_idx = max(hp['_top'], HP_MIN_LEVEL_INDEX) if HP_MIN_LEVEL_INDEX > 0 else hp['_top']
+        for idx in range(start_idx, hp['_bot'] + 1):
             lvl = LEVELS[idx]
             if lvl not in by_level:
                 continue
@@ -642,13 +691,17 @@ def main(org=None):
     # Step 2-3: SP cascade + pull-up
     sp_pool = [p for p in valid if is_sp_viable(p)]
     sp_by, _sp_leftover = _cascade(sp_pool, sp_slots)
+    _block_hps_at_mlb(sp_by)         # hard HP block — see helper
     _pull_up(sp_by, sp_slots)
+    _block_hps_at_mlb(sp_by)         # in case pull-up promoted any back
     sp_assigned = {p['name'] for lvl in LEVELS for p in sp_by[lvl]}
 
     # Step 4: RP cascade + pull-up
     rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
     rp_by, rp_leftover = _cascade(rp_pool, rp_slots)
+    _block_hps_at_mlb(rp_by)
     _pull_up(rp_by, rp_slots)
+    _block_hps_at_mlb(rp_by)
 
     # Step 4a: opt-in swingman pull-up (R-03). No-op when toggle is OFF.
     # Runs BEFORE LHP balance so any AAA imbalance the swingman swap
