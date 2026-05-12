@@ -139,8 +139,8 @@ POSITIONAL_ADJUSTMENT_RUNS = {
     # the FG-standard scarcity convention (which we deviate from).
     "C":    12.5,
     "1B":    -7.5,
-    "2B":     2.5,
-    "3B":     2.5,
+    "2B":     7.5,
+    "3B":     0.0,
     "SS":     7.5,
     "LF":   -13.5,
     "CF":   -11.0,
