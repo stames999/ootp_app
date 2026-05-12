@@ -444,6 +444,28 @@ def classify_bench(bench, level=None):
         ordered.append(('Depth', p))
     return ordered
 
+def is_very_poor_fielder(p):
+    """True if a player has NO playable defensive home outside 1B / DH.
+    Definition: max `<pos>_fld` across non-1B / non-DH positions is
+    below -0.5 WAR. Used to decide whether an HP starting at DH or 1B
+    at AAA/AA/A+ should cascade further down — players who clear this
+    bar (i.e., NOT very poor fielders) have a real defensive position
+    elsewhere and should be developing it in the lower minors rather
+    than slotting into bat-only roles at the higher tiers.
+
+    Returns True only when the player has nowhere else to play — those
+    are kept put as legitimate DH/1B-only prospects (Frank Thomas /
+    Schwarber types) and not cascaded down for "defensive development"
+    they can't deliver."""
+    non_dh_1b = ['C', '2B', '3B', 'SS', 'LF', 'CF', 'RF']
+    best_fld = float('-inf')
+    for pos in non_dh_1b:
+        fld = p.get(f'{pos}_fld')
+        if fld is not None and fld > best_fld:
+            best_fld = fld
+    return best_fld < -0.5
+
+
 def apply_hp_premium_fit_override(p):
     """If `p` is an HP with `_fld >= PREMIUM_FLD_MIN` at any premium-fit
     position (CF / SS / 2B), set their `pos_adj` to whichever of those
@@ -766,7 +788,25 @@ def main(org=None):
                     if p and is_high_potential(p)
                     and id(p) not in sR_starter_ids
                 ]
-                hp_to_cascade = hp_benched + [p for p in hp_overmatched if p not in hp_benched]
+                # DH/1B-development signal: an HP starting at 1B or DH
+                # who HAS a playable defensive position elsewhere
+                # (best non-1B/DH `<pos>_fld` >= -0.5 WAR) should
+                # cascade down to develop that position rather than
+                # locking into bat-only at this level. Truly DH-only
+                # prospects (Frank Thomas / Schwarber-types) stay put
+                # via the is_very_poor_fielder exception.
+                hp_at_dh_1b = [
+                    p for pos, p in starters.items()
+                    if p and is_high_potential(p)
+                    and pos in ('1B', 'DH')
+                    and not is_very_poor_fielder(p)
+                ]
+                hp_to_cascade = (
+                    hp_benched
+                    + [p for p in hp_overmatched if p not in hp_benched]
+                    + [p for p in hp_at_dh_1b
+                       if p not in hp_benched and p not in hp_overmatched]
+                )
                 if not hp_to_cascade:
                     continue
 
