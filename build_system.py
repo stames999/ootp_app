@@ -746,22 +746,21 @@ def main(org=None):
     # === HARD BLOCK: HPs are never placed on the MLB roster ===
     # Prospects develop in the minors regardless of projection. Any HP
     # who ended up at MLB after the cascade (because their `_top` was
-    # MLB and Hungarian routed them there) is pushed down to AAA — or
-    # deeper if their `_bot` index is past AAA. The Step-3 HP
-    # enforcement below then operates at AAA for these players.
+    # MLB and Hungarian routed them there) is pushed down to exactly
+    # AAA — the level just below MLB. `_bot` index >= HP_MIN_LEVEL_INDEX
+    # means the HP can play AAA, so we put them there. If `_bot` is
+    # somehow lower than HP_MIN_LEVEL_INDEX (very rare — would need
+    # significant MLB service which an HP usually doesn't have), the
+    # HP is left at MLB.
     # Controlled by HP_MIN_LEVEL_INDEX in config.py (default 1 = AAA).
     if HP_MIN_LEVEL_INDEX > 0:
         mlb_hps = [p for p in by_level[LEVELS[0]] if is_high_potential(p)]
         for hp in mlb_hps:
-            # Target = max(HP_MIN_LEVEL_INDEX, hp._bot). The HP can't
-            # go ABOVE their _bot floor either; if _bot blocks AAA we
-            # honour it (HPs with non-zero MLB service shouldn't exist
-            # in practice but we don't want to crash).
-            target_idx = max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX))
-            target_idx = min(target_idx, len(LEVELS) - 1)
+            target_idx = HP_MIN_LEVEL_INDEX   # destination = AAA (default)
+            bot = hp.get('_bot')
+            if bot is not None and bot < target_idx:
+                continue  # _bot blocks AAA — leave at MLB
             target_lvl = LEVELS[target_idx]
-            if target_lvl == LEVELS[0]:
-                continue  # _bot pinned them to MLB — give up the block
             by_level[LEVELS[0]].remove(hp)
             by_level[target_lvl].append(hp)
 
@@ -866,13 +865,13 @@ def main(org=None):
                         # The pre-Step-3 hard block above already moves any
                         # MLB-cascade HP down; this guard catches any HP
                         # that snuck back to MLB via pull-up logic later.
+                        # Move to AAA (HP_MIN_LEVEL_INDEX), unless `_bot`
+                        # blocks AAA in which case leave at MLB.
                         if lvl == LEVELS[0] and HP_MIN_LEVEL_INDEX > 0:
-                            target_idx = min(
-                                max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX)),
-                                len(LEVELS) - 1,
-                            )
-                            target_lvl = LEVELS[target_idx]
-                            if target_lvl != LEVELS[0]:
+                            target_idx = HP_MIN_LEVEL_INDEX
+                            bot = hp.get('_bot')
+                            if bot is None or bot >= target_idx:
+                                target_lvl = LEVELS[target_idx]
                                 by_level[lvl].remove(hp)
                                 by_level[target_lvl].append(hp)
                                 hp['_force_start'] = target_lvl

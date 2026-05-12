@@ -590,24 +590,24 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
 
 
 def _block_hps_at_mlb(by_level):
-    """Hard HP block: move any HP pitcher currently at MLB to AAA (or
-    deeper if their `_bot` won't allow AAA). Run AFTER cascade and
-    AFTER pull-up — prospects develop in the minors regardless of
-    projection or pull-up signals.
+    """Hard HP block: move any HP pitcher currently at MLB to AAA.
+    Run AFTER cascade and AFTER pull-up — prospects develop in the
+    minors regardless of projection or pull-up signals.
 
-    Mirrors the hitter pre-Step-3 block in build_system.py. Controlled
-    by HP_MIN_LEVEL_INDEX in config.py (default 1 = AAA)."""
+    Destination is HP_MIN_LEVEL_INDEX (default 1 = AAA). If `_bot` is
+    somehow lower than that (very rare for an HP), the HP is left at
+    MLB. Mirrors the hitter pre-Step-3 block in build_system.py."""
     if HP_MIN_LEVEL_INDEX <= 0:
         return
     mlb_lvl = LEVELS[0]
     mlb_hps = [p for p in by_level.get(mlb_lvl, [])
                if is_high_potential_pitcher(p)]
     for hp in mlb_hps:
-        target_idx = max(HP_MIN_LEVEL_INDEX, hp.get('_bot', HP_MIN_LEVEL_INDEX))
-        target_idx = min(target_idx, len(LEVELS) - 1)
+        target_idx = HP_MIN_LEVEL_INDEX
+        bot = hp.get('_bot')
+        if bot is not None and bot < target_idx:
+            continue  # _bot blocks AAA — leave at MLB
         target_lvl = LEVELS[target_idx]
-        if target_lvl == mlb_lvl:
-            continue  # `_bot` pinned them to MLB — give up the block
         by_level[mlb_lvl].remove(hp)
         by_level.setdefault(target_lvl, []).append(hp)
 
