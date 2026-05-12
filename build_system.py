@@ -29,6 +29,7 @@ from roster_common import (  # noqa: F401  (re-exports)
     INJURED_FILE,
 )
 from config import HP_MIN_LEVEL_INDEX
+import config
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 
@@ -665,17 +666,33 @@ def main(org=None):
     _MLB_IDX = LEVELS.index('MLB')
 
     def _cascade_sort_key_factory(lvl_idx, lvl_name):
+        # MLB tenure quality gate (R-24): for 3-4 year vets at MLB, the
+        # protection is conditional on their current WAR being within
+        # MLB_TENURE_QUALITY_GATE_WAR of the best truly-cascadable
+        # player at this level. "Truly cascadable" = yrs_MLB <
+        # MLB_TENURE_PROTECTED_YRS (definitely not tenure-protected).
+        # We compute the baseline ONCE per level here so each player's
+        # sort key gets the same reference.
+        baseline_war = None
+        if lvl_idx == _MLB_IDX:
+            young = [p for p in nc_by[lvl_name]
+                     if (p.get('yrs_MLB') or 0)
+                     < getattr(config, 'MLB_TENURE_PROTECTED_YRS', 3)]
+            if young:
+                baseline_war = max((p.get('best_adj') or 0) for p in young)
+
         def _key(p):
             # ASC sort: stuck (_bot == lvl_idx, can't cascade) first,
             # cascadable (_bot > lvl_idx) last. Within each group,
             # ordered by priority so position -1 = cascadable + WORST.
             cascadable = p['_bot'] > lvl_idx
-            # MLB tenure protection: at MLB, veterans with yrs_MLB >=
-            # MLB_TENURE_PROTECTED_YRS are treated as "stuck" regardless
-            # of their `_bot`. Proxies the real-world cost of demoting
-            # an option-exhausted veteran. Soft protection — they're
-            # still cascadable if no non-veteran alternative remains.
-            if lvl_idx == _MLB_IDX and is_mlb_tenure_protected(p):
+            # MLB tenure protection — two-tier (R-24):
+            #   5+ years -> always protected (anchor vet)
+            #   3-4 years -> protected only if best_adj within
+            #                MLB_TENURE_QUALITY_GATE_WAR of the
+            #                org's best young cascadable hitter at MLB
+            if (lvl_idx == _MLB_IDX
+                    and is_mlb_tenure_protected(p, baseline_war, 'best_adj')):
                 cascadable = False
             return (cascadable, -priority(p, lvl_name))
         return _key
