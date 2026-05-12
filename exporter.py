@@ -85,6 +85,9 @@ def export_advanced_html(
             fmt[col] = safe_format("{:.3f}".format)
         elif "wRC+" in col:
             fmt[col] = safe_format("{:.0f}".format)
+        elif col[:3] in ("AVG", "OBP", "SLG", "ISO"):
+            # Slash-line stats render with 3 decimals (.347, .421, etc.)
+            fmt[col] = safe_format("{:.3f}".format)
 
     # na_rep="" catches any NaN cell (including columns without an explicit
     # formatter, e.g. `org` for free agents) so nothing renders as "nan".
@@ -168,10 +171,32 @@ EXPORT_PAGES = [
             "pos",
             "field",
             "wRC+",
+            "wRC+P",
             "wOBA",
             "wOBAR",
             "wOBAL",
             "wOBAP",
+            # Traditional slash-line stats (overall + R/L splits + projected).
+            # Derived from the per-PA component rates in metrics_hitting.
+            # AB ≈ (1 - bb_pct) — HBP not modeled in OOTP rates so OBP omits
+            # HBP and AVG approximates AB. Useful for sabermetric lineup
+            # construction (platoon decisions, on-base vs power role-fit).
+            "AVG",
+            "OBP",
+            "SLG",
+            "ISO",
+            "AVGR",
+            "OBPR",
+            "SLGR",
+            "ISOR",
+            "AVGL",
+            "OBPL",
+            "SLGL",
+            "ISOL",
+            "AVGP",
+            "OBPP",
+            "SLGP",
+            "ISOP",
             # Bat-only WAR (additive with any *_fld below to compose totals)
             "war_hitting",
             "war_hittingP",

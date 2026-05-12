@@ -90,12 +90,33 @@ def calc_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
         df["wOBAR"] * HANDEDNESS_WEIGHTS["R"] +
         df["wOBAL"] * HANDEDNESS_WEIGHTS["L"]
     )
-    
+
+    # Traditional slash-line stats derived from the per-PA component
+    # rates. HBP isn't modeled in OOTP's rate output so AVG / OBP use
+    # AB ≈ (1 - bb_pct) and OBP omits the HBP term. Sabermetric
+    # decisions (platoon assignment, lineup-card construction) use
+    # these directly.
+    for side in ("R", "L"):
+        hits_pa = (df[f"1b_pct{side}"] + df[f"2b_pct{side}"]
+                   + df[f"3b_pct{side}"] + df[f"hr_pct{side}"])
+        tb_pa = (df[f"1b_pct{side}"] + 2 * df[f"2b_pct{side}"]
+                 + 3 * df[f"3b_pct{side}"] + 4 * df[f"hr_pct{side}"])
+        ab_pa = 1 - df[f"bb_pct{side}"]
+        df[f"AVG{side}"] = (hits_pa / ab_pa).round(3)
+        df[f"OBP{side}"] = (hits_pa + df[f"bb_pct{side}"]).round(3)
+        df[f"SLG{side}"] = (tb_pa / ab_pa).round(3)
+        df[f"ISO{side}"] = (df[f"SLG{side}"] - df[f"AVG{side}"]).round(3)
+
+    # Handedness-weighted overall slash line (same R/L weighting as wOBA).
+    for stat in ("AVG", "OBP", "SLG", "ISO"):
+        df[stat] = (df[f"{stat}R"] * HANDEDNESS_WEIGHTS["R"]
+                    + df[f"{stat}L"] * HANDEDNESS_WEIGHTS["L"]).round(3)
+
     df["war_hitting"] = (((df["wOBA"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
     df["DH_hitting"] = ((((df["wOBA"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
 
     df["wRC+"] = ((((df["wOBA"] - LEAGUE_WOBA) / WOBA_SCALE) + LEAGUE_RUNS_PER_PA) / LEAGUE_RUNS_PER_PA * 100).round(0)
-       
+
     return df
 
 
@@ -159,6 +180,15 @@ def calc_potential_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Calculate potential WAR and DH WAR
     df["war_hittingP"] = (((df["wOBAP"] * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
     df["DH_hittingP"] = ((((df["wOBAP"] * (1 - DH_PENALTY)) * RUNS_PER_GAME_HITTING_COEFF) - RUNS_PER_GAME_HITTING_CONST) / RUNS_PER_WIN_HITTING).round(1)
+
+    # Projected slash-line (potential-rating equivalents of AVG/OBP/SLG/ISO).
+    hits_paP = df["1b_pctP"] + df["2b_pctP"] + df["3b_pctP"] + df["hr_pctP"]
+    tb_paP = df["1b_pctP"] + 2 * df["2b_pctP"] + 3 * df["3b_pctP"] + 4 * df["hr_pctP"]
+    ab_paP = 1 - df["bb_pctP"]
+    df["AVGP"] = (hits_paP / ab_paP).round(3)
+    df["OBPP"] = (hits_paP + df["bb_pctP"]).round(3)
+    df["SLGP"] = (tb_paP / ab_paP).round(3)
+    df["ISOP"] = (df["SLGP"] - df["AVGP"]).round(3)
 
     # Calculate potential wRC+
     df["wRC+P"] = ((((df["wOBAP"] - LEAGUE_WOBA) / WOBA_SCALE) + LEAGUE_RUNS_PER_PA) / LEAGUE_RUNS_PER_PA * 100).round(0)
