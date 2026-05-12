@@ -11,27 +11,33 @@ handling. Renders to xlsx and a Streamlit web UI.
 
 ## Where the work lives
 
-- Branch `main` on the `pistachio` repo (this directory).
+- Branch `main` on the `pistachio` repo (this directory). Remote
+  `ootp_app` (github.com/stames999/ootp_app) is tracked; all R-XX
+  commits up through R-27 are pushed.
 - Local raw sim data at `OOTP simulation/OOTP sims.xlsx` (committed).
 - Canonical OOTP save: **`Rockies Rebuild.lg`** (`config.filepath`).
-- Active testing save: **`Corbin HoF.lg`** (used to validate two-way
-  features — has Ohtani at LAD).
-- Recent HEAD progression (2026-05-10):
-  - `217ff56` — R-14: tighten two-way to MLB-tier + SP→DH restriction
-  - `5bc3948` — R-13: two-way in BOTH pools (LAD gets free extra slot)
-  - `815fff0` — R-12: organic two-way placement (best-side only, no pin)
-  - `e7c2e3d` — R-11: cascade sort by cascadability flag (not distance)
-  - `c60da78` — R-10: two-way pitchers count once (pitcher slot only)
-  - `ad0e74b` — R-09: bot-aware cascade sort (stuck-vet protection)
-  - `0a149f3` — R-08: two-way player handling — same-level pin (later
-    superseded by R-12 / R-13 / R-14)
-  - `bfec091` — R-07: release-pool push-down (PASS 3) for both builders
-  - `50deea4` — R-06: roster expansion (15/15/16/16/16/16) + hitter
-    pull-up +1 stretch
-  - `c90bb90` — R-05: raise `HP_PITCHER_MAX_PWOBAP` .330 → .340
-  - `8a3aceb` — Bug fixes: drop wOBAP export floor; fix injury name
-    collision (use player_id from CSV, not bare name)
-  - `9fd32aa` — R-04: lower `HP_WOBA_THRESHOLD` .340 → .330
+- Active testing save: **`Corbin HoF.lg`** (used throughout R-15→R-27 —
+  has Ohtani at LAD, plus deep prospect pools at NYY/LAD/AZ/MIL for
+  HP and tenure-protection edge cases).
+- Recent HEAD progression (2026-05-12 session, R-15 through R-27):
+  - `820fb91` — R-27: remove MLB tenure protection entirely (HP block
+    is the only soft placement rule; everyone else fair game)
+  - `0519e7b` — R-26: fix HP MLB-block over-cascade bug (max → AAA target)
+  - `30a7559` — R-25: revert MLB-ready pitcher gate to pwOBA ≤ .335
+  - `24543dc` — R-24: two-tier MLB tenure protection (later removed in R-27)
+  - `2041a21` — R-23: MLB-ready criterion = current WAR (1.5 / 0.5)
+  - `43026b9` — R-22: cascade HP starters at 1B/DH unless truly DH-only
+  - `3d0a868` — R-21: flag MLB-ready HP prospects in Overview + Rosters
+  - `fba4a98` — R-20: HP hard-block from MLB + tenure protection (the
+    tenure half was later removed in R-27)
+  - `3f0b0f9` — R-19: sabermetric lineup optimizer (The Book)
+  - `1fd19a1` — R-18: traditional slash-line stats (AVG/OBP/SLG/ISO)
+  - `2133ddf` — R-17: SP eligibility requires 3+ pitch arsenal
+  - `60c3c1c` — R-16: 2B+SS premium pair calibration (2B=+7.5, 3B=0,
+    later updated to 2B=+2.5/3B=+2.5 then SS=+7.5/3B=+2.5)
+  - `35dd6e3` — R-15: pos_adj calibration to FG 2025 + dynamic team lookup
+  - `5dc889b` — Update HANDOFF for R-04 through R-14 session
+  - `217ff56` and earlier — R-14 and prior (see git log for full chain)
 
 ## How to run
 
@@ -155,14 +161,187 @@ Retired since the earlier session:
   relaxed by Step 3.6 PASS 3 release-pool push-down (R-07).
 - `test_pitcher_top_within_one_stretch` — same reason, pitcher PASS 3.
 
-Current state: **329/330 passing.** The 1 persistent red is
-`test_pitcher_lhp_balance[TB]` (or sometimes `[AZ]`/`[NYY]` depending
-on the auto-detected head scout) — a data-drift / org-data property,
-not a builder regression. Has been ignored across every R-XX commit.
+Current state at end of R-27 session: **330/330 passing.** The
+previously-persistent rotating LHP-balance flake (TB/AZ/NYY) hasn't
+surfaced in recent runs — may have been resolved by the calibration
+changes that shifted org-level pool composition. If it reappears it's
+still a data-drift property, not a builder regression.
 
 `pytest tests/` runs in ~60s. **Run it after any builder change.**
 
-## Major behavioural changes this session (R-04 → R-14)
+## Major behavioural changes this session (R-15 → R-27, 2026-05-12)
+
+### R-15: FG-2025 calibration of POSITIONAL_ADJUSTMENT_RUNS
+Built per-position FG 2025 reference data + a gap-analysis pipeline,
+then recalibrated `POSITIONAL_ADJUSTMENT_RUNS` so the sim's per-position
+top-5 mean `<pos>_adj` aligns to FG 2025 top-5 mean WAR. The sim
+engine's fielding tables (`FIELDING_RUN_VALUES_VS_REPLACEMENT`) were
+left **untouched** — they encode team-of-clones measurements. Per-
+position positional constants are the proper calibration knob.
+
+Three new tools introduced under `calibration/`:
+- `fg_2025/` — per-position FG 2025 CSVs (raw reference data)
+- `fg_2025_reference.py` — compute per-position FG ceilings
+- `sim_vs_fg_gap.py` — generate gap report markdown
+- `posadj_shift_calibration.py` — recalibrate pos_adj from FG
+- `top10_per_pos_adj_split.py` — top-10 per position with bat/fld split
+
+Also: **dynamic team-abbreviation lookup**. `reader.detect_club_lookup`
++ `app._apply_csv_dir` read `teams.csv` and build `{team_id: abbr}` at
+runtime, so historical / alt-history saves (2004 KC = ANA/FLA/MON/TBD)
+display correct team abbreviations. Modern saves also benefit
+(post-Oakland ATH detected vs hardcoded OAK).
+
+### R-16: 2B+SS premium-IF pair iteration
+Through R-15's pos_adj sweep we iterated on 2B / 3B / SS values. Final
+landing point (current values in config.py):
+- C +12.5, 1B −7.5, **2B +2.5**, **3B +2.5**, **SS +7.5**, DH −17.5
+  (all FG-standard convention)
+- LF −13.5, CF −11.0, RF −16.5 (deviate from FG to absorb sim's
+  elite-OF over-credit; CF tables are particularly generous at the top)
+
+The OF deviations are intentional — sim's elite OF fielding ceilings
+sit ~10 runs above FG's actual MLB top performers (e.g. sim Kwan at
+LF +21 runs, FG +12; sim Tatis Jr. at RF +28 runs, FG +15). We
+absorb that over-credit through more-negative OF pos_adj rather than
+re-fitting the team-of-clones fielding tables.
+
+### R-17: SP eligibility requires 3+ pitch arsenal
+McCambley (MIA) and similar 2-pitch power arms were being classified
+SP with full starter stamina, holding rotation slots. Fix:
+- `MIN_PITCHES_FOR_SP = 3` constant. `identify_role` now requires
+  stamina ≥ 40 AND pitches ≥ 3 to classify SP. 2-pitch arms become
+  RP regardless of stamina.
+- `PITCH_MINIMUM_RATING` lowered 45 → 1. The pitch count is now
+  "arsenal size" (any rated pitch type the pitcher throws), not
+  "effective pitch count". A 4-pitch mix at modest grades (e.g.
+  Janson Junk's 40/45/35/40) is correctly SP-viable.
+- sp_war and sp_warP are NaN'd for sub-3-pitch arms via the same
+  mechanism as the stamina gate — removes them from the SP pool
+  entirely (build_pitcher_system.is_sp_viable gates on `sp_warP
+  is not None`).
+
+### R-18: traditional slash-line stats for sabermetric work
+Added AVG / OBP / SLG / ISO (overall + R/L splits + projected) to
+`metrics_hitting.calc_hitting_metrics` and the hitters.json/html
+export. Also fixed wRC+P export (was computed but not in the column
+list). Derived from the per-PA component rates already computed:
+```
+hits_per_PA = 1b + 2b + 3b + hr
+TB_per_PA   = 1b + 2*2b + 3*3b + 4*hr
+AB_per_PA   = 1 - bb_pct           (HBP not modeled in OOTP rates)
+AVG = hits_per_PA / AB_per_PA
+OBP = hits_per_PA + bb_pct
+SLG = TB_per_PA / AB_per_PA
+ISO = SLG - AVG
+```
+Splits (`AVGR`/`OBPR`/etc.) drive the lineup optimizer (R-19).
+
+### R-19: sabermetric lineup optimizer
+New CLI tool `lineup_optimizer.py` orders an org's 9 MLB starters per
+Tom Tango's "The Book" principles:
+1. Rank all 9 by OPS using side-specific splits.
+2. Top 3 by OPS get slots 1, 2, 4 (highest-leverage spots).
+   - **Best OPS overall → #2** (best run-scoring environment).
+   - From remaining 2: **highest SLG → cleanup (#4)**, leftover → #1.
+3. Slot 5 = next-best slugger (highest SLG of ranks 3-4 by OPS).
+4. Slot 3 = leftover from ranks 3-4 (lesser-leverage spot).
+5. Slots 6-8 by OPS descending. Slot 9 = rank 8, swapped with #8 if
+   #8's OBP is >0.010 higher (second-leadoff principle).
+
+Run: `python -X utf8 lineup_optimizer.py --org NYY` (or `--org ALL`).
+Outputs both vs-RHP and vs-LHP lineups using the slash-split stats.
+
+### R-20: HP hard block from MLB
+HPs are NEVER placed on the MLB roster regardless of projection.
+`HP_MIN_LEVEL_INDEX = 1` (AAA). Pre-Step-3 block in `build_system.py`
+and post-cascade/post-pull-up block in `build_pitcher_system.py`
+(`_block_hps_at_mlb`). Pull-up paths gated to exclude HPs from
+above-minimum targets. Verified across all 30 orgs: 0 HP hitters and
+0 HP pitchers at MLB level.
+
+R-20 originally also included a **soft tenure protection** rule for
+`yrs_MLB >= 3` veterans (treated as "stuck" in cascade sort). That
+half was refined in R-24 then **removed entirely in R-27** — see below.
+
+### R-21: flag MLB-ready HP prospects in UI
+HPs whose CURRENT performance already clears MLB-quality thresholds
+get a ✦ marker in the Overview tab (HP hitters / HP pitchers tables)
+and the Rosters by Level tab (starters, bench, pitcher tables, and
+per-level batting orders). Criteria iterated in R-23 / R-25:
+
+- **Hitter MLB-ready** (R-23): `best_adj >= 1.5 WAR` —
+  scarcity-adjusted best-position WAR clears the "above-replacement
+  regular" bar. Captures glove-first SS prospects with modest bat.
+- **Pitcher MLB-ready** (R-25): `pwOBA <= 0.335` — tighter than the
+  MLB cap (.345). pwOBA is the more honest current-stuff signal
+  than role-aware WAR (R-23 briefly used sp_war>=1.5 / rp_war>=0.5
+  but only 1 pitcher league-wide qualified — most HP arms are
+  projection plays, current sp_war is conservative).
+
+Caption in each table explains the criterion. Sorted so MLB-ready
+prospects appear at the top.
+
+### R-22: cascade HP starters at 1B/DH unless truly DH-only
+HP enforcement adds a new cascade trigger: an HP starting at 1B or
+DH at AAA/AA/A+/A who HAS a playable defensive position elsewhere
+(`is_very_poor_fielder(p) == False`, i.e., best non-1B/DH `<pos>_fld`
+>= −0.5 WAR) cascades down a level to develop that position.
+
+Truly DH-only prospects (Cam Collier, Jace LaViolette, Charlie Condon,
+Jhonkensy Noel) — those who FAIL the −0.5 floor at every non-1B/DH
+position — stay put as legitimate bat-only prospects.
+
+`is_very_poor_fielder(p)` added to `build_system.py`. Layers on top
+of the existing benched / vs-RHP-overmatched cascade triggers.
+
+### R-26: HP MLB-block index bug fix
+R-20 had a math bug:
+```python
+target_idx = max(HP_MIN_LEVEL_INDEX, hp.get('_bot', ...))
+```
+For an HP with `_top=MLB` and wide `_bot` (e.g., Quero at MIL had
+`_bot=A+`), `max(1, 3) = 3` pushed him straight to **A+** instead of
+AAA. The intent was "AAA, unless _bot blocks it" — `max` was the
+wrong direction.
+
+Fix (applied in 3 places — hitter pre-block, hitter HP enforcement
+fallback, pitcher `_block_hps_at_mlb`):
+```python
+target_idx = HP_MIN_LEVEL_INDEX     # = AAA
+bot = hp.get('_bot')
+if bot is not None and bot < target_idx:
+    continue                         # _bot blocks AAA — leave at MLB
+```
+
+Verified Quero now lands at AAA as a starter (his _force_start
+gives him the +10 dev bonus in fill_starters at AAA).
+
+### R-27: MLB tenure protection removed
+The R-20 soft tenure protection (`yrs_MLB >= 3 → uncascadable`),
+later refined in R-24 (two-tier with quality gate), was creating
+more problems than it solved. Marginal vets like Waguespack (sp_war
+1.1, pwOBA .342, yrs_MLB=3) at MIL were holding MLB slots from
+clearly-better young arms like Misiorowski (sp_war 2.6, pwOBA .312,
+yrs_MLB=1). The R-24 quality gate fixed the Misiorowski case but
+added complexity without robust wins elsewhere.
+
+Removed entirely in R-27:
+- `is_mlb_tenure_protected()` helper from `roster_common.py`
+- `MLB_TENURE_PROTECTED_YRS` / `MLB_TENURE_ANCHOR_YRS` /
+  `MLB_TENURE_QUALITY_GATE_WAR` constants from config.py
+- Tenure-protection check in cascade sort keys (both builders)
+
+The cascade is now **purely meritocratic**. The HP MLB block (R-20)
+is the only "soft" placement rule. Everyone else competes on current
+priority — vets don't get a free pass. The Misiorowski case still
+resolves correctly (he's MIL's ace by pwOBA, kept first in cascade
+sort) without any special-case veteran logic.
+
+## Major behavioural changes prior session (R-04 → R-14, 2026-05-10)
+
+(Retained for context — these are the changes that landed before
+this session. See R-15 → R-27 above for the more recent work.)
 
 ### R-06: roster expansion
 Minor-league per-level sizes increased to better match real MiLB depth:
@@ -252,6 +431,38 @@ Verified on Corbin HoF:
 - `player_id` added to all `EXPORT_PAGES` so downstream code can
   match unambiguously.
 
+## Calibration tooling (R-15 deliverables)
+
+New scripts under `calibration/` for ongoing pos_adj + fielding
+calibration. None are required for normal pipeline operation, but
+they're how the R-15 → R-16 calibration was performed and how future
+re-calibrations should be approached.
+
+| File | Purpose |
+|---|---|
+| `calibration/fg_2025/<POS>_batting_value.csv` | FG 2025 per-position batting value reference (raw FG export) |
+| `calibration/fg_2025/<POS>_adv_fielding.csv` | FG 2025 per-position advanced fielding (DRS, FRM, OAA, FRV, Def) |
+| `calibration/fg_2025_reference.py` | Compute top-N per-position WAR/FRV ceilings from FG data |
+| `calibration/sim_vs_fg_gap.py` | Generate per-position gap report (sim p0.999 vs FG max) — saves `outputs/calibration_gap_report.md` |
+| `calibration/posadj_shift_calibration.py` | Recalibrate `POSITIONAL_ADJUSTMENT_RUNS` so sim top-5 mean per position matches FG top-5 mean (the approach that landed in R-15/R-16) |
+| `calibration/fielding_calibration.py` | DEPRECATED multiplier approach — reshapes the sim fielding tables. Kept for methodology reference; the pos_adj-shift approach in R-15 was preferred. |
+| `calibration/fielding_calibration_step2.py` | DEPRECATED step-2 multiplier (p0.999 target) — same as above. |
+| `calibration/apply_fielding_calibration.py` | DEPRECATED multiplier applier. |
+| `calibration/top10_per_pos_adj_split.py` | Top-10 per position with bat / fld split — useful spot-check tool |
+| `calibration/war_dist_per_pos.py` | Per-position WAR distribution plots — supports `--fld` / `--bat` / `--adj` / `--no-floor` flags |
+| `lineup_optimizer.py` | (R-19) The Book lineup optimizer (project root, not under calibration/) |
+
+Typical workflow if you want to re-calibrate after a sim engine
+change or new reference year:
+1. Drop new FG CSVs into `calibration/fg_2025/` (or new dated folder)
+2. Run `python -X utf8 calibration/fg_2025_reference.py` → produces
+   `outputs/fg_2025_pos_ceilings.json`
+3. Run `python -X utf8 calibration/sim_vs_fg_gap.py` → produces
+   `outputs/calibration_gap_report.md` (sim vs FG side-by-side per pos)
+4. Run `python -X utf8 calibration/posadj_shift_calibration.py` to
+   compute proposed new pos_adj values, then `--apply` to write them.
+5. `python app.py refresh` and `python -m pytest tests/`.
+
 ## Tunable thresholds (config.py)
 
 All roster-construction thresholds live in `config.py` under the
@@ -267,20 +478,34 @@ All roster-construction thresholds live in `config.py` under the
 | `C_FLD_GAP_MAX` | Max non-C glove gap for catcher candidate | 1.5 |
 | `CATCHER_RESCUE_MIN_NON_C_WAR` | Bnw threshold for catcher-bypass rescue | 1.5 (R-01) |
 | `CATCHER_RESCUE_NON_C_POSITIONS` | Positions counted in bnw | DH, 1B, LF, RF, 3B |
-| `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / 2.0 / **.330** (R-04, was .340) |
+| `HP_MAX_AGE`, `HP_BESTP_ADJ_THRESHOLD`, `HP_WOBA_THRESHOLD` | Hitter HP gate | 24 / **1.5** (R-15) / **.330** (R-04) |
 | `PREMIUM_FLD_MIN`, `HP_PREMIUM_FIT_POSITIONS` | Premium-glove anchor | 1.5 / (CF, SS, 2B) |
 | `IF_POSITIONS`, `OF_POSITIONS` | Position groupings for utility roles | (2B, 3B, SS) / (LF, CF, RF) |
 | `SP_PER_LEVEL`, `RP_PER_LEVEL` | Per-level rotation / bullpen size (dicts, R-06) | MLB=5/8, AAA/AA=5/10, A+/A/R/R(DLR)=6/10 |
 | `PWOBA_MAX` | Per-level pwOBA ceiling | MLB=.345, AAA=.370, AA=.385, A+=.395, A=.405, R=.420, R(DLR)=1.0 |
 | `LHP_LEVELS`, `LEFTY_MIN/TARGET/MAX`, `LEFTY_TARGET_MAX_COST` | Bullpen handedness balance | (MLB,AAA,AA) / 2,3,4 / 0.010 |
-| `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / **.340** (R-05, was .330) |
+| `HP_PITCHER_MAX_AGE`, `HP_PITCHER_MAX_PWOBAP` | Pitcher HP gate | 24 / **.335** (R-15, was .340) |
 | `PITCHER_SWINGMAN_PULLUP_ENABLED` | Opt-in R-03 toggle (long-relief pull-up) | **False** |
 | `PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA` | Threshold for swingman call-up | 0.5 |
+| `POSITIONAL_ADJUSTMENT_RUNS` | FG-2025-calibrated per-position bonus (R-15/R-16) | C +12.5, 1B −7.5, 2B +2.5, 3B +2.5, SS +7.5, LF −13.5, CF −11.0, RF −16.5, DH −17.5 |
+| `MIN_PITCHES_FOR_SP` | Minimum arsenal size (rated pitches) to classify SP | **3** (R-17) |
+| `PITCH_MINIMUM_RATING` | Rating floor for counting a pitch in the arsenal | **1** (R-17 — any rated pitch counts; was 45 = "effective pitch") |
+| `HP_MIN_LEVEL_INDEX` | HP minimum level (HPs hard-blocked above this) | **1** = AAA (R-20) |
 
 Two-way detection thresholds are hard-coded in
 `main._flag_two_way_players` against `WOBA_MIN_HITTER['MLB']` and
 `PWOBA_MAX['MLB']` — adjust those base constants if you want to
 loosen the gate.
+
+MLB-ready HP markers (R-21/R-23/R-25) — visualised only, not gates:
+- Hitter: `best_adj >= 1.5 WAR`. Constant `MLB_READY_HITTER_WAR` in
+  `streamlit_app.py`.
+- Pitcher: `pwOBA <= 0.335`. Constant `MLB_READY_PITCHER_PWOBA` in
+  `streamlit_app.py`.
+
+R-27 NOTE: `MLB_TENURE_PROTECTED_YRS` / `MLB_TENURE_ANCHOR_YRS` /
+`MLB_TENURE_QUALITY_GATE_WAR` were **removed**. The cascade no longer
+gives veterans a tenure-based pass — purely meritocratic by priority.
 
 ## Catcher rescue rule (R-01)
 
@@ -333,21 +558,27 @@ SP→DH restriction (`_restrict_two_way_sp_to_dh`):
 
 | File | Role |
 |---|---|
-| `config.py` | All constants + roster tunables |
-| `roster_common.py` | Shared eligibility utils. `_load_injured_names` returns `{'pids', 'names'}` since 2026-05-10 |
-| `metrics_pitching.py` | Multiplicative components + component-aware WAR. **Position gate dropped (R-12)** — `pwOBA`/`sp_war`/`rp_war` computed for every row |
-| `metrics_hitting.py` | Linear wOBA → runs → WAR |
-| `metrics_fielding.py` | 1D tables + asymmetric-tanh saturation |
-| `metrics_war.py` | Per-position bat+def+pos_adj |
-| `main.py` | `compute_df` + new two-way helpers: `_flag_two_way_players`, `_flag_two_way_best_side`, `_restrict_two_way_sp_to_dh` |
-| `build_system.py` | Hitter rosters. Step 0–4.6 + R-07 push-down + R-11 cascadability sort |
-| `build_pitcher_system.py` | Pitcher rosters. SP/RP cascades + pull-up + LHP balance + R-07 push-down + R-11 sort |
-| `exporter.py` | `EXPORT_PAGES` filters admit two-way to both pools; `player_id`, `is_two_way`, `tw_best_side`, `position` columns added |
-| `build_excel.py` | xlsx renderer |
-| `streamlit_app.py` | 5-tab UI |
-| `tests/test_roster_invariants.py` | 330-case regression harness |
-| `tests/conftest.py` | Pytest fixtures + per-org parametrize |
-| `outputs/PIPELINE_REVIEW.md` | Methodology / code-quality review |
+| `config.py` | All constants + roster tunables. R-27 removed the MLB tenure constants. |
+| `roster_common.py` | Shared eligibility utils. `_load_injured_names` returns `{'pids', 'names'}`. `is_mlb_tenure_protected` REMOVED in R-27. |
+| `reader.py` | `detect_club_lookup` (R-15) + `detect_head_scout_id`. `load_players` populates dynamic team-abbrev map. |
+| `metrics_pitching.py` | Multiplicative components + component-aware WAR. R-17: 3-pitch arsenal gate on SP role classification (NaNs sp_war/sp_warP for sub-3 arms). |
+| `metrics_hitting.py` | Linear wOBA → runs → WAR. R-18: added AVG/OBP/SLG/ISO (overall + R/L + projected) and exposed wRC+ / wRC+P. |
+| `metrics_fielding.py` | 1D tables + asymmetric-tanh saturation. Untouched in R-15+ — pos_adj calibration uses positional shift, not table reshape. |
+| `metrics_war.py` | Per-position bat+def+pos_adj. R-15 calibrated `POSITIONAL_ADJUSTMENT_RUNS` against FG 2025. |
+| `main.py` | `compute_df` + two-way helpers `_flag_two_way_players`, `_flag_two_way_best_side`, `_restrict_two_way_sp_to_dh`. |
+| `build_system.py` | Hitter rosters. R-20 pre-block + R-22 1B/DH cascade + R-26 index-bug fix + R-27 meritocratic cascade. |
+| `build_pitcher_system.py` | Pitcher rosters. R-17 arsenal gate + R-20 `_block_hps_at_mlb` + R-26 fix + R-27 meritocratic cascade. |
+| `app.py` | Refresh + rosters subcommands. R-15: auto-detect club_lookup from teams.csv. |
+| `exporter.py` | R-18 added slash-line + wRC+P columns. |
+| `build_excel.py` | xlsx renderer. |
+| `streamlit_app.py` | 5-tab UI. R-21/R-23/R-25 added MLB-ready ✦ marker in HP tables, Rosters-by-level tables, and per-level batting orders. |
+| `lineup_optimizer.py` | (R-19) The Book lineup optimizer CLI. |
+| `tests/test_roster_invariants.py` | 330-case regression harness. |
+| `tests/conftest.py` | Pytest fixtures + per-org parametrize. |
+| `calibration/` | New folder with FG 2025 data + calibration scripts (R-15 deliverables — see "Calibration tooling" section above). |
+| `outputs/PIPELINE_REVIEW.md` | Methodology / code-quality review (pre-session). |
+| `outputs/calibration_gap_report.md` | (R-15) latest sim-vs-FG gap report. |
+| `outputs/fg_2025_pos_ceilings.json` | (R-15) FG reference cache. |
 
 ## Sample WAR values (Rockies Rebuild save)
 
@@ -374,45 +605,86 @@ SP→DH restriction (`_restrict_two_way_sp_to_dh`):
 
 ## What's still pending
 
-See `outputs/PIPELINE_REVIEW.md` for the full prioritised action list.
-Highlights of what's NOT done:
+See `outputs/PIPELINE_REVIEW.md` for the older prioritised action
+list. Highlights of what's NOT done, current to end of R-27:
 
-1. **M-03 (pitcher RP leverage WAR)** — currently
-   `rp_war = sp_war × 0.333` (workload only). FG applies leverage
-   multiplier (~1.5-2× for closers). Acceptable as cosmetic /
-   external-comparability gap.
-2. **M-05 (IF cross-position routing)** — ~9/35 elite-glove DRS
-   leaders mismatch. Needs new 2D RNG×ARM sim data.
-3. **C-05 / C-06 (metrics duplication, vectorize df.apply)** —
-   code-quality items.
-4. **Pitcher platoon staff variants** — `pwOBAR` / `pwOBAL` exist but
-   not used for vsR/vsL rotation construction.
-5. **Two-way display badge** — `tw_best_side` is exported in the
-   JSONs but no UI shows it. Could power a "primary role" indicator
-   on the Streamlit views.
+1. **HP merit-promotion** (raised but not implemented this session).
+   The HP cascade is strictly one-way DOWN — cascades a benched/
+   overmatched/1B-DH-stuck HP to the next level. No symmetric
+   "bubble UP" rule promotes an HP at a lower level when their
+   profile beats non-HPs at a higher level. With R-20's hard MLB
+   block this rarely matters at the MLB/AAA boundary (HPs land at
+   AAA regardless), but it could matter at AAA/AA/A+ — e.g., if
+   Step 1 catcher allocation places an HP at AA because their
+   `_top` qualifies them only at AA, they won't promote even if
+   AAA catchers are weaker.
+2. **Bat-scale calibration**: experimented in R-23 session with
+   lowering `RUNS_PER_WIN_HITTING` from 10.28 → 9.0 (would lift
+   Judge bat to +8). Reverted because the spread is too uniform —
+   would also lift Soto/Acuna/Witt by ~1 WAR each, overshooting
+   their realistic ranges. Could be revisited with a non-linear
+   bat curve at the very-elite wOBA tier.
+3. **M-03 (pitcher RP leverage WAR)** — `rp_war = sp_war × 0.333`
+   (workload only). FG applies leverage multiplier (~1.5-2× for
+   closers). Acceptable as cosmetic / external-comparability gap.
+4. **M-05 (IF cross-position routing)** — elite-glove DRS leaders
+   mismatch (Tatis Jr. shows sim 3B_def +21 / SS_def −6, suggesting
+   the rating-to-position mapping needs a 2D RNG×ARM grid).
+5. **OF over-credit** — sim's elite OF gloves produce ~10 runs
+   above FG's measurement. Currently absorbed into negative pos_adj
+   (LF −13.5, RF −16.5) but could be fixed at the table level by
+   compressing the OFrange top end.
+6. **Pitcher platoon staff variants** — `pwOBAR` / `pwOBAL` exist
+   but not used for vsR/vsL rotation construction.
+7. **Two-way display badge** — `tw_best_side` is exported in the
+   JSONs but no UI shows it.
+8. **3B fielding ceiling** — sim 3B top-tier (Hayes +21 runs,
+   Ramirez +20, Chapman +20) is flatter than FG (Hayes +17, then
+   sharp drop). Same flattening as the OF positions but harder to
+   absorb cleanly.
 
 ## Methodology limitations (carried forward)
 
 - **OOTP wOBA distribution offset**: OOTP star hitters cluster ~22
   wOBA points below MLB (Witt OOTP .354 vs MLB .376). Within-OOTP
-  rankings correct.
+  rankings correct. R-23 session attempted a bat-scale fix; reverted
+  because it overshoots non-Judge stars.
 - **Catcher framing engine plateau**: OOTP caps framing at +8 runs.
-  C `pos_adj` is +7.5 vs FG's +12.5 partly because of this.
+  Bailey's MLB Fielding of +26 (mostly framing) gets ~+12 in sim
+  even with the C calibration. Real-world elite framers will always
+  be under-credited until OOTP's Cfram rating maps a wider range.
 - **Pitcher RP WAR is workload-only**: see M-03.
-- **`metrics_pitching.identify_role` gate now uses stamina only**
-  (R-12). Position players without stamina ratings get `sprp=""`.
-  Most do have stamina (OOTP populates it for everyone) so this is
-  rarely consequential.
+- **`metrics_pitching.identify_role` gate uses stamina + 3-pitch
+  arsenal** (R-17). Position players without stamina ratings get
+  `sprp=""`. Most do have stamina (OOTP populates it for everyone)
+  so this is rarely consequential.
 
 ## Quick smoke test
 
 ```powershell
 python app.py refresh
 python -m pytest tests/                      # 330 cases, ~60s
-python -X utf8 calibration/top10_per_pos.py  # spot-check top players per position
+python -X utf8 calibration/top10_per_pos_adj_split.py  # top-10 per pos with bat/fld split
+python -X utf8 lineup_optimizer.py --org NYY # The Book lineup
 ```
 
-Expected: pytest 329/330 (one persistent pre-existing TB / AZ LHP
-balance failure). Top SS = Witt ~6.5, top RF = Tucker ~7.2. In Corbin
-HoF: Shohei Ohtani at LAD MLB as both DH starter and SP rotation
-member.
+Expected: pytest 330/330 (in Corbin HoF). Top SS = Witt ~7.0, top RF
+= Tucker ~7.2, top C = Raleigh ~5.4. MIL ace = Misiorowski (sp_war
+2.8, pwOBA .312). Quero (MIL HP catcher) at AAA as starter. No HP at
+MLB anywhere. In Corbin HoF: Shohei Ohtani at LAD MLB as both DH
+starter AND SP rotation member.
+
+## State of play (end R-27)
+
+| Aspect | Current state |
+|---|---|
+| Test suite | 330/330 |
+| HP at MLB | 0 across all 30 orgs (R-20 hard block) |
+| Veteran tenure protection | Removed (R-27) — meritocratic cascade |
+| `POSITIONAL_ADJUSTMENT_RUNS` | FG-2025-calibrated (R-15/R-16) |
+| Slash-line stats exported | AVG/OBP/SLG/ISO + R/L splits + projected (R-18) |
+| SP pitch-arsenal gate | 3+ rated pitches required (R-17) |
+| MLB-ready HP markers | best_adj ≥ 1.5 hitter, pwOBA ≤ .335 pitcher (R-21/R-23/R-25) |
+| HP cascade at 1B/DH | Cascades unless truly DH-only (R-22) |
+| Sabermetric lineup optimizer | `lineup_optimizer.py` (R-19) |
+| Dynamic team lookup | Works on historical / alt-history saves (R-15) |
