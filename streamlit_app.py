@@ -42,6 +42,39 @@ def hand_label(throws):
         return 'R'
     return ''
 
+
+# MLB-ready HP markers. R-20 hard-blocks HPs from the MLB roster, so
+# any HP whose CURRENT performance already clears the MLB threshold is
+# "knocking on the door" — they could be promoted whenever the org has
+# room. These helpers flag those players for the UI.
+def is_mlb_ready_hitter(p):
+    """True if an HP hitter's current wOBA clears the MLB hitter floor
+    (WOBA_MIN_HITTER['MLB'] = .280). Combined with is_high_potential at
+    call sites to mark MLB-ready prospects specifically."""
+    woba_min_mlb = config.WOBA_MIN_HITTER.get('MLB', 0.280)
+    return (p.get('wOBA') or 0) >= woba_min_mlb
+
+
+def is_mlb_ready_pitcher(p):
+    """True if an HP pitcher's current pwOBA clears the MLB pitcher
+    ceiling (PWOBA_MAX['MLB'] = .345). LOWER pwOBA is better, so we
+    test <= ceiling."""
+    pwoba_max_mlb = config.PWOBA_MAX.get('MLB', 0.345)
+    return (p.get('pwOBA') or 1.0) <= pwoba_max_mlb
+
+
+def mlb_ready_marker(player, is_pitcher=False):
+    """Return a short display marker for an HP who is MLB-ready —
+    '✦ MLB-ready' if yes, blank string otherwise. Used as a column or
+    name-prefix decoration in the streamlit tables."""
+    if is_pitcher:
+        if is_high_potential_pitcher(player) and is_mlb_ready_pitcher(player):
+            return '✦ MLB-ready'
+    else:
+        if is_high_potential(player) and is_mlb_ready_hitter(player):
+            return '✦ MLB-ready'
+    return ''
+
 REQUIRED_CSVS = {
     'players.csv',
     'players_scouted_ratings.csv',
@@ -441,7 +474,9 @@ with tab_overview:
             for lvl in rh.keys():
                 for p in rh[lvl]['all']:
                     if is_high_potential(p):
+                        ready = is_mlb_ready_hitter(p)
                         hp_rows.append({
+                            'MLB?': '✦' if ready else '',
                             'Player': p['name'],
                             'Lvl': lvl,
                             'Age': p['age'],
@@ -453,7 +488,12 @@ with tab_overview:
                             'Best': round(p.get('best_adj') or 0, 2),
                             'BestP': round(p.get('bestP_adj') or 0, 2),
                         })
-            hp_df = pd.DataFrame(hp_rows).sort_values('BestP', ascending=False)
+            # Sort MLB-ready prospects to the top, then by potential WAR.
+            hp_df = pd.DataFrame(hp_rows).sort_values(
+                ['MLB?', 'BestP'], ascending=[False, False]
+            )
+            st.caption('✦ = current wOBA already clears the MLB hitter floor '
+                       '(.280) — MLB-ready prospect.')
             st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential hitters in {team}.')
@@ -464,7 +504,9 @@ with tab_overview:
         for lvl in rp.keys():
             for p in rp[lvl]['all']:
                 if is_high_potential_pitcher(p):
+                    ready = is_mlb_ready_pitcher(p)
                     hp_pitchers.append({
+                        'MLB?': '✦' if ready else '',
                         'Player': p['name'],
                         'Lvl': lvl,
                         'Age': p['age'],
@@ -474,7 +516,11 @@ with tab_overview:
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                     })
         if hp_pitchers:
-            hpp_df = pd.DataFrame(hp_pitchers).sort_values('pwOBAP')
+            hpp_df = pd.DataFrame(hp_pitchers).sort_values(
+                ['MLB?', 'pwOBAP'], ascending=[False, True]
+            )
+            st.caption('✦ = current pwOBA already clears the MLB pitcher '
+                       'ceiling (.345) — MLB-ready arm.')
             st.dataframe(hpp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential pitchers in {team}.')
@@ -523,11 +569,16 @@ with tab_rosters:
                 st.markdown('**Hitters — starters**')
                 # Same column scheme as the Overview MLB starters: bat /
                 # fld / WAR breakdown at the player's STARTING position.
+                # MLB? = ✦ when an HP at this level is already MLB-ready
+                # (current wOBA clears MLB floor) — visible signal that
+                # this prospect could be called up.
                 rows = []
                 for pos in POSITIONS:
                     p = rh[lvl]['starters'].get(pos)
                     if p:
                         rows.append({
+                            'MLB?': '✦' if (is_high_potential(p)
+                                            and is_mlb_ready_hitter(p)) else '',
                             'Pos': pos,
                             'Player': p['name'],
                             'Age': p['age'],
@@ -544,6 +595,8 @@ with tab_rosters:
                 for role, p in rh[lvl]['bench_roles']:
                     if p:
                         brows.append({
+                            'MLB?': '✦' if (is_high_potential(p)
+                                            and is_mlb_ready_hitter(p)) else '',
                             'Role': role,
                             'Player': p['name'],
                             'Age': p['age'],
@@ -553,8 +606,9 @@ with tab_rosters:
                             'Best': round(p.get('best_adj') or 0, 2),
                         })
                     else:
-                        brows.append({'Role': role, 'Player': '(none)', 'Age': None,
-                                      'Pos': '', 'wOBA': None, 'bat': None, 'Best': None})
+                        brows.append({'MLB?': '', 'Role': role, 'Player': '(none)',
+                                      'Age': None, 'Pos': '', 'wOBA': None,
+                                      'bat': None, 'Best': None})
                 st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
 
             with col_p:
@@ -564,6 +618,8 @@ with tab_rosters:
                     role = p.get('_role', '?')
                     metric = p.get('pwOBA')
                     prows.append({
+                        'MLB?': '✦' if (is_high_potential_pitcher(p)
+                                        and is_mlb_ready_pitcher(p)) else '',
                         'Role': role,
                         'Player': p['name'],
                         'Age': p['age'],
@@ -589,6 +645,8 @@ with tab_rosters:
                         continue
                     bk = backups.get(pos)
                     order_rows.append({
+                        'MLB?': '✦' if (is_high_potential(p)
+                                        and is_mlb_ready_hitter(p)) else '',
                         'Slot': name_to_slot.get(p['name']),
                         'Pos': pos,
                         'Player': p['name'],
