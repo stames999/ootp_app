@@ -152,8 +152,9 @@ POSITIONAL_ADJUSTMENT_RUNS = {
 # Pitcher rating thresholds used to determine if a pitcher is a starter or reliever
 # ============================
 
-PITCH_MINIMUM_RATING = 45  # rating floor used by count_pitches for `pitches` / `pitchesP` columns
+PITCH_MINIMUM_RATING = 1  # rating floor for count_pitches — any rating ≥ 1 counts the pitch type as "in the arsenal" (i.e. the pitcher throws it). Was 45 ("effective pitch"); changed 2026-05-12 because SP eligibility is about arsenal size (number of pitch types thrown), not rating quality. A 4-pitch mix at modest grades (e.g. 40/40/40/45) is still SP-viable.
 MINIMUM_STARTER_STAMINA = 40  # stamina ≥ 40 → SP-viable; below → RP-only
+MIN_PITCHES_FOR_SP = 3  # minimum number of pitches (rated ≥ PITCH_MINIMUM_RATING) to qualify as SP — 2-pitch arms become RP regardless of stamina
 # Pitcher classification (sprp / sprpP) uses ONLY position == 1 (from OOTP)
 # and the stamina threshold above. Stamina alone is the rotation-viability
 # signal; one-pitch specialists with low stamina correctly land in the RP

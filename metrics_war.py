@@ -13,12 +13,13 @@ from config import (
 
 def _hitter_mask(df):
     """Boolean mask: True for players treated as hitters in scarcity-pool
-    construction. Anyone with no current pitch types above PITCH_MINIMUM_RATING
-    is a hitter; pitchers (any pitch above floor) are excluded so they don't
-    dilute the per-position fielding distribution. Falls back to all-True
-    when neither `pitches` nor `ip` is in the frame (e.g. very early
-    pre-pipeline calls during testing). Prefers `pitches` because it removes
-    the dependency on the career_pitching_stats CSV."""
+    construction. Anyone with `pitches == 0` (no pitch types thrown at
+    all) is a hitter; pitchers (any rated pitch in their arsenal) are
+    excluded so they don't dilute the per-position fielding distribution.
+    Falls back to all-True when neither `pitches` nor `ip` is in the
+    frame (e.g. very early pre-pipeline calls during testing). Prefers
+    `pitches` because it removes the dependency on the
+    career_pitching_stats CSV."""
     if "pitches" in df.columns:
         return df["pitches"].fillna(0) == 0
     if "ip" in df.columns:

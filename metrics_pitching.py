@@ -6,6 +6,7 @@ from config import (
     PITCHING_WAR_COEFFS,
     HANDEDNESS_WEIGHTS,
     MINIMUM_STARTER_STAMINA,
+    MIN_PITCHES_FOR_SP,
     PITCHER_RATING_FLOOR,
     RELIEVER_VS_STARTER_AVERAGE_IP,
     SP_WAR_MIN_STAMINA,
@@ -22,19 +23,24 @@ PITCHER_SKILL_COLS_POTENTIAL = ["ctrlP", "pbabipP", "hraP", "stuffP"]
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish role using stamina alone — pwOBA / WAR are now computed
-    # for every player so two-way prospects (OOTP `position != 1` with
-    # real scouted pitching ratings, e.g. Shohei Ohtani at LAD with
-    # position=10 but role=11) get a valid role tag too. Below
-    # MINIMUM_STARTER_STAMINA they're a reliever; at or above they're a
-    # potential starter regardless of pitch-mix breadth. Position
-    # players without scouted pitching ratings will still be filtered
-    # out at downstream pool admission (see exporter.py + the sub-floor
-    # gate below that NaN's their sp_war / rp_war).
+    # Establish role using stamina AND pitch-mix breadth. pwOBA / WAR
+    # are computed for every player so two-way prospects (OOTP
+    # `position != 1` with real scouted pitching ratings, e.g. Shohei
+    # Ohtani at LAD with position=10 but role=11) get a valid role tag
+    # too. Position players without scouted pitching ratings get NaN
+    # stamina → "" tag and are filtered out at downstream pool
+    # admission (exporter.py + sub-floor gate below).
+    #
+    # SP classification requires BOTH:
+    #   - stamina >= MINIMUM_STARTER_STAMINA (full starter workload)
+    #   - pitches >= MIN_PITCHES_FOR_SP        (3+ rated pitch types)
+    # 2-pitch power arms with starter stamina get classified RP
+    # because they can't navigate a lineup three times through.
     def identify_role(row):
         if pd.isna(row.get("stamina")):
             return ""
-        if row["stamina"] >= MINIMUM_STARTER_STAMINA:
+        if (row["stamina"] >= MINIMUM_STARTER_STAMINA and
+                (row.get("pitches") or 0) >= MIN_PITCHES_FOR_SP):
             return "sp"
         return "rp"
 
@@ -168,6 +174,16 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
         too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
         df.loc[too_short, "sp_war"] = pd.NA
 
+    # NaN sp_war for pitchers without enough pitch types. A 2-pitch
+    # power arm can't navigate a lineup 3× through — they belong in
+    # the bullpen regardless of stamina. Downstream is_sp_viable()
+    # gates on `sp_warP is not None`, so NaN'ing sp_warP (in the
+    # potential metric below) is what actually prevents them from
+    # being routed to the rotation by the builder.
+    if "pitches" in df.columns:
+        too_few = df["pitches"].fillna(0) < MIN_PITCHES_FOR_SP
+        df.loc[too_few, "sp_war"] = pd.NA
+
     # Primary-role WAR: sp_war if classified SP, rp_war if classified RP.
     # Used by org_report.build_pitching_staff for rotation/bullpen ordering.
     df["is_sp"] = (df["sprp"] == "sp").astype(int)
@@ -184,14 +200,15 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # Calculate pitching metrics based on potential ratings (no handedness)
 def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Establish potential role using stamina alone — pwOBAP / sp_warP /
-    # rp_warP are computed for everyone so two-way prospects with
-    # `position != 1` (e.g. Ohtani at LAD) still get a valid role tag.
-    # Same logic as `calc_pitching_metrics.identify_role`.
+    # Establish potential role using stamina AND projected pitch-mix
+    # breadth (pitchesP). Same gate as calc_pitching_metrics but uses
+    # the potential pitch-count to allow a 2-pitch current arm with
+    # 3+ projected pitches to qualify as SP on the potential side.
     def identify_role(row):
         if pd.isna(row.get("stamina")):
             return ""
-        if row["stamina"] >= MINIMUM_STARTER_STAMINA:
+        if (row["stamina"] >= MINIMUM_STARTER_STAMINA and
+                (row.get("pitchesP") or 0) >= MIN_PITCHES_FOR_SP):
             return "sp"
         return "rp"
 
@@ -284,6 +301,16 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if "stamina" in df.columns:
         too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
         df.loc[too_short, "sp_warP"] = pd.NA
+
+    # Same pitch-count gate as sp_war but using `pitchesP` (projected
+    # pitch types ≥ PITCH_MINIMUM_RATING). Critically, this is what
+    # build_pitcher_system.is_sp_viable() actually reads — NaN'ing
+    # sp_warP removes the pitcher from the SP pool entirely. Allows a
+    # current 2-pitch arm to qualify as SP if their projected pitch
+    # mix expands to 3+.
+    if "pitchesP" in df.columns:
+        too_few = df["pitchesP"].fillna(0) < MIN_PITCHES_FOR_SP
+        df.loc[too_few, "sp_warP"] = pd.NA
 
     df["is_spP"] = (df["sprpP"] == "sp").astype(int)
     df["is_rpP"] = (df["sprpP"] == "rp").astype(int)
