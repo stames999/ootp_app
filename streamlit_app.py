@@ -44,23 +44,44 @@ def hand_label(throws):
 
 
 # MLB-ready HP markers. R-20 hard-blocks HPs from the MLB roster, so
-# any HP whose CURRENT performance already clears the MLB threshold is
+# any HP whose CURRENT WAR already clears an MLB-regular bar is
 # "knocking on the door" — they could be promoted whenever the org has
 # room. These helpers flag those players for the UI.
+#
+# Thresholds (current-year WAR, not projection):
+#   Hitter: best_adj >= 1.5 — clears the "above replacement-level
+#                              regular" bar; captures bat + defense +
+#                              positional scarcity in one number.
+#   SP:     sp_war >= 1.5  — full-season starter at above-replacement.
+#   RP:     rp_war >= 0.5  — relievers max out lower (~1/3 IP of SP);
+#                              0.5 WAR matches "real MLB reliever".
+MLB_READY_HITTER_WAR = 1.5
+MLB_READY_SP_WAR = 1.5
+MLB_READY_RP_WAR = 0.5
+
+
 def is_mlb_ready_hitter(p):
-    """True if an HP hitter's current wOBA clears the MLB hitter floor
-    (WOBA_MIN_HITTER['MLB'] = .280). Combined with is_high_potential at
-    call sites to mark MLB-ready prospects specifically."""
-    woba_min_mlb = config.WOBA_MIN_HITTER.get('MLB', 0.280)
-    return (p.get('wOBA') or 0) >= woba_min_mlb
+    """True if an HP hitter's current `best_adj` (scarcity-adjusted
+    WAR at their best position) clears the MLB-regular bar of
+    MLB_READY_HITTER_WAR (1.5). best_adj > wOBA as the gate because
+    it captures defense and positional scarcity, not just bat — a
+    glove-first SS prospect with a .265 wOBA can still be MLB-ready
+    if their fielding pushes them past 1.5 WAR."""
+    return (p.get('best_adj') or 0) >= MLB_READY_HITTER_WAR
 
 
 def is_mlb_ready_pitcher(p):
-    """True if an HP pitcher's current pwOBA clears the MLB pitcher
-    ceiling (PWOBA_MAX['MLB'] = .345). LOWER pwOBA is better, so we
-    test <= ceiling."""
-    pwoba_max_mlb = config.PWOBA_MAX.get('MLB', 0.345)
-    return (p.get('pwOBA') or 1.0) <= pwoba_max_mlb
+    """True if an HP pitcher's current role-aware WAR clears the
+    role-specific MLB-regular bar:
+        SP role → sp_war >= 1.5
+        RP role → rp_war >= 0.5
+    Role is read from the `sprp` classification ('sp' or 'rp'); if
+    missing or ambiguous, prefers the SP test (more conservative,
+    higher bar)."""
+    role = p.get('sprp') or 'sp'
+    if role == 'rp':
+        return (p.get('rp_war') or 0) >= MLB_READY_RP_WAR
+    return (p.get('sp_war') or 0) >= MLB_READY_SP_WAR
 
 
 def mlb_ready_marker(player, is_pitcher=False):
@@ -492,8 +513,9 @@ with tab_overview:
             hp_df = pd.DataFrame(hp_rows).sort_values(
                 ['MLB?', 'BestP'], ascending=[False, False]
             )
-            st.caption('✦ = current wOBA already clears the MLB hitter floor '
-                       '(.280) — MLB-ready prospect.')
+            st.caption('✦ = current `best_adj` ≥ 1.5 WAR — MLB-ready '
+                       'prospect (bat + defense + scarcity already at '
+                       'above-replacement-regular level).')
             st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential hitters in {team}.')
@@ -519,8 +541,8 @@ with tab_overview:
             hpp_df = pd.DataFrame(hp_pitchers).sort_values(
                 ['MLB?', 'pwOBAP'], ascending=[False, True]
             )
-            st.caption('✦ = current pwOBA already clears the MLB pitcher '
-                       'ceiling (.345) — MLB-ready arm.')
+            st.caption('✦ = current role-aware WAR clears MLB-regular '
+                       'bar (SP ≥ 1.5, RP ≥ 0.5) — MLB-ready arm.')
             st.dataframe(hpp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential pitchers in {team}.')
