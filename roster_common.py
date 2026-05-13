@@ -62,7 +62,16 @@ def service_lowest_level(p):
     for given their cumulative service. > 5 yrs blocks A+ and below; > 4
     blocks A and below; > 3 blocks R / R(DLR). Returns the deepest index
     they can still play; combine with age_lowest_level via min() for the
-    final `_bot`."""
+    final `_bot`.
+
+    When `config.SERVICE_CAP_ENABLED` is False (default since R-28), this
+    constraint is fully relaxed — returns the deepest level index so the
+    final `_bot` is governed by age + DSL eligibility only. The pitcher
+    builder's _rescue_overflow_sps() pass is the safety net: any SP that
+    would otherwise overflow gets a chance to win a bullpen slot at a
+    lower level by outranking the worst displaceable RP."""
+    if not config.SERVICE_CAP_ENABLED:
+        return len(LEVELS) - 1
     s = total_service_years(p)
     if s > SERVICE_LIMITS['A+']:
         return LEVELS.index('AA')      # 2 — A+ exhausted, AA-or-above only

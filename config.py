@@ -458,6 +458,66 @@ PWOBA_MAX = {
 }
 
 # ====================================================
+# Pitcher platoon-split classification (R-28)
+# ====================================================
+# Purely magnitude-driven, level-agnostic. The tag describes the SHAPE
+# of the platoon split — quality (and therefore role / level implications)
+# is read separately from overall pwOBA. A AAA arm with a wide vsL lean
+# is a AAA-level matchup specialist; an MLB arm with the same split is
+# an MLB-level one. Same tag, different role context.
+#
+# Five buckets:
+#   vsR_specialist / vsL_specialist — |split| ≥ .030. Wide enough that
+#     deployment should respect the lean. At MLB level + MLB-tier strong
+#     side = the LOOGY / ROOGY catch the cascade might otherwise miss.
+#     At minor-league levels, the same magnitude means a real matchup
+#     edge for development planning.
+#   slight_vsR_split / slight_vsL_split — .015 < |split| < .030. A
+#     noticeable lean but not specialist-grade. Useful flag for closer-
+#     candidate evaluation (slight lean is less ideal than truly
+#     platoon-neutral) and to spot developing specialists whose split
+#     hasn't fully widened yet.
+#   neutral — |split| ≤ .015. Handles either side equally. Combine with
+#     overall pwOBA + assigned level to judge role fit (closer-eligible
+#     at MLB if pwOBA ≤ .345; closer-eligible at AAA if pwOBA ≤ .370; etc).
+#
+# Direction note: pwOBA is opponent wOBA — LOWER = better. So
+#   pwOBA_split = pwOBAR - pwOBAL
+# is NEGATIVE for vsR-leaning (lower pwOBA vs R = better vs R) and
+# POSITIVE for vsL-leaning. Magnitudes match conventional wOBA-split
+# scouting reports: 30 pts is "wide", under 15 pts is "neutral", the
+# 15-30 band is a "slight lean".
+PITCHER_SPLIT_SPECIALIST_THRESHOLD = 0.030
+PITCHER_SPLIT_NEUTRAL_THRESHOLD = 0.015
+
+# ====================================================
+# Service-time cap toggle
+# ====================================================
+# OOTP's service-time rule (SERVICE_LIMITS in roster_common.py) is a
+# REAL roster-eligibility constraint: a 6+ yr vet cannot be assigned
+# below AA, a 5+ yr vet cannot be below A+, etc. The cap stays in
+# place by default (True).
+#
+# What changed in R-28: the cascade no longer ARTIFICIALLY PROTECTS
+# service-pinned vets via the (cascadable, priority) sort key. A vet
+# at their service floor is no longer placed at the front of the
+# cascade list; they compete on priority with everyone else. If they
+# rank worst, they get popped — and since they can't cascade further
+# down, they go to overflow (release pool). The rescue pass
+# (_rescue_overflow_sps in build_pitcher_system.py) then offers each
+# overflowing SP one shot to win a bullpen slot at a feasible level
+# (between their _top and _bot) by outranking the worst displaceable
+# RP there. This converts what was previously a hard "stuck at AA"
+# slot-block into a meritocratic competition with a swingman safety
+# net.
+#
+# Flip to False to remove the floor entirely (would let vets cascade
+# all the way down to R(DLR), modelling a more permissive league
+# without strict OOTP eligibility). Almost certainly not what you
+# want — default True matches OOTP behaviour.
+SERVICE_CAP_ENABLED = True
+
+# ====================================================
 # Bullpen handedness balance
 # ====================================================
 # Applied AFTER pitcher cascade pull-up to MLB / AAA / AA only. Lower

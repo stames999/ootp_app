@@ -642,36 +642,33 @@ def main(org=None):
         + list(unassigned_c)
         + rescued_catchers   # primary-C bat-bypass — see CATCHER_RESCUE_* above
     )
-    # Sort each level's pool with that level's priority blend (MLB drops
-    # projection, others use flat 70/30) AND a `_bot` cascadability
-    # flag. Splits the pool into two groups: stuck (cannot cascade
-    # below this level, `_bot == lvl_idx`) and cascadable (`_bot > lvl_idx`).
-    # Pop takes the worst CASCADABLE player first; stuck players are
-    # protected at the front of the queue and only get popped (to
-    # overflow) when every cascadable has already been moved.
+    # Sort each level's pool by priority alone (R-28). The cascade pops
+    # the worst-priority hitter at each level regardless of cascadability.
+    # If the popped hitter CAN cascade (next level index <= `_bot`),
+    # they go down. If they can't (at their service-time or age floor),
+    # they go to overflow — and Step 3.6 PASS 3 (release-pool push-down)
+    # acts as the bench-rescue safety net: any roster slot still under
+    # target after pull-up gets filled from overflow respecting `_bot`,
+    # so a vet who pops to overflow but has nowhere else to go can be
+    # pulled back as a bench player at their floor level.
     #
-    # See R-11 design notes: this is a tighter version of R-09. R-09
-    # ordered cascade victims by mobility-distance, which over-
-    # punished the MOST-mobile players (typically high-quality young
-    # prospects with `_bot=R(DLR)`) — they got popped first because
-    # they had "somewhere to go" even when their priority was better
-    # than less-mobile players who could ALSO cascade. R-11 just asks
-    # "can you cascade or not", then ranks by priority within each
-    # group so the WORST cascadable player goes first.
+    # History note: the previous R-11 sort key `(cascadable, -priority)`
+    # protected service-pinned vets at the front of the list, popping
+    # cascadable arms first even when the vet had worse priority. That
+    # pinned the worst bats at AA/A+ while pushing better-priority HP
+    # prospects down. R-28 replaces that with pure priority + reliance
+    # on PASS 3 for the bench rescue — strictly more honest competition
+    # that surfaces real misfits to overflow rather than slot-blocking.
     nc_by = {lvl: [] for lvl in LEVELS}
     for p in noncatchers:
         nc_by[LEVELS[p['_top']]].append(p)
 
     def _cascade_sort_key_factory(lvl_idx, lvl_name):
-        # ASC sort: stuck (_bot == lvl_idx, can't cascade) first,
-        # cascadable (_bot > lvl_idx) last. Within each group,
-        # ordered by priority so position -1 = cascadable + WORST.
-        # R-27: no MLB-tenure protection — purely meritocratic cascade.
-        # The HP MLB block (R-20) is the only "soft" placement rule;
-        # everyone else is fair game based on current priority.
+        # R-28: meritocratic cascade — sort by priority only.
+        # Cascadability is enforced at pop time via the `_bot` check.
+        del lvl_idx  # was used by the R-11 cascadability flag
         def _key(p):
-            cascadable = p['_bot'] > lvl_idx
-            return (cascadable, -priority(p, lvl_name))
+            return -priority(p, lvl_name)
         return _key
 
     for lvl in LEVELS:

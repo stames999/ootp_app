@@ -132,51 +132,52 @@ def is_high_potential_pitcher(p):
 
 def _cascade(pool, slots_for, war_key=None):
     """Initial placement at each pitcher's `_top`, then cascade-down: while a
-    level holds more than `slots_for[lvl]`, pop the worst-blend pitcher and
-    push to the next level (or to leftovers if age cap blocks).
+    level holds more than `slots_for[lvl]`, pop the worst-priority pitcher
+    and push to the next level (or to leftovers if `_bot` blocks).
     `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
     × DSL count) can vary.
 
     `war_key` is kept for backwards-compat signature but unused since
     R-27 (was used by the now-removed MLB tenure quality gate).
 
-    Sort key combines a `_bot` cascadability flag with `pitcher_priority`
-    so the cascade prefers demoting the WORST pitcher who CAN actually
-    cascade. Mirrors the hitter R-11 refinement: R-09 over-punished
-    most-mobile players (typically high-quality young prospects with
-    wide `_bot`) by popping them BEFORE less-mobile but better-priority
-    ones who could also cascade. R-11 just asks 'can you cascade?'
-    then ranks by priority within each group.
+    Sort key: `pitcher_priority` alone (R-28). The cascade pops the
+    worst-priority pitcher at each level regardless of cascadability.
+    If the popped pitcher CAN cascade (next level index <= `_bot`),
+    they go down. If they can't (they're at their service-time or
+    age floor), they go to leftovers — and the downstream
+    _rescue_overflow_sps() pass gives any overflowing SP one shot to
+    win a bullpen slot at a feasible level.
 
-    Sort ASC by `(_bot > level_idx, pitcher_priority)`:
-      position 0 = stuck (can't cascade) + best pitcher (kept first)
-      position -1 = cascadable + worst pitcher (popped first)
-    Stuck players only get popped (to leftovers) once every cascadable
-    has already been moved."""
+    History note: the previous R-11 sort key `(cascadable, priority)`
+    protected service-pinned vets at the front of the list, popping
+    cascadable arms first even when the vet had worse priority. That
+    pinned the worst arms at AA/A+ while pushing better-priority HP
+    prospects down. R-28 replaces that with pure priority + the
+    rescue safety net — a strictly more honest competition that
+    surfaces real misfits to overflow rather than slot-blocking."""
     by_level = {lvl: [] for lvl in LEVELS}
     leftovers = []
     for p in pool:
         by_level[LEVELS[p['_top']]].append(p)
 
-    def _sort_key_factory(lvl_idx, lvl_name):
-        # R-27: purely meritocratic cascade — no MLB tenure protection.
-        # HP MLB block (R-20) is the only soft placement rule;
-        # everyone else competes on current priority alone.
+    def _sort_key_factory(lvl_name):
+        # R-28: meritocratic cascade — sort by priority only.
+        # Cascadability is enforced at pop time via the `_bot` check,
+        # not by sort-order protection.
         def _key(p):
-            cascadable = p['_bot'] > lvl_idx
-            return (cascadable, pitcher_priority(p, lvl_name))
+            return pitcher_priority(p, lvl_name)
         return _key
 
     for lvl in LEVELS:
-        by_level[lvl].sort(key=_sort_key_factory(LEVELS.index(lvl), lvl))
+        by_level[lvl].sort(key=_sort_key_factory(lvl))
     for i, lvl in enumerate(LEVELS):
         while len(by_level[lvl]) > slots_for[lvl]:
-            cascaded = by_level[lvl].pop()  # last = wide-bot + worst-pitcher
+            cascaded = by_level[lvl].pop()  # last = worst priority
             next_idx = i + 1
             if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
                 nxt = LEVELS[next_idx]
                 by_level[nxt].append(cascaded)
-                by_level[nxt].sort(key=_sort_key_factory(next_idx, nxt))
+                by_level[nxt].sort(key=_sort_key_factory(nxt))
             else:
                 leftovers.append(cascaded)
     return by_level, leftovers
@@ -565,6 +566,123 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             break
 
 
+def _rescue_overflow_sps(sp_by, rp_by, rp_slots, overflow):
+    """Safety net for the service-cap removal (R-28).
+
+    With SERVICE_CAP_ENABLED=False, vets formerly pinned to AA/A+ are
+    fully cascadable, which can push some of them all the way to
+    overflow (release). This pass gives any overflowing SP-viable arm
+    one chance: walk from their `_top` down, find the highest level
+    where their `pitcher_priority` blend beats the worst displaceable
+    RP, and swap them in as a bullpen arm. The displaced RP cascades
+    to the next level — over-cap ripple gets cleaned up by the loop
+    below (same shape as Step 4c).
+
+    Mirror of `_swingman_pullup` in reverse: pulls SP arms DOWN into
+    a bullpen slot instead of UP. Always runs (unlike swingman pull-up
+    which is opt-in) because it's the structural complement of
+    service-cap removal — without it, the cap removal would create
+    spurious releases.
+
+    Constraints:
+      - LHP balance protected: at LHP_LEVELS (MLB/AAA/AA) with
+        LHP count at LEFTY_MIN, won't displace an LHP unless the
+        incoming SP is also LHP. At LEFTY_MAX, won't add a LHP.
+      - Don't rescue into MLB (the existing R-03 swingman pull-up
+        owns that path — keeps the two passes from fighting).
+      - Don't rescue into R(DLR) (it's the foreign-developmental
+        tier; rescuing a US/Canadian SP there is meaningless because
+        DSL eligibility blocks it via `_bot`, and rescuing a foreign
+        SP there is below the rescue's purpose).
+
+    Mutates sp_by (no-op — SPs come from overflow), rp_by, overflow.
+    """
+    rescue_targets = sorted(
+        [p for p in overflow if is_sp_viable(p)],
+        key=lambda p: pitcher_priority(p, 'AA'),
+    )
+
+    for sp in rescue_targets:
+        if sp not in overflow:
+            continue  # paranoia — shouldn't happen, but guards against double-rescue
+        sp_top = sp.get('_top', 0)
+        sp_bot = sp.get('_bot', len(LEVELS) - 1)
+        sp_is_lhp = is_lhp(sp)
+        placed = False
+
+        # Walk levels from the highest the SP qualifies for, downward, until
+        # they find one where they can outrank the worst displaceable RP.
+        for i, lvl in enumerate(LEVELS):
+            if i < sp_top or i > sp_bot:
+                continue
+            if lvl == 'MLB' or lvl == 'R(DLR)':
+                continue
+
+            existing = rp_by.get(lvl, [])
+            if not existing:
+                continue  # empty bullpen — push-down fills these, not rescue
+
+            n_lhp = sum(1 for p in existing if is_lhp(p))
+            sp_pri = pitcher_priority(sp, lvl)
+
+            # Pick the worst displaceable RP, with LHP-balance guard.
+            # At LHP_LEVELS with LHP count at LEFTY_MIN, the only LHP is
+            # protected unless the incoming arm is also LHP.
+            protect_only_lhp = (lvl in LHP_LEVELS
+                                and n_lhp <= LEFTY_MIN
+                                and not sp_is_lhp)
+            candidates = [p for p in existing
+                          if not (protect_only_lhp and is_lhp(p))]
+            if not candidates:
+                continue
+
+            worst_rp = max(candidates, key=lambda p: pitcher_priority(p, lvl))
+            if sp_pri >= pitcher_priority(worst_rp, lvl):
+                continue  # SP doesn't outrank — try next level
+
+            # At LEFTY_MAX, refuse a swap that adds an LHP without dropping one.
+            if (lvl in LHP_LEVELS and sp_is_lhp and not is_lhp(worst_rp)
+                    and n_lhp >= LEFTY_MAX):
+                continue
+
+            # Execute swap.
+            rp_by[lvl].remove(worst_rp)
+            rp_by[lvl].append(sp)
+            overflow.remove(sp)
+
+            # Cascade displaced RP to next level (or overflow if blocked).
+            next_idx = i + 1
+            displaced_bot = worst_rp.get('_bot', len(LEVELS) - 1)
+            if (next_idx < len(LEVELS)
+                    and next_idx <= displaced_bot
+                    and LEVELS[next_idx] in rp_by):
+                rp_by[LEVELS[next_idx]].append(worst_rp)
+            else:
+                overflow.append(worst_rp)
+            placed = True
+            break
+
+        # If we couldn't place this SP anywhere, leave them in overflow —
+        # they truly weren't competitive even as a swingman.
+
+    # Over-cap ripple: a displaced RP that cascades to a level already at
+    # capacity needs to keep cascading. Same shape as the Step-4c rebalance
+    # loop in main().
+    for i, lvl in enumerate(LEVELS):
+        if lvl not in rp_by:
+            continue
+        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
+            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
+            rp_by[lvl].remove(worst)
+            next_idx = i + 1
+            if (next_idx < len(LEVELS)
+                    and next_idx <= worst.get('_bot', len(LEVELS) - 1)
+                    and LEVELS[next_idx] in rp_by):
+                rp_by[LEVELS[next_idx]].append(worst)
+            else:
+                overflow.append(worst)
+
+
 def _block_hps_at_mlb(by_level):
     """Hard HP block: move any HP pitcher currently at MLB to AAA.
     Run AFTER cascade and AFTER pull-up — prospects develop in the
@@ -759,6 +877,15 @@ def main(org=None):
     # released arms reach R(DLR) before chunking into sub-teams.
     _push_down_from_overflow(sp_by, sp_slots, overflow, role='SP')
     _push_down_from_overflow(rp_by, rp_slots, overflow, role='RP')
+
+    # Step 5a.1b: SP rescue pass (R-28). Service-cap removal can push
+    # vets all the way to overflow when every level below their old pin
+    # is at capacity. Give each overflowing SP a last-chance bullpen
+    # audition: walk down from their _top, win an RP slot if they
+    # outrank the worst displaceable RP at that level. Mirror of R-03
+    # swingman pull-up in the demote direction. See helper docstring
+    # for full constraints (LHP balance, MLB / R(DLR) exclusions).
+    _rescue_overflow_sps(sp_by, rp_by, rp_slots, overflow)
 
     # Step 5a.2: re-enforce LHP balance. The push-down can fill an
     # LHP-reserved bullpen slot with a non-LHP (push-down sees only

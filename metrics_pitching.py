@@ -10,6 +10,8 @@ from config import (
     PITCHER_RATING_FLOOR,
     RELIEVER_VS_STARTER_AVERAGE_IP,
     SP_WAR_MIN_STAMINA,
+    PITCHER_SPLIT_SPECIALIST_THRESHOLD,
+    PITCHER_SPLIT_NEUTRAL_THRESHOLD,
 )
 
 
@@ -130,6 +132,34 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
         df["pwOBAR"] * HANDEDNESS_WEIGHTS["R"] +
         df["pwOBAL"] * HANDEDNESS_WEIGHTS["L"]
     )
+
+    # Platoon-split classification (R-28). Purely magnitude-driven, level-
+    # agnostic — applies to MLB and minor-league arms alike. Quality / role
+    # implications come from reading overall pwOBA + assigned level alongside
+    # the tag. See config.py PITCHER_SPLIT_* constants.
+    #   pwOBA_split = pwOBAR - pwOBAL    (negative => better vs RHB)
+    #   vsR_specialist     — |split| ≥ .030, split < 0   (wide RHB-favouring)
+    #   vsL_specialist     — |split| ≥ .030, split > 0   (wide LHB-favouring)
+    #   slight_vsR_split   — .015 < |split| < .030, split < 0
+    #   slight_vsL_split   — .015 < |split| < .030, split > 0
+    #   neutral            — |split| ≤ .015              (handles either side)
+    # No surfacing here for non-pitchers; the exporter filter
+    # (pwOBAP.notna() + position==1 / is_two_way) keeps them out of
+    # downstream pitcher pages.
+    df["pwOBA_split"] = df["pwOBAR"] - df["pwOBAL"]
+
+    def _classify_split(row):
+        split = row.get("pwOBA_split")
+        if pd.isna(split):
+            return pd.NA
+        abs_split = abs(split)
+        if abs_split >= PITCHER_SPLIT_SPECIALIST_THRESHOLD:
+            return "vsR_specialist" if split < 0 else "vsL_specialist"
+        if abs_split > PITCHER_SPLIT_NEUTRAL_THRESHOLD:
+            return "slight_vsR_split" if split < 0 else "slight_vsL_split"
+        return "neutral"
+
+    df["pitcher_split_tag"] = df.apply(_classify_split, axis=1)
 
     # Base WAR at full-season (SP) IP. Both sp_war and rp_war are populated
     # for every eligible pitcher so users can compare role-fit: an SP with

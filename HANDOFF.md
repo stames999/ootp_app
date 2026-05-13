@@ -13,13 +13,17 @@ handling. Renders to xlsx and a Streamlit web UI.
 
 - Branch `main` on the `pistachio` repo (this directory). Remote
   `ootp_app` (github.com/stames999/ootp_app) is tracked; all R-XX
-  commits up through R-27 are pushed.
+  commits up through R-28 are pushed.
 - Local raw sim data at `OOTP simulation/OOTP sims.xlsx` (committed).
 - Canonical OOTP save: **`Rockies Rebuild.lg`** (`config.filepath`).
-- Active testing save: **`Corbin HoF.lg`** (used throughout R-15→R-27 —
+- Active testing save: **`Corbin HoF.lg`** (used throughout R-15→R-28 —
   has Ohtani at LAD, plus deep prospect pools at NYY/LAD/AZ/MIL for
   HP and tenure-protection edge cases).
-- Recent HEAD progression (2026-05-12 session, R-15 through R-27):
+- Recent HEAD progression (2026-05-12/13 sessions, R-15 through R-28):
+  - R-28 — meritocratic cascade (sort by priority only, drop the
+    (cascadable, priority) protection that pinned worse-priority vets
+    ahead of better-priority HP prospects) + SP rescue pass + 5-tier
+    pitcher platoon-split classification. See R-28 section below.
   - `820fb91` — R-27: remove MLB tenure protection entirely (HP block
     is the only soft placement rule; everyone else fair game)
   - `0519e7b` — R-26: fix HP MLB-block over-cascade bug (max → AAA target)
@@ -169,7 +173,78 @@ still a data-drift property, not a builder regression.
 
 `pytest tests/` runs in ~60s. **Run it after any builder change.**
 
-## Major behavioural changes this session (R-15 → R-27, 2026-05-12)
+## Major behavioural changes this session (R-15 → R-28, 2026-05-12/13)
+
+### R-28: meritocratic cascade + SP rescue + pitcher platoon-split tags
+Three related changes that landed in the 2026-05-13 session.
+
+**(A) Pitcher platoon-split classification.** New columns
+`pwOBA_split = pwOBAR - pwOBAL` (negative = better vs RHB) and
+`pitcher_split_tag` ∈ {`vsR_specialist`, `vsL_specialist`,
+`slight_vsR_split`, `slight_vsL_split`, `neutral`}. Tags are purely
+descriptive of split magnitude — level-agnostic, no quality gate.
+Thresholds:
+
+- specialist: `|split| ≥ 0.030` (config: `PITCHER_SPLIT_SPECIALIST_THRESHOLD`)
+- slight:    `0.015 < |split| < 0.030` (config: `PITCHER_SPLIT_NEUTRAL_THRESHOLD`)
+- neutral:   `|split| ≤ 0.015`
+
+User reads overall pwOBA alongside the tag to judge role context
+(e.g. `neutral` + MLB-tier pwOBA = closer-eligible; `vsL_specialist`
++ AAA-tier overall = AAA matchup arm). Surfaces in pitchers.html /
+pitchers.json export and across the Streamlit UI (MLB rotation,
+bullpen with caption legend, HP pitchers, Rosters-by-level pitcher
+tables, Scout pitchers with new `Split tag` filter).
+
+UI display labels via `PITCHER_SPLIT_TAG_DISPLAY` in
+`streamlit_app.py`:
+`vsR`, `vsL`, `vsR-lean`, `vsL-lean`, `neutral`. The split column
+renders signed (`{:+.3f}`).
+
+**(B) Meritocratic cascade — sort by priority only.** Both
+builders' `_cascade()` previously used a `(_bot > lvl_idx, priority)`
+two-key sort (R-11) that protected service-pinned vets at the FRONT
+of each level's list. This was popping cascadable arms first even
+when the vet was worse priority — pinning the worst arms at AA/A+
+while pushing better-priority HP prospects down to A+/A. R-28
+drops the cascadability flag and sorts on priority alone. The pop
+mechanism still respects `_bot` at pop time: if the popped player
+can cascade (next index ≤ `_bot`), they go down; if not, they go to
+overflow.
+
+Result: 12 of 20 previously-blocked HP arms surface to AA — Felipe
+De La Cruz (NYM), Zach Thornton (NYM), C.J. Culpepper (MIN),
+Spencer Giesting (AZ), Winston Santos (TEX), George Klassen (LAA),
+Caden Dana (LAA), Braden Nett (ATH), Hagen Smith (CWS), and others.
+Previously-pinned vets get their honest meritocratic outcome:
+8 release, 4 stay (earned the slot), 5 rescued to bullpen.
+
+**(C) SP rescue pass.** New helper
+`_rescue_overflow_sps()` in `build_pitcher_system.py`. Mirror of the
+R-03 swingman pull-up in the reverse direction: any SP-viable arm
+in overflow gets one shot to win a bullpen slot at a feasible level
+(walk from `_top` downward, skip MLB / R(DLR)) by outranking the
+worst displaceable RP via `pitcher_priority`. Honours LHP balance
+(won't drop the only LHP at LHP_LEVELS if incoming arm is RHP).
+Inserted as Step 5a.1b in `main()` between push-down and LHP
+re-enforce. Always runs (not gated by `PITCHER_SWINGMAN_PULLUP_ENABLED`,
+which is the symmetric pull-up direction).
+
+**(D) Service-time cap toggle.** `SERVICE_CAP_ENABLED` constant in
+`config.py` (default `True` — OOTP service rules stay in place).
+Flipping to `False` would let vets cascade past their service floor
+entirely; almost certainly not what you want, but useful for
+A/B comparison. The cap is real (a 6+ yr vet can't be at A+); the
+R-28 fix is removing the cascade's *artificial protection* of those
+vets, not the floor itself.
+
+**(E) Hitter bench rescue.** No new code — `build_system.py`
+Step 3.6 PASS 3 (R-07 release-pool push-down) already fills any
+under-target roster slot from overflow respecting `_bot`. That's
+the hitter analogue of the SP rescue: a vet popped from AA who
+can't cascade to A+ (service-pinned) is pulled back via PASS 3 if
+AA still has a slot open. Hitter cascade sort change is symmetric
+with the pitcher side.
 
 ### R-15: FG-2025 calibration of POSITIONAL_ADJUSTMENT_RUNS
 Built per-position FG 2025 reference data + a gap-analysis pipeline,
@@ -491,6 +566,9 @@ All roster-construction thresholds live in `config.py` under the
 | `MIN_PITCHES_FOR_SP` | Minimum arsenal size (rated pitches) to classify SP | **3** (R-17) |
 | `PITCH_MINIMUM_RATING` | Rating floor for counting a pitch in the arsenal | **1** (R-17 — any rated pitch counts; was 45 = "effective pitch") |
 | `HP_MIN_LEVEL_INDEX` | HP minimum level (HPs hard-blocked above this) | **1** = AAA (R-20) |
+| `PITCHER_SPLIT_SPECIALIST_THRESHOLD` | `|pwOBA_split| ≥` this → `vsR/vsL_specialist` tag | **0.030** (R-28) |
+| `PITCHER_SPLIT_NEUTRAL_THRESHOLD` | `|pwOBA_split| ≤` this → `neutral` tag (between = `slight_*`) | **0.015** (R-28) |
+| `SERVICE_CAP_ENABLED` | When False, removes SERVICE_LIMITS from `_bot`. Default True (real OOTP rule). | **True** (R-28) |
 
 Two-way detection thresholds are hard-coded in
 `main._flag_two_way_players` against `WOBA_MIN_HITTER['MLB']` and
@@ -558,20 +636,20 @@ SP→DH restriction (`_restrict_two_way_sp_to_dh`):
 
 | File | Role |
 |---|---|
-| `config.py` | All constants + roster tunables. R-27 removed the MLB tenure constants. |
-| `roster_common.py` | Shared eligibility utils. `_load_injured_names` returns `{'pids', 'names'}`. `is_mlb_tenure_protected` REMOVED in R-27. |
+| `config.py` | All constants + roster tunables. R-27 removed MLB tenure constants. R-28 added platoon-split thresholds + `SERVICE_CAP_ENABLED` toggle. |
+| `roster_common.py` | Shared eligibility utils. `_load_injured_names` returns `{'pids', 'names'}`. `service_lowest_level` respects `SERVICE_CAP_ENABLED` (R-28). |
 | `reader.py` | `detect_club_lookup` (R-15) + `detect_head_scout_id`. `load_players` populates dynamic team-abbrev map. |
-| `metrics_pitching.py` | Multiplicative components + component-aware WAR. R-17: 3-pitch arsenal gate on SP role classification (NaNs sp_war/sp_warP for sub-3 arms). |
+| `metrics_pitching.py` | Multiplicative components + component-aware WAR. R-17: 3-pitch arsenal gate. R-28: `pwOBA_split` + `pitcher_split_tag` classification. |
 | `metrics_hitting.py` | Linear wOBA → runs → WAR. R-18: added AVG/OBP/SLG/ISO (overall + R/L + projected) and exposed wRC+ / wRC+P. |
 | `metrics_fielding.py` | 1D tables + asymmetric-tanh saturation. Untouched in R-15+ — pos_adj calibration uses positional shift, not table reshape. |
 | `metrics_war.py` | Per-position bat+def+pos_adj. R-15 calibrated `POSITIONAL_ADJUSTMENT_RUNS` against FG 2025. |
 | `main.py` | `compute_df` + two-way helpers `_flag_two_way_players`, `_flag_two_way_best_side`, `_restrict_two_way_sp_to_dh`. |
-| `build_system.py` | Hitter rosters. R-20 pre-block + R-22 1B/DH cascade + R-26 index-bug fix + R-27 meritocratic cascade. |
-| `build_pitcher_system.py` | Pitcher rosters. R-17 arsenal gate + R-20 `_block_hps_at_mlb` + R-26 fix + R-27 meritocratic cascade. |
+| `build_system.py` | Hitter rosters. R-20 pre-block + R-22 1B/DH cascade + R-26 index-bug fix + R-27 meritocratic. R-28: cascade sort priority-only (bench rescue via existing PASS 3 push-down). |
+| `build_pitcher_system.py` | Pitcher rosters. R-17 arsenal gate + R-20 `_block_hps_at_mlb` + R-26 fix + R-27 meritocratic. R-28: cascade sort priority-only + new `_rescue_overflow_sps()` (overflow SPs win bullpen slots vs worst RP). |
 | `app.py` | Refresh + rosters subcommands. R-15: auto-detect club_lookup from teams.csv. |
-| `exporter.py` | R-18 added slash-line + wRC+P columns. |
+| `exporter.py` | R-18 slash-line + wRC+P. R-28: `pwOBA_split` / `pitcher_split_tag` columns + signed split formatter. |
 | `build_excel.py` | xlsx renderer. |
-| `streamlit_app.py` | 5-tab UI. R-21/R-23/R-25 added MLB-ready ✦ marker in HP tables, Rosters-by-level tables, and per-level batting orders. |
+| `streamlit_app.py` | 5-tab UI. R-21/R-23/R-25 added MLB-ready ✦ marker. R-28 added pitcher Split + Tag columns across rotation/bullpen/HP/rosters + Scout-pitchers split-tag filter. |
 | `lineup_optimizer.py` | (R-19) The Book lineup optimizer CLI. |
 | `tests/test_roster_invariants.py` | 330-case regression harness. |
 | `tests/conftest.py` | Pytest fixtures + per-org parametrize. |
@@ -635,7 +713,8 @@ list. Highlights of what's NOT done, current to end of R-27:
    (LF −13.5, RF −16.5) but could be fixed at the table level by
    compressing the OFrange top end.
 6. **Pitcher platoon staff variants** — `pwOBAR` / `pwOBAL` exist
-   but not used for vsR/vsL rotation construction.
+   and R-28 added a 5-tier `pitcher_split_tag` for visibility, but
+   the cascade still doesn't construct vsR/vsL rotation variants.
 7. **Two-way display badge** — `tw_best_side` is exported in the
    JSONs but no UI shows it.
 8. **3B fielding ceiling** — sim 3B top-tier (Hayes +21 runs,
@@ -674,13 +753,18 @@ Expected: pytest 330/330 (in Corbin HoF). Top SS = Witt ~7.0, top RF
 MLB anywhere. In Corbin HoF: Shohei Ohtani at LAD MLB as both DH
 starter AND SP rotation member.
 
-## State of play (end R-27)
+## State of play (end R-28)
 
 | Aspect | Current state |
 |---|---|
-| Test suite | 330/330 |
+| Test suite | 328/330 (TB + AZ AAA LHP-balance — known data-drift flake) |
 | HP at MLB | 0 across all 30 orgs (R-20 hard block) |
-| Veteran tenure protection | Removed (R-27) — meritocratic cascade |
+| Veteran tenure protection | Removed in R-27 (no quality-gate vet cushion) |
+| Cascade sort | **Priority-only** (R-28) — service-pinned vets no longer protected at the front; worst-priority pops regardless of cascadability |
+| SP rescue safety net | `_rescue_overflow_sps()` — overflow SPs compete for a bullpen slot at feasible level (R-28) |
+| Hitter bench rescue | Existing Step 3.6 PASS 3 push-down handles it (R-07 reused for R-28) |
+| Pitcher platoon-split tags | 5 tiers: `vsR/vsL_specialist`, `slight_vsR/vsL_split`, `neutral` (R-28) |
+| Service-time cap | Honoured (`SERVICE_CAP_ENABLED=True`) — real OOTP rule, kept in `_bot` calc |
 | `POSITIONAL_ADJUSTMENT_RUNS` | FG-2025-calibrated (R-15/R-16) |
 | Slash-line stats exported | AVG/OBP/SLG/ISO + R/L splits + projected (R-18) |
 | SP pitch-arsenal gate | 3+ rated pitches required (R-17) |

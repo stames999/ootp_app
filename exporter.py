@@ -79,6 +79,10 @@ def export_advanced_html(
             fmt[col] = safe_format("{:.1f}".format)
         elif col in ("war_hitting", "war_hittingP", "DH_hitting", "DH_hittingP"):
             fmt[col] = safe_format("{:.1f}".format)
+        elif col == "pwOBA_split":
+            # Signed render — direction (which side is stronger) matters as
+            # much as magnitude. "{:.3f}" alone would lose the leading +.
+            fmt[col] = safe_format("{:+.3f}".format)
         elif "wOBA" in col:
             fmt[col] = safe_format("{:.3f}".format)
         elif col in ("pWOBA", "pWOBAR", "pWOBAL"):
@@ -283,6 +287,12 @@ EXPORT_PAGES = [
             "pwOBA",
             "pwOBAR",
             "pwOBAL",
+            # Platoon-split surface (R-28). pwOBA_split = pwOBAR - pwOBAL
+            # (negative = better vs RHB). pitcher_split_tag ∈
+            # {vsR_specialist, vsL_specialist, neutral, NaN}; see
+            # config.PITCHER_SPLIT_* / metrics_pitching for definitions.
+            "pwOBA_split",
+            "pitcher_split_tag",
             "sp_warP",
             "rp_warP",
             "pwOBAP",

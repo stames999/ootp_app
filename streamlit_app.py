@@ -89,6 +89,32 @@ def is_mlb_ready_pitcher(p):
     return pwoba <= MLB_READY_PITCHER_PWOBA
 
 
+# Short tag labels for the pitcher_split_tag column (R-28). The raw
+# values (`vsR_specialist`, etc.) are verbose for table headers, so map
+# to a compact display string. Empty string for unflagged arms.
+PITCHER_SPLIT_TAG_DISPLAY = {
+    'vsR_specialist': 'vsR',
+    'vsL_specialist': 'vsL',
+    'slight_vsR_split': 'vsR-lean',
+    'slight_vsL_split': 'vsL-lean',
+    'neutral': 'neutral',
+}
+
+
+def split_display(player):
+    """Render the (split, tag) pair for a pitcher row. Returns a
+    (split_str, tag_str) tuple — split as signed 3-decimal (e.g.
+    '+0.045', '-0.038'), or None if pwOBA_split is missing. tag is
+    one of {'vsR','vsL','closer',''} per PITCHER_SPLIT_TAG_DISPLAY."""
+    split = player.get('pwOBA_split')
+    if split is None or (isinstance(split, float) and split != split):
+        split_str = None
+    else:
+        split_str = f'{float(split):+.3f}'
+    tag_str = PITCHER_SPLIT_TAG_DISPLAY.get(player.get('pitcher_split_tag'), '')
+    return split_str, tag_str
+
+
 def mlb_ready_marker(player, is_pitcher=False):
     """Return a short display marker for an HP who is MLB-ready —
     '✦ MLB-ready' if yes, blank string otherwise. Used as a column or
@@ -454,31 +480,44 @@ with tab_overview:
         for i in range(sp_target):
             if i < len(rotation):
                 p = rotation[i]
+                split_str, tag_str = split_display(p)
                 rrows.append({
                     'Slot': f'SP{i+1}',
                     'Player': p['name'],
                     'Age': p['age'],
                     'Hand': hand_label(p.get('throws')),
                     'pwOBA': round(p.get('pwOBA') or 0, 3),
+                    'Split': split_str,
+                    'Tag': tag_str,
                     'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                 })
             else:
-                rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None, 'Hand': '', 'pwOBA': None, 'pwOBAP': None})
+                rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None,
+                              'Hand': '', 'pwOBA': None, 'Split': None, 'Tag': '',
+                              'pwOBAP': None})
         st.dataframe(pd.DataFrame(rrows), hide_index=True, width='stretch')
 
         bullpen = rp['MLB']['bullpen']
         sign_lhp = rp['MLB'].get('sign_lhp', 0)
         st.markdown(f'**Bullpen** ({len(bullpen)} of {rp_target} filled)')
+        st.caption('Split-tag is descriptive: pure pwOBA-split magnitude, '
+                   'level-agnostic. `neutral` = |split| ≤ .015 (handles either '
+                   'side); `vsR` / `vsL` = |split| ≥ .030 (matchup specialist); '
+                   '`vsR-lean` / `vsL-lean` = .015-.030 (moderate lean). '
+                   'Combine with pwOBA + level to judge role fit.')
         prows = []
         for i in range(rp_target):
             if i < len(bullpen):
                 p = bullpen[i]
+                split_str, tag_str = split_display(p)
                 prows.append({
                     'Slot': f'RP{i+1}',
                     'Player': p['name'],
                     'Age': p['age'],
                     'Hand': hand_label(p.get('throws')),
                     'pwOBA': round(p.get('pwOBA') or 0, 3),
+                    'Split': split_str,
+                    'Tag': tag_str,
                     'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                 })
             else:
@@ -487,7 +526,9 @@ with tab_overview:
                 empty_idx = i - len(bullpen)
                 empty_total = rp_target - len(bullpen)
                 placeholder = '(Sign LHP)' if empty_idx >= empty_total - sign_lhp else '(Sign FA)'
-                prows.append({'Slot': f'RP{i+1}', 'Player': placeholder, 'Age': None, 'Hand': '', 'pwOBA': None, 'pwOBAP': None})
+                prows.append({'Slot': f'RP{i+1}', 'Player': placeholder, 'Age': None,
+                              'Hand': '', 'pwOBA': None, 'Split': None, 'Tag': '',
+                              'pwOBAP': None})
         st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
 
     # Row 2: development pipeline — HP hitters | HP pitchers
@@ -532,6 +573,7 @@ with tab_overview:
             for p in rp[lvl]['all']:
                 if is_high_potential_pitcher(p):
                     ready = is_mlb_ready_pitcher(p)
+                    split_str, tag_str = split_display(p)
                     hp_pitchers.append({
                         'MLB?': '✦' if ready else '',
                         'Player': p['name'],
@@ -540,6 +582,8 @@ with tab_overview:
                         'Hand': hand_label(p.get('throws')),
                         'Role': p.get('_role', '?'),
                         'pwOBA': round(p.get('pwOBA') or 0, 3),
+                        'Split': split_str,
+                        'Tag': tag_str,
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3),
                     })
         if hp_pitchers:
@@ -645,6 +689,7 @@ with tab_rosters:
                 for p in rp[lvl]['all']:
                     role = p.get('_role', '?')
                     metric = p.get('pwOBA')
+                    split_str, tag_str = split_display(p)
                     prows.append({
                         'MLB?': '✦' if (is_high_potential_pitcher(p)
                                         and is_mlb_ready_pitcher(p)) else '',
@@ -653,6 +698,8 @@ with tab_rosters:
                         'Age': p['age'],
                         'Hand': hand_label(p.get('throws')),
                         'pwOBA': round(metric, 3) if metric is not None else None,
+                        'Split': split_str,
+                        'Tag': tag_str,
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3) if p.get('pwOBAP') is not None else None,
                     })
                 prows.sort(key=lambda r: (r['Role'] != 'SP', r.get('pwOBA') or 9))
@@ -825,7 +872,7 @@ with tab_scout_p:
         return '—'
     df_p_all['Role'] = df_p_all.apply(_role_tag, axis=1)
 
-    f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+    f1, f2, f3, f4, f5 = st.columns([2, 2, 2, 2, 1])
     with f1:
         name_q_p = st.text_input('Name contains', '', key='scout_p_name')
     with f2:
@@ -835,6 +882,19 @@ with tab_scout_p:
         role_opts_p = ['SP', 'RP', 'SP+RP', '—']
         role_filter_p = st.multiselect('Role', role_opts_p, key='scout_p_role')
     with f4:
+        tag_opts_p = [
+            'vsR_specialist', 'vsL_specialist',
+            'slight_vsR_split', 'slight_vsL_split',
+            'neutral',
+        ]
+        tag_filter_p = st.multiselect(
+            'Split tag', tag_opts_p, key='scout_p_split_tag',
+            help='Descriptive split magnitude, level-agnostic. '
+                 'vsR/vsL_specialist = |split| ≥ .030 (wide). '
+                 'slight_vsR/vsL_split = .015-.030 (moderate lean). '
+                 'neutral = |split| ≤ .015 (handles either side). '
+                 'Combine with overall pwOBA for role / level context.')
+    with f5:
         only_minor_p = st.checkbox('Minors only', value=False, key='scout_p_minor')
 
     age_min_p = int(df_p_all['age'].min())
@@ -848,6 +908,8 @@ with tab_scout_p:
         mask_p &= df_p_all['org'].isin(org_filter_p)
     if role_filter_p:
         mask_p &= df_p_all['Role'].isin(role_filter_p)
+    if tag_filter_p and 'pitcher_split_tag' in df_p_all.columns:
+        mask_p &= df_p_all['pitcher_split_tag'].isin(tag_filter_p)
     if only_minor_p:
         mask_p &= df_p_all['minor'] == 1
     mask_p &= df_p_all['age'].between(age_range_p[0], age_range_p[1])
@@ -857,8 +919,8 @@ with tab_scout_p:
     p_display_cols = [
         c for c in [
             'name', 'org', 'minor', 'age', 'Hand', 'ip', 'Role',
-            'pwOBA', 'pwOBAR', 'pwOBAL', 'pwOBAP',
-            'sp_war', 'sp_warP', 'rp_war', 'rp_warP',
+            'pwOBA', 'pwOBAR', 'pwOBAL', 'pwOBA_split', 'pitcher_split_tag',
+            'pwOBAP', 'sp_war', 'sp_warP', 'rp_war', 'rp_warP',
         ] if c in filtered_p.columns
     ]
     st.caption(f'{len(filtered_p)} of {len(df_p_all)} pitchers match.')
