@@ -817,21 +817,19 @@ def main(org=None):
                                               and p['age'] <= MAX_AGE[lvl]
                                               and p['_top'] <= i
                                               and is_catcher(p) == hp_is_c]
-                            # Swap with the non-HP whose displacement gives
-                            # the best `(potential_gain − current_loss)`
-                            # value. Picking by priority (a blend) misses
-                            # cases where a same-priority candidate has
-                            # very different wOBA/wOBAP profile and would
-                            # actually pass the swap test. Iterate and
-                            # pick the one with the largest margin.
+                            # Swap with the worst-priority non-HP at the
+                            # next level, but only if the HP's BLENDED
+                            # priority there is strictly better. Keeps
+                            # HP enforcement consistent with the cascade's
+                            # ranking (R-31): one rule for the whole
+                            # system. The earlier `gain − loss` test
+                            # re-weighted projection at 1:1 vs current,
+                            # letting HPs override blended-priority cascade
+                            # decisions and displace better-priority bats.
                             swap_target = None
                             if non_hp_in_next:
-                                def _swap_margin(c):
-                                    loss = (c.get('wOBA') or 0) - (hp.get('wOBA') or 0)
-                                    gain = (hp.get('wOBAP') or 0) - (c.get('wOBAP') or 0)
-                                    return gain - loss
-                                candidate = max(non_hp_in_next, key=_swap_margin)
-                                if _swap_margin(candidate) >= 0:
+                                candidate = min(non_hp_in_next, key=lambda p: priority(p, next_lvl))
+                                if priority(hp, next_lvl) > priority(candidate, next_lvl):
                                     swap_target = candidate
                             by_level[lvl].remove(hp)
                             by_level[next_lvl].append(hp)

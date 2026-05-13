@@ -751,23 +751,19 @@ def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
                 by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
                 hp['_force_start'] = lvl
                 break
-            # Level is full — try to swap with the non-HP whose
-            # displacement gives the best `(potential_gain − current_loss)`
-            # value. Picking by pitcher_priority (a blend) is misleading
-            # here because the swap test uses pure pwOBA / pwOBAP — two
-            # non-HPs with the same priority can yield very different
-            # swap values depending on whether their stuff is current-
-            # heavy or projection-heavy. Maximising the gain-vs-loss
-            # margin directly finds any feasible swap.
+            # Level is full — swap with the worst non-HP at this level,
+            # but only if the HP's BLENDED priority at this level is
+            # strictly better than that non-HP's blended priority. This
+            # keeps HP enforcement consistent with the cascade's ranking
+            # (R-31): one ranking rule for the whole system. The earlier
+            # `gain − loss` swap test effectively re-weighted projection
+            # at 1:1 vs current, letting HPs override blended-priority
+            # cascade decisions and demote better-priority non-HPs.
             non_hps = [p for p in by_level[lvl] if not is_high_potential_pitcher(p)]
             if not non_hps:
                 continue
-            def _swap_margin(non_hp):
-                loss = (hp.get('pwOBA') or 1.0) - (non_hp.get('pwOBA') or 1.0)
-                gain = (non_hp.get('pwOBAP') or 1.0) - (hp.get('pwOBAP') or 1.0)
-                return gain - loss
-            target = max(non_hps, key=_swap_margin)
-            if _swap_margin(target) >= 0:
+            target = max(non_hps, key=lambda p: pitcher_priority(p, lvl))
+            if pitcher_priority(hp, lvl) < pitcher_priority(target, lvl):
                 by_level[lvl].remove(target)
                 by_level[lvl].append(hp)
                 overflow.remove(hp)
