@@ -82,12 +82,25 @@ def pitcher_priority(p, level=None):
         small enough that an arm with clearly-better current stuff keeps
         his slot. The earlier 70/30 mix was demoting solid org-depth arms
         (e.g. Armstrong .362/.362 → A) below HPs whose current pwOBA
-        wasn't yet competitive (.368-.377 with .320-.338 projection)."""
+        wasn't yet competitive (.368-.377 with .320-.338 projection).
+
+    R-32 blocker penalty: a non-HP arm at his ceiling (pwOBA ≈ pwOBAP)
+    whose ceiling is sub-MLB (pwOBAP > .345) blocks HPs at development
+    levels while only contributing org-depth value. His priority gets
+    penalised by `pwOBAP − .345` (his distance from MLB-tier), pushing
+    him behind HPs with real projection upside. Keeps the single-rule
+    invariant from R-31 — the penalty is part of the priority blend,
+    not a separate ranking rule."""
     pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
     if level == 'MLB':
         return pwoba
     pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
-    return 0.85 * pwoba + 0.15 * pwobap
+    blend = 0.85 * pwoba + 0.15 * pwobap
+    if (not is_high_potential_pitcher(p)
+            and (pwoba - pwobap) < 0.005
+            and pwobap > 0.345):
+        blend += pwobap - 0.345
+    return blend
 
 
 def pwoba_top_level(p):

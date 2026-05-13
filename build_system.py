@@ -104,12 +104,25 @@ def priority(p, level=None):
     was 70/30): projection still nudges close-priority HPs up, but the
     weight is small enough that an arm with clearly-better current bat
     keeps his slot — the 70/30 mix was demoting solid org-depth players
-    behind HPs whose current pwOBA wasn't competitive yet."""
+    behind HPs whose current pwOBA wasn't competitive yet.
+
+    R-32 blocker penalty: a non-HP bat at his ceiling (wOBA ≈ wOBAP)
+    whose ceiling is sub-MLB (wOBAP < .280) blocks HPs at development
+    levels while contributing only org-depth value. His priority gets
+    penalised by `.280 − wOBAP` (his distance below MLB-tier), pushing
+    him behind HPs with real projection upside. Mirror of the pitcher
+    `pitcher_priority` penalty — same shape, opposite sign because
+    wOBA convention is higher = better."""
     woba = p.get('wOBA') or 0
     if level == 'MLB':
         return woba
     wobap = p.get('wOBAP') or 0
-    return 0.85 * woba + 0.15 * wobap
+    blend = 0.85 * woba + 0.15 * wobap
+    if (not is_high_potential(p)
+            and (wobap - woba) < 0.005
+            and wobap < 0.280):
+        blend -= 0.280 - wobap
+    return blend
 
 def woba_max_level(p):
     # Ceiling is current wOBA only. We tried blending wOBAP for young players
