@@ -55,7 +55,15 @@ SERVICE_LIMITS = {
 
 
 def total_service_years(p):
-    """Sum of yrs_<LEVEL> across all levels — cumulative pro experience."""
+    """Cumulative pro service years. Uses `years_pro` (career span, max
+    appearance year minus min appearance year plus 1) when available —
+    this matches OOTP's service-time counting where a player on a roster
+    in year N counts that year regardless of whether they actually
+    played. Falls back to summing yrs_<LEVEL> for backwards compatibility
+    when `years_pro` isn't populated (no career-stats CSV uploaded)."""
+    yp = p.get('years_pro')
+    if yp is not None and yp > 0:
+        return yp
     return sum(p.get(f'yrs_{l}', 0) or 0 for l in LEVELS)
 
 

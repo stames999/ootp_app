@@ -244,6 +244,10 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
+            # `years_pro` = career span (max-min year + 1) — matches OOTP's
+            # service-time semantics where rostered-but-didn't-play years
+            # still count. Used by roster_common.total_service_years.
+            "years_pro",
             # Nationality — used by build_system to block US (206) / Canadian (36)
             # players from R(DLR) per OOTP DSL eligibility rules.
             "nation_id",
@@ -304,6 +308,10 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
+            # `years_pro` = career span (max-min year + 1) — matches OOTP's
+            # service-time semantics where rostered-but-didn't-play years
+            # still count. Used by roster_common.total_service_years.
+            "years_pro",
             # Nationality — see hitters.html columns above for rationale.
             "nation_id",
             "flag",

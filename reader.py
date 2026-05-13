@@ -127,6 +127,7 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
     if not pieces:
         for c in cols:
             df[c] = 0
+        df['years_pro'] = 0
         return df
 
     combined = pd.concat(pieces, ignore_index=True)
@@ -149,9 +150,27 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
         if c not in counts.columns:
             counts[c] = 0
     counts = counts[cols].reset_index()
+
+    # `years_pro` = career span (max_year - min_year + 1) per player. This
+    # is what OOTP uses for service-time eligibility — a player on a roster
+    # in year N counts that year regardless of whether they actually
+    # appeared in stats. Concrete trigger case: Alejandro Hidalgo (stats in
+    # 2021/2022/2023/2025) has 4 distinct seasons in the CSV but 5 years
+    # of pro service (the missing 2024 was a rostered-but-no-pitching year,
+    # and OOTP counts it). Summing yrs_<LEVEL> under-counts these gap years
+    # and lets service-pinned vets stay eligible for levels OOTP blocks.
+    span = (
+        combined.groupby('player_id')['year']
+        .agg(lambda y: int(y.max() - y.min() + 1))
+        .rename('years_pro')
+        .reset_index()
+    )
+    counts = counts.merge(span, on='player_id', how='left')
+
     df = pd.merge(df, counts, on='player_id', how='left')
     for c in cols:
         df[c] = df[c].fillna(0).astype(int)
+    df['years_pro'] = df['years_pro'].fillna(0).astype(int)
     return df
 
 
