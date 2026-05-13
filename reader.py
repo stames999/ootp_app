@@ -47,6 +47,11 @@ def load_players() -> pd.DataFrame:
     if detected is not None:
         config.club_lookup = detected
     df["org"] = df["org"].map(config.club_lookup)
+    # Free agents have no org_id in club_lookup, so .map() returns NaN.
+    # Bucket them under a sentinel "FREE" team so they sort/filter as
+    # a group in the scout views — useful for surfacing the best
+    # unsigned arms / bats at a glance.
+    df["org"] = df["org"].fillna("FREE")
     return df
 
 
