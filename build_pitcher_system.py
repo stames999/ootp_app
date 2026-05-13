@@ -77,14 +77,17 @@ def pitcher_priority(p, level=None):
     pwOBA convention). Mirrors the hitter `priority` blend:
       - MLB: pure current pwOBA. Projection upside doesn't help an active-
         roster arm hold a slot — only current stuff matters.
-      - Every other level: 70/30 current/projected. A young arm with real
-        upside edges a same-pwOBA pitcher with no projection room, but the
-        weight is small enough that a meaningful pwOBA gap dominates."""
+      - Every other level: 85/15 current/projected (R-30, was 70/30).
+        Projection still nudges close-priority HPs up, but the weight is
+        small enough that an arm with clearly-better current stuff keeps
+        his slot. The earlier 70/30 mix was demoting solid org-depth arms
+        (e.g. Armstrong .362/.362 → A) below HPs whose current pwOBA
+        wasn't yet competitive (.368-.377 with .320-.338 projection)."""
     pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
     if level == 'MLB':
         return pwoba
     pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
-    return 0.7 * pwoba + 0.3 * pwobap
+    return 0.85 * pwoba + 0.15 * pwobap
 
 
 def pwoba_top_level(p):

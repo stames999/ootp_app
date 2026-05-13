@@ -100,15 +100,16 @@ def priority(p, level=None):
     *current* performance — projection upside doesn't help an aging vet
     on the active roster lose his slot to a prospect, and a young arm
     whose ceiling is real should still earn the spot on his current bat.
-    At every other level we keep a flat 70/30 current/projected blend so
-    a prospect with same-current-bat-but-real-upside edges a player with
-    no projection — modest enough that young prospects don't get over-
-    promoted on potential alone."""
+    At every other level we use an 85/15 current/projected blend (R-30,
+    was 70/30): projection still nudges close-priority HPs up, but the
+    weight is small enough that an arm with clearly-better current bat
+    keeps his slot — the 70/30 mix was demoting solid org-depth players
+    behind HPs whose current pwOBA wasn't competitive yet."""
     woba = p.get('wOBA') or 0
     if level == 'MLB':
         return woba
     wobap = p.get('wOBAP') or 0
-    return 0.7 * woba + 0.3 * wobap
+    return 0.85 * woba + 0.15 * wobap
 
 def woba_max_level(p):
     # Ceiling is current wOBA only. We tried blending wOBAP for young players
