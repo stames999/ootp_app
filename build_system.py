@@ -816,16 +816,21 @@ def main(org=None):
                                               and p['age'] <= MAX_AGE[lvl]
                                               and p['_top'] <= i
                                               and is_catcher(p) == hp_is_c]
-                            # Swap with target only if HP's projection
-                            # advantage at least matches the target's
-                            # current-bat advantage; otherwise demote
-                            # without swap (HP just moves down a level).
+                            # Swap with the non-HP whose displacement gives
+                            # the best `(potential_gain − current_loss)`
+                            # value. Picking by priority (a blend) misses
+                            # cases where a same-priority candidate has
+                            # very different wOBA/wOBAP profile and would
+                            # actually pass the swap test. Iterate and
+                            # pick the one with the largest margin.
                             swap_target = None
                             if non_hp_in_next:
-                                candidate = max(non_hp_in_next, key=lambda p: priority(p))
-                                current_loss = (candidate.get('wOBA') or 0) - (hp.get('wOBA') or 0)
-                                potential_gain = (hp.get('wOBAP') or 0) - (candidate.get('wOBAP') or 0)
-                                if potential_gain >= current_loss:
+                                def _swap_margin(c):
+                                    loss = (c.get('wOBA') or 0) - (hp.get('wOBA') or 0)
+                                    gain = (hp.get('wOBAP') or 0) - (c.get('wOBAP') or 0)
+                                    return gain - loss
+                                candidate = max(non_hp_in_next, key=_swap_margin)
+                                if _swap_margin(candidate) >= 0:
                                     swap_target = candidate
                             by_level[lvl].remove(hp)
                             by_level[next_lvl].append(hp)

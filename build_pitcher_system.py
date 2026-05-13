@@ -748,18 +748,27 @@ def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
                 by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
                 hp['_force_start'] = lvl
                 break
-            # Level is full — try to swap with worst non-HP at this level.
+            # Level is full — try to swap with the non-HP whose
+            # displacement gives the best `(potential_gain − current_loss)`
+            # value. Picking by pitcher_priority (a blend) is misleading
+            # here because the swap test uses pure pwOBA / pwOBAP — two
+            # non-HPs with the same priority can yield very different
+            # swap values depending on whether their stuff is current-
+            # heavy or projection-heavy. Maximising the gain-vs-loss
+            # margin directly finds any feasible swap.
             non_hps = [p for p in by_level[lvl] if not is_high_potential_pitcher(p)]
             if not non_hps:
                 continue
-            worst = max(non_hps, key=lambda p: pitcher_priority(p, lvl))
-            current_loss = (hp.get('pwOBA') or 1.0) - (worst.get('pwOBA') or 1.0)
-            potential_gain = (worst.get('pwOBAP') or 1.0) - (hp.get('pwOBAP') or 1.0)
-            if potential_gain >= current_loss:
-                by_level[lvl].remove(worst)
+            def _swap_margin(non_hp):
+                loss = (hp.get('pwOBA') or 1.0) - (non_hp.get('pwOBA') or 1.0)
+                gain = (non_hp.get('pwOBAP') or 1.0) - (hp.get('pwOBAP') or 1.0)
+                return gain - loss
+            target = max(non_hps, key=_swap_margin)
+            if _swap_margin(target) >= 0:
+                by_level[lvl].remove(target)
                 by_level[lvl].append(hp)
                 overflow.remove(hp)
-                overflow.append(worst)
+                overflow.append(target)
                 by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
                 hp['_force_start'] = lvl
                 break
@@ -811,7 +820,18 @@ def main(org=None):
     sp_assigned = {p['name'] for lvl in LEVELS for p in sp_by[lvl]}
 
     # Step 4: RP cascade + pull-up
-    rp_pool = [p for p in valid if is_rp_viable(p) and p['name'] not in sp_assigned]
+    # Exclude SP-viable HPs that didn't make the SP cascade — they're
+    # developmental starters by intent, not RP candidates. Without this
+    # guard the RP cascade would scoop them up before HP enforcement
+    # (Step 5a) gets a chance to place them as SP via swap. They'll
+    # land in overflow if SP HP enforcement can't find them a slot,
+    # and the R-28 rescue pass becomes their fallback to RP.
+    rp_pool = [
+        p for p in valid
+        if is_rp_viable(p)
+        and p['name'] not in sp_assigned
+        and not (is_sp_viable(p) and is_high_potential_pitcher(p))
+    ]
     rp_by, rp_leftover = _cascade(rp_pool, rp_slots)
     _block_hps_at_mlb(rp_by)
     _pull_up(rp_by, rp_slots)

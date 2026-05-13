@@ -19,7 +19,12 @@ handling. Renders to xlsx and a Streamlit web UI.
 - Active testing save: **`Corbin HoF.lg`** (used throughout R-15→R-28 —
   has Ohtani at LAD, plus deep prospect pools at NYY/LAD/AZ/MIL for
   HP and tenure-protection edge cases).
-- Recent HEAD progression (2026-05-12/13 sessions, R-15 through R-28):
+- Recent HEAD progression (2026-05-12/13 sessions, R-15 through R-29):
+  - R-29 — HP routing fixes: relax A/A+ age caps to 99 (only R/R(DLR)
+    have real caps), HP-enforcement swap-target picker now maximises
+    `(gain − loss)` not worst-priority, and the RP pool excludes
+    SP-viable HPs so HP enforcement gets first shot at placing them
+    as SP. Test suite now **330/330** (flake resolved).
   - R-28 — meritocratic cascade (sort by priority only, drop the
     (cascadable, priority) protection that pinned worse-priority vets
     ahead of better-priority HP prospects) + SP rescue pass + 5-tier
@@ -173,7 +178,48 @@ still a data-drift property, not a builder regression.
 
 `pytest tests/` runs in ~60s. **Run it after any builder change.**
 
-## Major behavioural changes this session (R-15 → R-28, 2026-05-12/13)
+## Major behavioural changes this session (R-15 → R-29, 2026-05-12/13)
+
+### R-29: HP routing fixes — age cap, swap-target picker, RP-pool gate
+
+Three related fixes targeting a specific bug class: SP-viable HPs were
+ending up as RPs because the cascade + HP-enforcement chain had
+several leaks. Concrete trigger case: **Paulshawn Pasqualotto** (MIN,
+HP, age 24, pwOBA .382 / pwOBAP .330) was landing at AA(RP) when
+he should be developing as a starter.
+
+**(A) Relaxed A-ball age caps.** `MAX_AGE` had `A`=23, `A+`=24 — these
+were guesswork that double-counted with `SERVICE_LIMITS`. The only
+real OOTP age caps are R (22) and R(DLR) (21); A and A+ have no
+formal cap. Setting both to 99 in `roster_common.py` widens `_bot`
+for 25+ year-olds and gives HP enforcement more cascade room.
+
+**(B) HP-enforcement swap-target picker.** Previously picked the
+worst non-HP by `pitcher_priority` (a current/projection blend) and
+gave up if that one swap failed the test. The swap test itself uses
+pure `pwOBA` (current loss) and `pwOBAP` (potential gain), so a
+non-HP with the same priority as another can have a very different
+margin depending on whether their stuff is current-heavy or
+projection-heavy. Replaced with `max(non_hps, key=swap_margin)`
+where `swap_margin = (potential_gain − current_loss)`. Surfaces
+valid swaps the old picker missed. Same fix applied symmetrically
+on the hitter side (`build_system.py`).
+
+**(C) RP pool excludes SP-viable HPs.** The biggest bug. After the
+SP cascade cascades a HP out, their name isn't in `sp_assigned`, so
+they fell into `rp_pool` and the RP cascade scooped them up
+**before HP enforcement could try to place them as SP via swap**.
+HP enforcement only processes HPs in overflow; HPs already placed
+as RP were invisible to it. The fix in `build_pitcher_system.main()`
+adds `not (is_sp_viable(p) and is_high_potential_pitcher(p))` to
+the `rp_pool` filter — SP-viable HPs that miss the SP cascade go
+to overflow, HP enforcement gets first shot, then R-28's
+`_rescue_overflow_sps()` is the fallback to RP.
+
+Result for Pasqualotto: now lands at **A+ SP** with `_force_start=A+`
+via HP-enforcement swap. Test suite: **330/330** (the TB/AZ LHP-
+balance flake resolved too — cascade order shift apparently moved
+those orgs' pool composition out of the flake band).
 
 ### R-28: meritocratic cascade + SP rescue + pitcher platoon-split tags
 Three related changes that landed in the 2026-05-13 session.
@@ -753,11 +799,14 @@ Expected: pytest 330/330 (in Corbin HoF). Top SS = Witt ~7.0, top RF
 MLB anywhere. In Corbin HoF: Shohei Ohtani at LAD MLB as both DH
 starter AND SP rotation member.
 
-## State of play (end R-28)
+## State of play (end R-29)
 
 | Aspect | Current state |
 |---|---|
-| Test suite | 328/330 (TB + AZ AAA LHP-balance — known data-drift flake) |
+| Test suite | **330/330** (TB/AZ LHP-balance flake resolved by R-29 cascade reshape) |
+| A-ball age caps | Removed (R-29) — only R(22) and R(DLR)(21) cap; A and A+ uncapped |
+| HP routing | SP-viable HPs reserved for SP/HP-enforcement path (R-29) — RP pool excludes them |
+| HP swap-target picker | Maximizes `(gain − loss)` not worst-priority (R-29) — finds valid swaps the blend-picker missed |
 | HP at MLB | 0 across all 30 orgs (R-20 hard block) |
 | Veteran tenure protection | Removed in R-27 (no quality-gate vet cushion) |
 | Cascade sort | **Priority-only** (R-28) — service-pinned vets no longer protected at the front; worst-priority pops regardless of cascadability |

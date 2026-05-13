@@ -24,11 +24,13 @@ import config
 
 LEVELS = ['MLB', 'AAA', 'AA', 'A+', 'A', 'R', 'R(DLR)']
 
-# Maximum age allowed at each level. AA / AAA / MLB have no age cap (any
-# age can play); the lower-minor caps reflect OOTP's roster eligibility
-# (R(DLR) is teen-only, R caps at 22, etc.).
+# Maximum age allowed at each level. Only the rookie tiers have real OOTP
+# age caps: R(DLR) is teen-only (21), R is short-season (22). A and A+
+# have NO age cap — earlier values (23/24) were guesswork that double-
+# counted with SERVICE_LIMITS (service-time is the proper constraint on
+# older players at those levels). AA / AAA / MLB are unrestricted.
 MAX_AGE = {
-    'R(DLR)': 21, 'R': 22, 'A': 23, 'A+': 24,
+    'R(DLR)': 21, 'R': 22, 'A': 99, 'A+': 99,
     'AA': 99, 'AAA': 99, 'MLB': 99,
 }
 
