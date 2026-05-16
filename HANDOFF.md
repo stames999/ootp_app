@@ -13,22 +13,32 @@ handling. Renders to xlsx and a Streamlit web UI.
 
 - Branch `main` on the `pistachio` repo (this directory). Remote
   `ootp_app` (github.com/stames999/ootp_app) is tracked; all R-XX
-  commits up through R-28 are pushed.
+  commits up through R-34 are pushed.
 - Local raw sim data at `OOTP simulation/OOTP sims.xlsx` (committed).
 - Canonical OOTP save: **`Rockies Rebuild.lg`** (`config.filepath`).
-- Active testing save: **`Corbin HoF.lg`** (used throughout R-15→R-28 —
-  has Ohtani at LAD, plus deep prospect pools at NYY/LAD/AZ/MIL for
-  HP and tenure-protection edge cases).
-- Recent HEAD progression (2026-05-12/13 sessions, R-15 through R-29):
-  - R-29 — HP routing fixes: relax A/A+ age caps to 99 (only R/R(DLR)
-    have real caps), HP-enforcement swap-target picker now maximises
-    `(gain − loss)` not worst-priority, and the RP pool excludes
-    SP-viable HPs so HP enforcement gets first shot at placing them
-    as SP. Test suite now **330/330** (flake resolved).
-  - R-28 — meritocratic cascade (sort by priority only, drop the
-    (cascadable, priority) protection that pinned worse-priority vets
-    ahead of better-priority HP prospects) + SP rescue pass + 5-tier
-    pitcher platoon-split classification. See R-28 section below.
+- Active testing save: **`Corbin HoF.lg`** (used through R-27; R-28+
+  validated against `Rockies Rebuild.lg`. Both saves cover Ohtani
+  cases for two-way handling).
+- Recent HEAD progression (2026-05-13/16 sessions, R-15 through R-34):
+  - `31e9011` — R-34g: dev-gate requires age ≤ 27 too (Fedde/Martin → MLB pen)
+  - `8a372dd` — R-34f: swingman dev-gate (exclude pwOBAP ≤ .345 prospects)
+  - `61dc6b2` — R-34e: swingman priority margin 0.020 (stop rotation depletion)
+  - `083db24` — R-34d: generalise swingman to AAA/AA/A+/A bullpens
+  - `b96d12a` — R-34c: push-down strict + re-run SP pull-up after swingman
+  - `8710597` — R-34b: enable swingman + switch to pitcher_priority gate
+  - `b575dd8` — R-34a: starter Hungarian gates on FIELD_VIABILITY_GAP (1.75)
+  - `dd59fd3`...`ade8c4c` — R-33 cleanup branch (11 commits): gitignore
+    outputs/, lift magic numbers to config, `_bot` assert, shared
+    cascade/overflow_rebalance helpers in roster_common, light main()
+    decomposition, JSON-cache doc, type hints, two-way DH-penalty fix,
+    calibration metadata sidecar, methodology review docs
+  - `a0c4a4d` — service-time uses career span, not summed yrs_<LEVEL>
+  - `2867182` — R-32: blocker penalty in priority blend
+  - `1a9d39d` — R-31: HP enforcement aligned with cascade priority (single rule)
+  - `a18cb6f` — R-30: priority blend 70/30 → 85/15
+  - `2a8aaa1` — FREE sentinel for free agents (was NaN org)
+  - `be97d44` — R-29: HP routing — age caps, swap picker, RP pool gate
+  - `0169397` — R-28: meritocratic cascade + SP rescue + platoon-split tags
   - `820fb91` — R-27: remove MLB tenure protection entirely (HP block
     is the only soft placement rule; everyone else fair game)
   - `0519e7b` — R-26: fix HP MLB-block over-cascade bug (max → AAA target)
@@ -178,7 +188,213 @@ still a data-drift property, not a builder regression.
 
 `pytest tests/` runs in ~60s. **Run it after any builder change.**
 
-## Major behavioural changes this session (R-15 → R-29, 2026-05-12/13)
+## Major behavioural changes this session (R-15 → R-34, 2026-05-12/16)
+
+### R-34: starter eligibility gate, generalised swingman, dev-gate
+
+A run of fixes targeting placement bugs surfaced by spot-checks of
+specific players. Each iteration addresses a follow-on issue from the
+prior one — track the chain top-down.
+
+**(A) `b575dd8` — starter Hungarian gates on `FIELD_VIABILITY_GAP`.**
+Trigger: Dustin Harris (CWS, primary 1B with `best_adj=0.61`,
+`SS_fld=-2.51`, `SS_adj=-1.31`) was being placed at SS in the vs-LHP
+Hungarian. His wOBAL bat advantage compounded with SS's positional
+adjustment (+7.5 runs) overcame the -1.31 defensive penalty. New
+`is_starter_eligible(p, pos)` helper requires `<pos>_adj` to be within
+`FIELD_VIABILITY_GAP` of `best_adj`. Tightened the constant
+**2.0 → 1.75**. Both `fill_starters` (vs-RHP weighted) and
+`fill_starters_split` (platoon variants) gate on it. Backups stay
+rating-floor-eligible. DH always allowed.
+
+**(B) `8710597` — enable swingman pull-up + switch gate to
+`pitcher_priority`.** Trigger: older SPs (Fedde/Martin/Sasaki/Tolle/
+Urquidy/Joe Rock/Mahle/Beeter) cascaded from MLB rotation were stuck
+at AAA SP when their current stuff was clearly MLB-bullpen-grade.
+`PITCHER_SWINGMAN_PULLUP_ENABLED` now defaults to `True`. Gate
+switched from `rp_warP` projection delta to `pitcher_priority` at
+MLB (= pure current pwOBA per the MLB branch of the priority
+function) — matches the R-31 single-rule invariant.
+
+**(C) `b96d12a` — push-down strict + re-run SP pull-up after
+swingman.** Trigger: Banks (CWS, pwOBA .410, `_top=R`) at CWS AAA SP
+— pushed 4 levels above his stuff. Pre-R-34 push-down had no `_top`
+constraint. R-34c added `_top <= i` gate to `_push_down_from_overflow`
+AND re-runs SP pull-up after swingman so vacated AAA SP slots get
+refilled via the proper strict + +1-stretch passes (Tyler Gilbert
+fills in via +1 stretch, Banks released, Maldonado rescued to AA RP).
+
+**(D) `083db24` — generalise swingman to all bullpen levels.**
+Trigger: Jonathan Cannon (CWS, age 25, pwOBA .352, `_top=AAA`)
+cascaded through AAA → AA → A+ SP because each rotation was full
+with marginally-better arms, but his priority trivially beat the
+worst RP at AAA / AA / A+. Pre-R-34d swingman was MLB-only. Now
+iterates `target_levels = ['MLB', 'AAA', 'AA', 'A+', 'A']`. LHP
+balance only enforced at `LHP_LEVELS`. Demoted RP cascades
+target_idx+1.
+
+**(E) `61dc6b2` — swingman priority margin (initially 0.020).**
+Trigger: the generalised swingman was pulling too aggressively —
+184 missing SP slots across orgs. Added
+`PITCHER_SWINGMAN_PRIORITY_MARGIN`: candidate's priority must beat
+worst RP by this much before swap fires. Filters marginal swaps
+(cand_pri - worst_pri = -.002) that hurt source rotations without
+materially improving target bullpens.
+
+**(F) `8a372dd` — swingman dev-gate (pwOBAP ≤ .345 exclusion).**
+Trigger: David Sandlin (CWS, age 25, pwOBA .367 / pwOBAP .327,
+sp_warP 2.0) was being pulled from AA SP to AAA RP. He has MLB-tier
+projection (.327 < HP gate .335) — a real prospect — but aged out
+of HP status at 25. R-34f added a pwOBAP exclusion to the swingman
+candidate filter.
+
+**(G) `31e9011` — dev-gate also requires age ≤ 27.** Trigger: the
+projection-only gate from R-34f was binary — it also stranded Fedde
+(age 33, pwOBAP .344) and Martin (age 29, pwOBAP .340) as AAA SPs.
+Their potential is theoretical at those ages; their current stuff
+is genuinely MLB-bullpen-grade. Dev-gate now requires BOTH
+`pwOBAP ≤ BLOCKER_MLB_PWOBA (.345)` AND
+`age ≤ DEVELOPMENTAL_MAX_AGE (27)`. Also dropped margin **0.020 → 0.010**
+since the age component now properly preserves real prospects.
+
+End-state for the chain (CWS examples):
+- Sandlin (25, .327) → AA SP ✓ (real prospect, dev-gate protects)
+- Cannon (25, .358) → AAA RP ✓ (not MLB-tier projection, eligible)
+- Fedde (33, .344) → MLB RP ✓ (no runway, eligible)
+- Martin (29, .340) → MLB RP ✓ (no runway, eligible)
+- Harris → 1B/DH starter only ✓ (SS gap > 1.75 viability)
+- Banks (.410, _top=R) → release ✓ (stuff doesn't play at AAA)
+
+Missing SP slots across all 30 orgs after the full chain: **39**
+(24 A, 14 R, 1 A+) — accepted as genuine thin-depth orgs at those
+levels. Test suite **379/379**.
+
+### R-33: code-hygiene + methodology cleanup (worktree branch, merged)
+
+Per a comprehensive code/methodology review (see
+`outputs/PIPELINE_REVIEW.md` and the `R-33-*` discussions in
+session history), 11 commits landed via a `r-33-cleanup` worktree
+branch and were merged to main.
+
+**Tier 1 quick wins:**
+- `ade8c4c` — gitignored regenerated pipeline outputs (`outputs/*.json`,
+  `outputs/*.html`, `outputs/*_roster_system.xlsx`). Was producing
+  700K-line commit diffs.
+- `8b73a48` — lifted magic numbers to `config.py`: `PRIORITY_BLEND_*`,
+  `BLOCKER_CEILING_DELTA`, `BLOCKER_MLB_PWOBA`, `BLOCKER_MLB_WOBA`,
+  `BENCH_FIELD_WEIGHT`, `BENCH_BAT_WEIGHT`.
+- `d559ecc` — `roster_common.assert_bot_invariant()` post-condition
+  check after each `main()` (defence-in-depth on _bot eligibility).
+- `ce7273c` — new `test_pitcher_role_distribution[org]` invariant
+  (catches over-target SP/RP slot bugs); LHP-balance flake clearly
+  documented in test docstring.
+
+**Tier 2 refactors:**
+- `c3ef9bb` — extracted shared `cascade()` + `overflow_rebalance()`
+  to `roster_common.py`. Eliminated 5 parallel implementations
+  across the two builders. Priority convention: lower = better;
+  hitter caller wraps `-priority(p, lvl)` to negate.
+- `eb197e2` — extracted `_filter_complex_and_injured`,
+  `_compute_eligibility_window`, `_per_org_slot_capacities` from
+  both `main()` functions. Deeper decomposition deferred (high
+  risk vs. moderate benefit after the shared-helper extraction).
+- `b393b8c` — documented the JSON-roundtrip cache contract in
+  `exporter.py`. Producer / consumers / invalidation rule explicit.
+- `2063646` — type hints on the public API surface (`compute_df`,
+  builders' `main`, priority/_top helpers, shared cascade helpers).
+
+**Tier 3 methodology:**
+- `e4cafb4` — `_flag_two_way_best_side` now uses `best_adj` (scarcity-
+  adjusted) instead of raw `war_hitting`. Removes the DH-penalty bias
+  toward hitter-side for any SP-viable two-way. 7 regression tests
+  in `tests/test_two_way_best_side.py`.
+- `4e34f31` — `calibration/CALIBRATION_META.json` records OOTP
+  version, sim sweep date, FG snapshot. `calibration/staleness_check.py`
+  fails loudly if metadata is stale.
+- `dd59fd3` — `calibration/PITCHER_COVARIANCE_REVIEW.md` and
+  `calibration/FIELDING_2D_REVIEW.md` document open methodology
+  questions (deferred until empirical triggers; both require new
+  OOTP sim sweeps to validate).
+
+### `a0c4a4d`: service-time uses career calendar span
+
+OOTP counts a year of pro service for any calendar year on a roster,
+regardless of whether the player appeared in stats. Pre-fix
+`total_service_years` summed `yrs_<LEVEL>` (distinct stats-seasons),
+which under-counted gap years.
+
+Concrete bug: Alejandro Hidalgo (MIN, age 22) has stats in
+2021/2022/2023/2025 but was rostered without pitching in 2024.
+`yrs_<LEVEL>` sum = 4 seasons; OOTP service = 5 years (2021–2025).
+At 4 yrs he stayed A-eligible; at the true 5 yrs he should be
+A+-or-above.
+
+Fix: new `years_pro` column = `max_year − min_year + 1` per player,
+exported alongside per-level counts.
+`roster_common.total_service_years` prefers it, falls back to the
+sum when career-stats CSVs aren't uploaded. ~22% of pitchers had
+at least one gap year being missed.
+
+### R-32: blocker penalty for maxed-out sub-MLB arms
+
+A non-HP arm at his ceiling (`|pwOBA − pwOBAP| < BLOCKER_CEILING_DELTA`)
+whose ceiling is sub-MLB (`pwOBAP > BLOCKER_MLB_PWOBA = .345` for
+pitchers; `wOBAP < BLOCKER_MLB_WOBA = .280` for hitters) gets a
+priority penalty equal to his distance from MLB-tier. Pushes
+maxed-out depth players behind HPs with real projection upside —
+keeps the R-31 single-rule invariant since the penalty is part of
+the priority blend, not a separate ranking pass.
+
+Trigger: Sam Armstrong (MIN, age 25, pwOBA=.362, pwOBAP=.362) was
+earning A+ SP over HPs whose blended priority was .005-.010 worse
+purely because the 15% projection weight in the 85/15 blend treated
+his "noise echo" pwOBAP the same as real HP upside. R-32 penalty
+pushes Armstrong's priority to .380 → falls to A SP, MIN A+ now
+filled with 5 HPs + Bengard.
+
+Both directions covered: maxed-out arms (Armstrong, pwOBA = pwOBAP)
+AND declining vets (Ober pwOBA .347 / pwOBAP .358, downside not
+upside). The `(pwoba - pwobap) < delta` check is direction-agnostic
+— catches both at-ceiling and past-ceiling cases.
+
+### R-31: HP-enforcement aligned with cascade priority blend
+
+The HP-enforcement swap test was a 1:1 `(potential_gain − current_loss)`
+formula on pwOBA / pwOBAP that effectively re-weighted projection at
+100% vs the cascade's 15%. This let HPs with WORSE blended priority
+displace better-priority non-HPs (e.g. Ivran Romero with priority .374
+displacing Sam Armstrong .362 at MIN AA because Romero's pwOBAP
+margin passed the 1:1 test).
+
+New swap rule: displace the worst-priority non-HP at the level only
+if the HP's BLENDED priority is strictly better than that non-HP's.
+Same rule on both hitter (`build_system.py`) and pitcher
+(`build_pitcher_system.py`) sides. **One ranking rule** across the
+whole system — cascade, HP enforcement, push-down, rescue all use
+`pitcher_priority` / `priority`. No parallel tests.
+
+### R-30: priority blend 70/30 → 85/15 at non-MLB levels
+
+The 70/30 current/projected blend was demoting solid org-depth arms
+behind HPs whose current stuff wasn't yet competitive at the level.
+Trigger: Sam Armstrong (MIN, pwOBA .362 / pwOBAP .362) was landing
+at A SP despite having BETTER current pwOBA than all six A+ SP arms
+(.368–.382 current with .320–.338 projection). The 30% projection
+weight was enough to flip the ranking.
+
+At 85/15, projection still nudges close-priority arms but a
+meaningful current-stuff gap dominates. Applied symmetrically to
+hitter `priority` and pitcher `pitcher_priority`.
+
+### "FREE" sentinel for free agents (commit `2a8aaa1`)
+
+`reader.load_players` was mapping unknown org_ids to NaN via
+`.map(config.club_lookup)`. Free agents (no org_id in the lookup)
+landed as NaN, which made them invisible in Streamlit's scout-view
+filters (multiselects drop NaN). Restored the historical "FREE"
+sentinel by adding `df["org"] = df["org"].fillna("FREE")`. ~3.4k
+hitters and ~4k pitchers now bucket together. Tests grew from 330
+to 341 (FREE added to the parametrize), all passing.
 
 ### R-29: HP routing fixes — age cap, swap-target picker, RP-pool gate
 
@@ -615,6 +831,14 @@ All roster-construction thresholds live in `config.py` under the
 | `PITCHER_SPLIT_SPECIALIST_THRESHOLD` | `|pwOBA_split| ≥` this → `vsR/vsL_specialist` tag | **0.030** (R-28) |
 | `PITCHER_SPLIT_NEUTRAL_THRESHOLD` | `|pwOBA_split| ≤` this → `neutral` tag (between = `slight_*`) | **0.015** (R-28) |
 | `SERVICE_CAP_ENABLED` | When False, removes SERVICE_LIMITS from `_bot`. Default True (real OOTP rule). | **True** (R-28) |
+| `PRIORITY_BLEND_CURRENT_WEIGHT` / `PRIORITY_BLEND_PROJECTED_WEIGHT` | Non-MLB cascade blend. Was 70/30. | **0.85 / 0.15** (R-30) |
+| `BLOCKER_CEILING_DELTA` | `|current − potential| <` this → "at ceiling" for blocker penalty | **0.005** (R-32) |
+| `BLOCKER_MLB_PWOBA` / `BLOCKER_MLB_WOBA` | Sub-MLB ceiling threshold for blocker penalty (pitchers / hitters) | **0.345 / 0.280** (R-32) |
+| `BENCH_FIELD_WEIGHT` / `BENCH_BAT_WEIGHT` | Hitter bench-role scoring weights for `if_score`/`of_score` | **0.6 / 0.4** (R-33 lift) |
+| `FIELD_VIABILITY_GAP` | Position is starter-eligible only if `<pos>_adj` within this of `best_adj` | **1.75** (R-34a) |
+| `PITCHER_SWINGMAN_PULLUP_ENABLED` | R-03 swingman pull-up active (now default) | **True** (R-34b) |
+| `PITCHER_SWINGMAN_PRIORITY_MARGIN` | Cand priority must beat worst RP by this much before swingman swap | **0.010** (R-34g) |
+| `DEVELOPMENTAL_MAX_AGE` | Dev-gate age cap — combined with `pwOBAP ≤ BLOCKER_MLB_PWOBA` to exclude prospects from swingman | **27** (R-34g) |
 
 Two-way detection thresholds are hard-coded in
 `main._flag_two_way_players` against `WOBA_MIN_HITTER['MLB']` and
@@ -682,18 +906,21 @@ SP→DH restriction (`_restrict_two_way_sp_to_dh`):
 
 | File | Role |
 |---|---|
-| `config.py` | All constants + roster tunables. R-27 removed MLB tenure constants. R-28 added platoon-split thresholds + `SERVICE_CAP_ENABLED` toggle. |
-| `roster_common.py` | Shared eligibility utils. `_load_injured_names` returns `{'pids', 'names'}`. `service_lowest_level` respects `SERVICE_CAP_ENABLED` (R-28). |
-| `reader.py` | `detect_club_lookup` (R-15) + `detect_head_scout_id`. `load_players` populates dynamic team-abbrev map. |
-| `metrics_pitching.py` | Multiplicative components + component-aware WAR. R-17: 3-pitch arsenal gate. R-28: `pwOBA_split` + `pitcher_split_tag` classification. |
-| `metrics_hitting.py` | Linear wOBA → runs → WAR. R-18: added AVG/OBP/SLG/ISO (overall + R/L + projected) and exposed wRC+ / wRC+P. |
-| `metrics_fielding.py` | 1D tables + asymmetric-tanh saturation. Untouched in R-15+ — pos_adj calibration uses positional shift, not table reshape. |
-| `metrics_war.py` | Per-position bat+def+pos_adj. R-15 calibrated `POSITIONAL_ADJUSTMENT_RUNS` against FG 2025. |
-| `main.py` | `compute_df` + two-way helpers `_flag_two_way_players`, `_flag_two_way_best_side`, `_restrict_two_way_sp_to_dh`. |
-| `build_system.py` | Hitter rosters. R-20 pre-block + R-22 1B/DH cascade + R-26 index-bug fix + R-27 meritocratic. R-28: cascade sort priority-only (bench rescue via existing PASS 3 push-down). |
-| `build_pitcher_system.py` | Pitcher rosters. R-17 arsenal gate + R-20 `_block_hps_at_mlb` + R-26 fix + R-27 meritocratic. R-28: cascade sort priority-only + new `_rescue_overflow_sps()` (overflow SPs win bullpen slots vs worst RP). |
-| `app.py` | Refresh + rosters subcommands. R-15: auto-detect club_lookup from teams.csv. |
-| `exporter.py` | R-18 slash-line + wRC+P. R-28: `pwOBA_split` / `pitcher_split_tag` columns + signed split formatter. |
+| `config.py` | All constants + roster tunables. Recent additions: R-28 platoon-split + `SERVICE_CAP_ENABLED`, R-30 priority blend weights, R-32 blocker thresholds, R-33 bench weights, R-34 `FIELD_VIABILITY_GAP` (1.75) + swingman margin + `DEVELOPMENTAL_MAX_AGE`. |
+| `roster_common.py` | Shared eligibility + roster-construction utils. R-33 added `cascade()`, `overflow_rebalance()`, `assert_bot_invariant()` (single source of truth for both builders). `service_lowest_level` respects `SERVICE_CAP_ENABLED`. `total_service_years` prefers `years_pro` (career-span fix). |
+| `reader.py` | `detect_club_lookup` + `detect_head_scout_id`. `load_players` populates dynamic team-abbrev map and FREE sentinel. `add_years_at_level` exports `years_pro` (career span). |
+| `metrics_pitching.py` | Multiplicative components + component-aware WAR. R-17 arsenal gate. R-28 `pwOBA_split` + `pitcher_split_tag`. |
+| `metrics_hitting.py` | Linear wOBA → runs → WAR. R-18 slash lines. |
+| `metrics_fielding.py` | 1D tables + asymmetric-tanh saturation. Future 2D work documented in `calibration/FIELDING_2D_REVIEW.md`. |
+| `metrics_war.py` | Per-position bat+def+pos_adj. FG-2025-calibrated positional adjustments. |
+| `main.py` | `compute_df` + two-way helpers. R-33: `_flag_two_way_best_side` uses `best_adj` (DH-penalty fix). |
+| `build_system.py` | Hitter rosters. R-28 meritocratic cascade (via shared helper). R-31 HP enforcement uses blended priority. R-32 blocker penalty. R-33 shared helpers consumed + step decomposition + type hints. R-34a `is_starter_eligible()` + Hungarian gates. |
+| `build_pitcher_system.py` | Pitcher rosters. R-28 cascade priority-only + `_rescue_overflow_sps()`. R-31 HP enforcement aligned. R-32 blocker. R-33 shared helpers + decomposition. R-34: starter eligibility, generalised `_swingman_pullup()` (all bullpen levels), strict `_push_down_from_overflow`, re-run SP pull-up after swingman, dev-gate (pwOBAP + age) for swingman candidates. |
+| `app.py` | Refresh + rosters subcommands. |
+| `exporter.py` | R-18 slash-line + wRC+P. R-28 platoon-split columns. R-33: JSON cache contract documented; `years_pro` exported. |
+| `calibration/` | New R-33 files: `CALIBRATION_META.json` (provenance) + `staleness_check.py` (date gate) + `PITCHER_COVARIANCE_REVIEW.md` + `FIELDING_2D_REVIEW.md` (open methodology questions, deferred). |
+| `tests/test_roster_invariants.py` | 379-case regression harness. R-33 added `test_pitcher_role_distribution`. LHP-balance flake explicitly documented. |
+| `tests/test_two_way_best_side.py` | New R-33 7-case regression for the DH-penalty fix. |
 | `build_excel.py` | xlsx renderer. |
 | `streamlit_app.py` | 5-tab UI. R-21/R-23/R-25 added MLB-ready ✦ marker. R-28 added pitcher Split + Tag columns across rotation/bullpen/HP/rosters + Scout-pitchers split-tag filter. |
 | `lineup_optimizer.py` | (R-19) The Book lineup optimizer CLI. |
@@ -799,14 +1026,23 @@ Expected: pytest 330/330 (in Corbin HoF). Top SS = Witt ~7.0, top RF
 MLB anywhere. In Corbin HoF: Shohei Ohtani at LAD MLB as both DH
 starter AND SP rotation member.
 
-## State of play (end R-29)
+## State of play (end R-34)
 
 | Aspect | Current state |
 |---|---|
-| Test suite | **330/330** (TB/AZ LHP-balance flake resolved by R-29 cascade reshape) |
-| A-ball age caps | Removed (R-29) — only R(22) and R(DLR)(21) cap; A and A+ uncapped |
-| HP routing | SP-viable HPs reserved for SP/HP-enforcement path (R-29) — RP pool excludes them |
-| HP swap-target picker | Maximizes `(gain − loss)` not worst-priority (R-29) — finds valid swaps the blend-picker missed |
+| Test suite | **379/379** (LHP-balance data-drift flake is dormant this round) |
+| HEAD | `31e9011` on `main` and `ootp_app/main` |
+| Single ranking rule | `pitcher_priority` / `priority` blend used everywhere — cascade, HP enforcement, push-down, rescue, swingman (R-31) |
+| Priority blend (non-MLB) | 85% current / 15% projected (R-30) + R-32 blocker penalty for maxed-out sub-MLB arms |
+| Starter eligibility | Hungarian gates on `FIELD_VIABILITY_GAP=1.75` — no SS starters at -2.5 fld etc. (R-34a) |
+| SP rotation cascade | Meritocratic priority-only sort (R-28); A/A+ age caps removed (R-29); service-time uses career span (a0c4a4d) |
+| HP routing | SP-viable HPs reserved for SP/HP-enforcement; swap-target picker uses blended priority (R-29 + R-31) |
+| Swingman pull-up | On by default, generalised to all bullpens (MLB/AAA/AA/A+/A), priority-gated with margin 0.010, excludes HPs and dev-gated prospects (R-34b–g) |
+| Dev-gate (swingman exclusion) | `pwOBAP ≤ .345` AND `age ≤ 27` — both required (R-34g) |
+| Pitcher platoon split tags | 5 tiers descriptive of magnitude only (R-28) |
+| Two-way best-side | Uses `best_adj`, not raw `war_hitting` — DH-penalty bias removed (R-33) |
+| Calibration provenance | `calibration/CALIBRATION_META.json` + `staleness_check.py` (R-33) |
+| Repo hygiene | `outputs/` gitignored; magic numbers in config (R-33); cascade/overflow_rebalance shared in roster_common (R-33) |
 | HP at MLB | 0 across all 30 orgs (R-20 hard block) |
 | Veteran tenure protection | Removed in R-27 (no quality-gate vet cushion) |
 | Cascade sort | **Priority-only** (R-28) — service-pinned vets no longer protected at the front; worst-priority pops regardless of cascadability |
