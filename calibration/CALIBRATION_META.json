@@ -1,0 +1,20 @@
+{
+    "_comment_top": "Calibration provenance for the Pistachio metric pipeline. Records when the FG-2025 reference data was snapshotted, when the team-of-clones sim sweeps were run, and which OOTP version they came from. Read by calibration scripts to fail loudly if the inputs are stale. Update this whenever you re-run sim sweeps OR refresh the FG reference CSVs.",
+
+    "ootp_version": "27",
+    "_comment_ootp_version": "OOTP major version used for the team-of-clones sweeps. A version bump invalidates the multiplier tables in metrics_fielding.py and the PITCHING_COMPONENTS_ADJUST_MAP coefficients in config.py — both were fit on OOTP 27 sim behaviour.",
+
+    "sim_sweep_date": "2026-04-30",
+    "_comment_sim_sweep_date": "Last date the team-of-clones sweeps in `OOTP simulation/OOTP sims.xlsx` were re-run. Older than 6 months is a warning; older than 12 months means re-run before trusting the WAR coefficients. Default tolerance is encoded in calibration scripts; see CALIBRATION_STALENESS_MAX_DAYS in config.py.",
+
+    "fg_snapshot_year": 2025,
+    "_comment_fg_snapshot_year": "FanGraphs season the per-position reference CSVs in calibration/fg_2025/ were sourced from. Used as the anchor for POSITIONAL_ADJUSTMENT_RUNS via posadj_shift_calibration.py. Re-snapshot at the start of each MLB season to keep the FG anchor representative of contemporary positional value.",
+
+    "fg_snapshot_date": "2026-04-15",
+    "_comment_fg_snapshot_date": "When the FG CSVs were downloaded. Per-position ceiling data is volatile early in a season; mid-season snapshots are typical and adequate.",
+
+    "wins_above_replacement_per_run": 10.28,
+    "_comment_rpw": "RUNS_PER_WIN_HITTING used by metrics_hitting.calc_war and the FG reference scripts. Should match FG's published RPW for the snapshot year; FG 2025 is 10.28. Different from FG's RPW => calibration drift.",
+
+    "_comment_drift_check": "Run `python -X utf8 calibration/staleness_check.py` to verify these values are still in tolerance. Add this check to a pre-merge hook if doing serious calibration work."
+}
