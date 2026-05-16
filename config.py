@@ -518,6 +518,49 @@ PITCHER_SPLIT_NEUTRAL_THRESHOLD = 0.015
 SERVICE_CAP_ENABLED = True
 
 # ====================================================
+# Priority blend + blocker penalty (R-30 / R-32, lifted to config R-33)
+# ====================================================
+# The `priority` (hitter) and `pitcher_priority` (pitcher) functions
+# blend current and projected performance for cascade ordering at non-
+# MLB levels. R-30 moved this from 70/30 to 85/15 because the 30%
+# projection weight was demoting solid org-depth players behind HPs
+# whose current performance wasn't competitive yet.
+#
+# R-32 added a "blocker penalty" inside the same priority blend: a
+# non-HP at his ceiling (|current − potential| < BLOCKER_CEILING_DELTA)
+# whose ceiling is sub-MLB gets penalised by his distance from
+# MLB-tier. Pushes maxed-out depth players behind HPs with real
+# projection upside.
+#
+# Single ranking rule across the system (post-R-31): cascade ordering,
+# HP-enforcement displacement, push-down, and rescue all use these
+# priority functions — no parallel ranking pass.
+PRIORITY_BLEND_CURRENT_WEIGHT = 0.85
+PRIORITY_BLEND_PROJECTED_WEIGHT = 0.15
+# Threshold for "at-ceiling" detection — non-HPs with current
+# performance within this delta of projection are considered maxed out
+# (no real upside) and eligible for the blocker penalty. Direction-
+# agnostic (`< 0.005` works for both pwOBA where lower is better and
+# wOBA where higher is better because of how the sign is handled in
+# each priority function).
+BLOCKER_CEILING_DELTA = 0.005
+# Sub-MLB ceiling thresholds. These reuse `PWOBA_MAX['MLB']` (.345) /
+# `WOBA_MIN_HITTER['MLB']` (.280) by intent — kept as separate constants
+# only because they're used in a different semantic role (penalty
+# anchor, not eligibility cap) and renaming makes intent clearer.
+BLOCKER_MLB_PWOBA = 0.345
+BLOCKER_MLB_WOBA = 0.280
+
+# ====================================================
+# Bench classification weights (R-33, lifted to config)
+# ====================================================
+# Hitter bench-role scoring blends fielding sum and current batting
+# WAR in WAR units. Same weighting used for Utility IF, Utility OF.
+# Was hardcoded 0.6 / 0.4 in build_system.py:431,448.
+BENCH_FIELD_WEIGHT = 0.6
+BENCH_BAT_WEIGHT = 0.4
+
+# ====================================================
 # Bullpen handedness balance
 # ====================================================
 # Applied AFTER pitcher cascade pull-up to MLB / AAA / AA only. Lower

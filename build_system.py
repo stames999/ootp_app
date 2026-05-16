@@ -29,6 +29,11 @@ from roster_common import (  # noqa: F401  (re-exports)
     INJURED_FILE,
 )
 from config import HP_MIN_LEVEL_INDEX
+from config import (
+    PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
+    BLOCKER_CEILING_DELTA, BLOCKER_MLB_WOBA,
+    BENCH_FIELD_WEIGHT, BENCH_BAT_WEIGHT,
+)
 
 POSITIONS = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 
@@ -117,11 +122,12 @@ def priority(p, level=None):
     if level == 'MLB':
         return woba
     wobap = p.get('wOBAP') or 0
-    blend = 0.85 * woba + 0.15 * wobap
+    blend = (PRIORITY_BLEND_CURRENT_WEIGHT * woba
+             + PRIORITY_BLEND_PROJECTED_WEIGHT * wobap)
     if (not is_high_potential(p)
-            and (wobap - woba) < 0.005
-            and wobap < 0.280):
-        blend -= 0.280 - wobap
+            and (wobap - woba) < BLOCKER_CEILING_DELTA
+            and wobap < BLOCKER_MLB_WOBA):
+        blend -= BLOCKER_MLB_WOBA - wobap
     return blend
 
 def woba_max_level(p):
@@ -428,7 +434,8 @@ def classify_bench(bench, level=None):
             return None
         fld_sum = sum(valid)
         bat_war = p.get('war_hitting') or 0
-        return (len(valid), 0.6 * fld_sum + 0.4 * bat_war)
+        return (len(valid),
+                BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war)
     ordered.append(('Utility IF', take(if_score)))
 
     # 3. Utility OF — same shape. CF eligibility still adds +1 to the
@@ -445,7 +452,7 @@ def classify_bench(bench, level=None):
         bat_war = p.get('war_hitting') or 0
         return (
             len(valid_pos) + cf_bonus,
-            0.6 * fld_sum + 0.4 * bat_war,
+            BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war,
         )
     ordered.append(('Utility OF', take(of_score)))
 
@@ -1025,7 +1032,7 @@ def main(org=None):
             return (0, 0.0)
         fld_sum = sum(valid)
         bat_war = p.get('war_hitting') or 0
-        return (len(valid), 0.6 * fld_sum + 0.4 * bat_war)
+        return (len(valid), BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war)
 
     def _util_of_cap(p):
         fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
@@ -1037,7 +1044,7 @@ def main(org=None):
         bat_war = p.get('war_hitting') or 0
         return (
             len(valid_pos) + cf_bonus,
-            0.6 * fld_sum + 0.4 * bat_war,
+            BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war,
         )
 
     def _make_best_bat_cap(level):

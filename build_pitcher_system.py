@@ -52,6 +52,8 @@ from config import (  # noqa: F401  (re-exports)
     HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
     PITCHER_SWINGMAN_PULLUP_ENABLED, PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA,
     HP_MIN_LEVEL_INDEX,
+    PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
+    BLOCKER_CEILING_DELTA, BLOCKER_MLB_PWOBA,
 )
 
 PITCHERS_JSON = 'outputs/pitchers.json'
@@ -95,11 +97,12 @@ def pitcher_priority(p, level=None):
     if level == 'MLB':
         return pwoba
     pwobap = p.get('pwOBAP') if p.get('pwOBAP') is not None else pwoba
-    blend = 0.85 * pwoba + 0.15 * pwobap
+    blend = (PRIORITY_BLEND_CURRENT_WEIGHT * pwoba
+             + PRIORITY_BLEND_PROJECTED_WEIGHT * pwobap)
     if (not is_high_potential_pitcher(p)
-            and (pwoba - pwobap) < 0.005
-            and pwobap > 0.345):
-        blend += pwobap - 0.345
+            and (pwoba - pwobap) < BLOCKER_CEILING_DELTA
+            and pwobap > BLOCKER_MLB_PWOBA):
+        blend += pwobap - BLOCKER_MLB_PWOBA
     return blend
 
 
