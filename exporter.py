@@ -434,6 +434,47 @@ def export_json_pages(df):
             "rows": [ {col: value, ...}, ... ]
         }
 
+    -------------------------------------------------------------------------
+    CACHE CONTRACT (R-33 documentation of existing behaviour)
+    -------------------------------------------------------------------------
+    The pitchers.json / hitters.json files exported here are not just
+    debugging artifacts — they're the data contract between the metrics
+    pipeline (`main.py:compute_df`) and the per-org roster builders
+    (`build_pitcher_system.main`, `build_system.main`, `streamlit_app`).
+
+    Producer:    `main.py:main()` runs `compute_df()` (slow, ~30s for
+                 metrics + WAR + two-way flags + slash lines + platoon
+                 split + everything else), then calls
+                 `export_json_pages(df)` here to persist the per-page
+                 slices.
+
+    Consumers:   - `build_pitcher_system.load_team_pitchers(org)` reads
+                   `outputs/pitchers.json` and filters to one org's rows.
+                 - `build_system.load_team(org)` reads
+                   `outputs/hitters.json` analogously.
+                 - `streamlit_app.get_orgs(_sig)`, `load_all_*_df(_sig)`
+                   read the same JSONs with mtime-based cache busting.
+
+    Why a JSON-on-disk cache and not in-memory passing? Two reasons:
+      1. Per-org build is cheap (~1s); the user can iterate on builder
+         logic without re-running the full metrics pipeline. The cached
+         JSON lets `python app.py rosters --team COL` run in seconds.
+      2. The Streamlit UI is multi-process (different browser tabs).
+         A file-based cache survives the spawn/respawn cycle.
+
+    Invalidation: any change to the metric pipeline (`metrics_*.py`,
+    `reader.py`, `main.py:compute_df`, two-way flag helpers) requires
+    a fresh `python app.py refresh` to regenerate. Adding a new column
+    that downstream builders need (e.g. R-33's `years_pro` for service-
+    time counting) ALSO requires adding it to the relevant `EXPORT_PAGES`
+    column list — otherwise the builder reads it as None. This is the
+    "leaky cache" cost; tolerated for now because the explicit column
+    list doubles as documentation of what the cache contains.
+
+    The output files are NOT committed to git as of R-33 (.gitignore
+    excludes them). They're rebuilt by the pipeline.
+    -------------------------------------------------------------------------
+
     Designed for downstream programmatic analysis (e.g. feeding to Claude)
     rather than for human reading. NaN values become null. Numeric columns
     keep full precision (no rounding to display format) so an analyst can
