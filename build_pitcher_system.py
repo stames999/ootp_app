@@ -400,15 +400,22 @@ def _pull_up(by_level, slots_for):
 
 def _push_down_from_overflow(by_level, slots_for, overflow, role):
     """Release-pool push-down for pitcher staffs: any level still under
-    target after cascade + pull-up gets filled from `overflow`, ignoring
-    `_top` (pitcher analogue of build_system.py's hitter PASS 3).
-    Respects only the OOTP hard rule (`_bot`: age + service + DSL nation).
-    `role` is 'SP' or 'RP' so the right viability check applies.
+    target after cascade + pull-up gets filled from `overflow` with arms
+    whose `_top` already qualifies them for the level. Respects `_bot`
+    (OOTP hard rule: age + service + DSL nation) AND `_top` (R-34 fix:
+    don't push arms whose stuff is multiple levels below the slot up
+    just to fill it).
 
-    Why no `_top` constraint: at this stage we've already exhausted all
-    in-tier and +1-stretch candidates. The remaining gap is between
-    "leave the slot empty" and "fill with a sub-threshold release-pool
-    arm". An empty slot is worse for org-depth display.
+    Pre-R-34 the push-down had no `_top` constraint — the original
+    justification was "an empty slot is worse for org-depth display
+    than a sub-threshold release-pool arm". After the R-34 swingman
+    pull-up was enabled by default, AAA/AA SP slots got vacated more
+    often, and the unlimited stretch was pulling deep-overflow arms
+    (e.g. pwOBA .410, `_top=R`) up multiple levels into AAA SP. The
+    user's call: an honest "Sign FA" empty-slot display beats showing
+    a pitcher whose stuff structurally doesn't play at the level.
+
+    `role` is 'SP' or 'RP' so the right viability check applies.
     """
     viability = {'SP': is_sp_viable, 'RP': is_rp_viable}[role]
     for i, lvl in enumerate(LEVELS):
@@ -419,6 +426,7 @@ def _push_down_from_overflow(by_level, slots_for, overflow, role):
                 if viability(p)
                 and p.get('_bot') is not None
                 and i <= p['_bot']
+                and p.get('_top', i) <= i  # R-34: stuff must qualify for the level
             ]
             if not candidates:
                 break
@@ -827,11 +835,24 @@ def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
     _pull_up(rp_by, rp_slots)
     _block_hps_at_mlb(rp_by)
 
-    # Step 4a: opt-in swingman pull-up (R-03). No-op when toggle is OFF.
+    # Step 4a: opt-in swingman pull-up (R-03; default-ON since R-34).
     # Runs BEFORE LHP balance so any AAA imbalance the swingman swap
     # creates (cascading the demoted RP can push out an LHP) is then
     # repaired by the LHP balance pass at the next step.
     _swingman_pullup(sp_by, rp_by, rp_slots, overflow)
+
+    # Step 4a.1 (R-34): re-run SP pull-up to refill any AAA / lower SP
+    # slots the swingman pull-up vacated. Without this the empty slots
+    # would later be filled by `_push_down_from_overflow`, which used
+    # to accept arms multiple levels above their `_top` (Maldonado
+    # at AA-tier going to AAA = +1 stretch is OK; Banks at R-tier
+    # going to AAA = +4 stretch is not). The pull-up's strict + +1
+    # stretch discipline gets us a proper backfill (best non-HP AA
+    # SP promoted to AAA, etc.) without crossing multi-level gaps.
+    # HPs stay excluded from the stretch — they keep developing at
+    # their natural _top.
+    _pull_up(sp_by, sp_slots)
+    _block_hps_at_mlb(sp_by)
 
     # Step 4b: bullpen handedness balance — MLB / AAA / AA only.
     # Hard MIN uses strict eligibility only; if no qualified LHP exists,
