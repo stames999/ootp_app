@@ -610,8 +610,16 @@ LEFTY_TARGET_MAX_COST = 0.010
 # Side effect: the candidate's old SP slot at AAA / lower is left empty
 # (not auto-backfilled). Real-world equivalent: org signs a FA / calls
 # someone up for that AAA rotation slot.
-PITCHER_SWINGMAN_PULLUP_ENABLED = False
-PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5
+PITCHER_SWINGMAN_PULLUP_ENABLED = True
+PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5  # legacy / unused since R-34 priority-gate
+# R-34: switched the pull-up gate from `rp_warP` delta to a strict
+# `pitcher_priority` comparison (the same R-31 single-rule invariant
+# used everywhere else). At MLB pitcher_priority is pure current pwOBA,
+# so the gate is "candidate's pwOBA strictly better than worst MLB RP's
+# pwOBA". Better for older SPs whose projection is muted but current
+# stuff is genuinely MLB-bullpen-grade. Flipped enabled to True at the
+# same time — the R-31 alignment removes the original concern about
+# projection-vs-current bias that motivated the opt-in default.
 
 
 # ====================================================

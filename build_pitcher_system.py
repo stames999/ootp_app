@@ -429,18 +429,23 @@ def _push_down_from_overflow(by_level, slots_for, overflow, role):
 
 
 def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
-    """OPT-IN R-03 implementation: pull non-MLB SP-viable non-HP arms up
-    to the MLB bullpen if their rp_warP exceeds the worst MLB RP's
-    rp_warP by at least PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA.
+    """Pull non-MLB SP-viable non-HP arms up to the MLB bullpen if their
+    MLB pitcher_priority (= pure current pwOBA per the priority
+    function's MLB branch) is strictly better than the worst MLB RP.
+    Catches the case of an SP cascaded out of the MLB rotation whose
+    current stuff would still beat the fringe MLB bullpen arms — e.g.
+    older SPs whose projection is muted but whose pwOBA is genuinely
+    MLB-bullpen-grade.
 
-    OFF by default (PITCHER_SWINGMAN_PULLUP_ENABLED in config). The
-    cascade-only baseline is calibrated; this is a "developmental
-    upside" lever that biases toward calling up AAA SPs for MLB long-
-    relief auditions. Trade-off: most candidates are net-negative in
-    current-year WAR but net-positive in potential WAR.
+    ON by default since R-34 (was opt-in pre-R-34). The original
+    OFF-by-default concern was that the rp_warP-projection gate biased
+    toward developmental upside over current-year roster value; R-34
+    switched to pitcher_priority (current-stuff at MLB) and the bias
+    is gone. PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA is now unused.
 
     Constraints honoured:
-      - Skips HP candidates (HP enforcement owns those slots).
+      - Skips HP candidates (HP enforcement owns those slots; HPs are
+        developmental SPs by intent, not bullpen filler).
       - Skips swaps that would push MLB LHP count outside [LEFTY_MIN,
         LEFTY_MAX] — handedness balance takes priority.
       - Demoted MLB RP cascades to AAA bullpen (or further down to
@@ -460,15 +465,18 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
     for _iter in range(20):  # Bound to prevent any pathological infinite loop
         changed = False
         mlb_pen = rp_by['MLB']
-        # Worst MLB RP by rp_warP (skip None to avoid "lowest" being a
-        # data-anomaly entry; if everyone's rp_warP is None, give up).
-        pen_with_war = [p for p in mlb_pen if p.get('rp_warP') is not None]
-        if not pen_with_war:
+        if not mlb_pen:
             break
-        worst_rp = min(pen_with_war, key=lambda p: p['rp_warP'])
-        worst_war = worst_rp['rp_warP']
+        # R-34: gate on pitcher_priority at MLB (= pure current pwOBA per
+        # the priority function's MLB branch) to match the R-31 single-
+        # rule invariant. Pre-R-34 used `rp_warP` projection, which
+        # under-credited older SPs whose current stuff was MLB-bullpen-
+        # grade but projection was muted.
+        worst_rp = max(mlb_pen, key=lambda p: pitcher_priority(p, 'MLB'))
+        worst_pri = pitcher_priority(worst_rp, 'MLB')
 
-        # Best non-MLB SP-viable non-HP candidate by rp_warP, descending.
+        # Best non-MLB SP-viable non-HP candidate by MLB pitcher_priority,
+        # ascending (lowest = best stuff = best swap candidate).
         cands = []
         for lvl, lst in sp_by.items():
             if lvl == 'MLB':
@@ -476,18 +484,18 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             for p in lst:
                 if is_high_potential_pitcher(p):
                     continue
-                if p.get('rp_warP') is None:
+                if p.get('pwOBA') is None:
                     continue
                 cands.append((p, lvl))
         if not cands:
             break
-        cands.sort(key=lambda c: -c[0]['rp_warP'])
+        cands.sort(key=lambda c: pitcher_priority(c[0], 'MLB'))
 
         # Try candidates in order; first valid swap wins this iteration.
         for cand, cand_lvl in cands:
-            delta = cand['rp_warP'] - worst_war
-            if delta < PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA:
-                break  # Sorted descending — no further candidate qualifies
+            cand_pri = pitcher_priority(cand, 'MLB')
+            if cand_pri >= worst_pri:
+                break  # Sorted ASC — no further candidate beats worst RP
 
             # Validate LHP balance post-swap.
             cand_is_lhp = (cand.get('throws') == 2)
