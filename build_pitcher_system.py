@@ -493,8 +493,18 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             worst_rp = max(target_pen, key=lambda p: pitcher_priority(p, target_lvl))
             worst_pri = pitcher_priority(worst_rp, target_lvl)
 
-            # Best SP-viable non-HP candidate from BELOW target_lvl, sorted
-            # ASC by pitcher_priority at the target level (lowest = best stuff).
+            # Best SP-viable non-HP non-developmental candidate from BELOW
+            # target_lvl, sorted ASC by pitcher_priority at the target level
+            # (lowest = best stuff).
+            #
+            # "Developmental" gate (R-34): exclude arms whose pwOBAP is
+            # MLB-tier (<= BLOCKER_MLB_PWOBA = .345). These are real
+            # prospects even if they aged out of HP status — e.g. David
+            # Sandlin (CWS, age 25, pwOBA .367 / pwOBAP .327, sp_warP 2.0)
+            # has better projection than the HP gate (.335) but is one
+            # year too old. Pulling him from AA SP to AAA RP for a
+            # current-stuff upgrade undermines his development as a
+            # starter. The HP exclusion alone wasn't catching this case.
             cands = []
             for lvl, lst in sp_by.items():
                 lvl_canonical = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
@@ -506,6 +516,9 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
                         continue
                     if p.get('pwOBA') is None:
                         continue
+                    if (p.get('pwOBAP') is not None
+                            and p['pwOBAP'] <= BLOCKER_MLB_PWOBA):
+                        continue  # MLB-tier projection = real prospect
                     cands.append((p, lvl))
             if not cands:
                 break
