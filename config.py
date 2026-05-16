@@ -612,6 +612,16 @@ LEFTY_TARGET_MAX_COST = 0.010
 # someone up for that AAA rotation slot.
 PITCHER_SWINGMAN_PULLUP_ENABLED = True
 PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5  # legacy / unused since R-34 priority-gate
+# R-34 cont: the swingman pull-up requires the candidate's priority at
+# the target level to beat the worst RP's priority by at least this
+# margin. Strict-better was too aggressive once the swingman generalised
+# to all bullpen levels — it pulled marginal SPs (cand_pri - worst_pri
+# = -.002) out of A+/A SP rotations to fill higher bullpens, leaving
+# the lower SP rotations under-filled (100+ missing A SP slots across
+# orgs). A 10-wOBA-point margin filters those marginal swaps while
+# preserving the legitimate big-gap cases (Cannon at .366 vs worst AAA
+# RP .392 — gap .026, easily clears).
+PITCHER_SWINGMAN_PRIORITY_MARGIN = 0.020
 # R-34: switched the pull-up gate from `rp_warP` delta to a strict
 # `pitcher_priority` comparison (the same R-31 single-rule invariant
 # used everywhere else). At MLB pitcher_priority is pure current pwOBA,

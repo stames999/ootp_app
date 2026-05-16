@@ -53,6 +53,7 @@ from config import (  # noqa: F401  (re-exports)
     LHP_LEVELS, LEFTY_MIN, LEFTY_TARGET, LEFTY_MAX, LEFTY_TARGET_MAX_COST,
     HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
     PITCHER_SWINGMAN_PULLUP_ENABLED, PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA,
+    PITCHER_SWINGMAN_PRIORITY_MARGIN,
     HP_MIN_LEVEL_INDEX,
     PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
     BLOCKER_CEILING_DELTA, BLOCKER_MLB_PWOBA,
@@ -512,8 +513,8 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
 
             for cand, cand_lvl in cands:
                 cand_pri = pitcher_priority(cand, target_lvl)
-                if cand_pri >= worst_pri:
-                    break  # Sorted ASC — no further candidate beats worst RP
+                if cand_pri >= worst_pri - PITCHER_SWINGMAN_PRIORITY_MARGIN:
+                    break  # Sorted ASC — no further candidate clears the margin
 
                 # Validate LHP balance post-swap — only at LHP_LEVELS.
                 if target_lvl in LHP_LEVELS:
