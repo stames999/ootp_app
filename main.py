@@ -129,7 +129,17 @@ def _flag_two_way_best_side(df):
     the side where the player's absence would force the team to fill
     the slot with a weaker replacement.
 
-    Hitter side: `war_hitting` (bat-only WAR at full MLB workload).
+    Hitter side: `best_adj` — scarcity-adjusted WAR at the player's
+    best hitting position. Includes both the bat (with DH penalty
+    when the player will be DH-restricted) and the positional adjust-
+    ment. Pre-R-33 this used raw `war_hitting` (bat-only at full MLB
+    workload), which biased the comparison toward hitter for any
+    SP-viable two-way: such players are forced to DH on the hitter
+    side (via `_restrict_two_way_sp_to_dh` below), so their real
+    hitter-side contribution is DH_adj — meaningfully smaller than
+    war_hitting because DH_PENALTY shaves the bat by ~7% and the DH
+    positional adjustment is the most negative in the system.
+
     Pitcher side: max of `sp_war` and `rp_war` (whichever role they
     qualify for, take the better).
 
@@ -137,9 +147,7 @@ def _flag_two_way_best_side(df):
     exporter filters. The user's intent: 'they should only count on
     whichever side allows the best player to come into the team'.
     """
-    hitter_war = df["war_hitting"].fillna(-99)
-    sp = df["sp_war"].fillna(-99) if "sp_war" in df.columns else -99
-    rp = df["rp_war"].fillna(-99) if "rp_war" in df.columns else -99
+    hitter_war = df["best_adj"].fillna(-99)
     pitcher_war = pd.concat([df["sp_war"], df["rp_war"]], axis=1).max(axis=1).fillna(-99)
     df["tw_best_side"] = ""
     df.loc[df["is_two_way"] & (hitter_war > pitcher_war), "tw_best_side"] = "hitter"
