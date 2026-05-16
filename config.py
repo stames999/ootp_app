@@ -82,17 +82,26 @@ POSITION_FLOOR = 40
 POSITION_FLOOR_EXEMPT = ["1B"]
 
 # ============================
-# Position viability gap (display filter only)
+# Position viability gap (display filter + starter eligibility, R-34)
 # ============================
-# Used to filter the displayed `field` column: a position is shown only
-# if the player's adjusted WAR there is within FIELD_VIABILITY_GAP of
-# their best position's adjusted WAR. ALL per-position WARs are still
-# computed and exported — this only affects the displayed `field` summary
-# so the user sees realistic alternatives rather than every position the
-# player technically passes the rating floor for. Calibrated to roughly
-# "positions where the player would be a passable starter relative to
-# their best fit."
-FIELD_VIABILITY_GAP = 2.0
+# A position is considered viable for a player only if their adjusted
+# WAR there is within FIELD_VIABILITY_GAP of their best_adj. Two uses:
+#   1. `field` display column — shows only realistic position alternatives
+#      rather than every position the rating floor passes (legacy).
+#   2. Hungarian starter eligibility in build_system.fill_starters /
+#      fill_starters_split — a player isn't considered for STARTER
+#      assignment at a position more than this far below their best fit
+#      (added R-34). Backups stay rating-floor-eligible because they're
+#      emergency-depth information.
+#
+# Calibrated to "positions where the player would be a passable starter
+# relative to their best fit". R-34 tightened 2.0 -> 1.75 after a CWS
+# AAA case where Dustin Harris (best_adj=0.61 at 1B, SS_adj=-1.31,
+# SS_fld=-2.51) was being slotted at SS in the vs-LHP Hungarian — his
+# vs-LHP bat boost was overcoming the -1.31 SS penalty. The gap of 1.92
+# now exceeds the threshold so SS becomes ineligible for him as a
+# starter; backups are unaffected.
+FIELD_VIABILITY_GAP = 1.75
 
 
 # ============================

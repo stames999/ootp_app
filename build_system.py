@@ -16,6 +16,7 @@ from config import (  # noqa: F401  (some are re-exported)
     HP_MAX_AGE, HP_BESTP_ADJ_THRESHOLD, HP_WOBA_THRESHOLD,
     PREMIUM_FLD_MIN, HP_PREMIUM_FIT_POSITIONS,
     IF_POSITIONS, OF_POSITIONS,
+    FIELD_VIABILITY_GAP,
 )
 
 # Shared roster-construction utilities — single source of truth used by both
@@ -214,6 +215,32 @@ def pos_adj_split(p, pos, vs):
         return base
     return base + (woba_split - woba) * WAR_PER_WOBA_POINT
 
+def is_starter_eligible(p, pos):
+    """True if `p` is eligible to be a STARTER at `pos`. Combines:
+      - rating-floor gate: `<pos>_adj is not None` (i.e. the player's
+        ratings clear POSITION_FLOOR for the position's relevant skills);
+      - viability gap: `<pos>_adj` is within `FIELD_VIABILITY_GAP` of
+        the player's `best_adj`. Excludes positions where the player
+        would be a structurally-poor starter even if their ratings
+        technically clear the floor.
+
+    R-34: added after a CWS AAA case where Dustin Harris (best_adj=0.61
+    at 1B, SS_adj=-1.31, SS_fld=-2.51) was being slotted at SS in the
+    vs-LHP Hungarian because his bat advantage compounded with the
+    SS positional adjustment. Backups (`fill_backups`) do NOT use this
+    gate — they're emergency-depth info and the user wants to see who
+    can field a position in a pinch even if they shouldn't start there."""
+    pos_adj = p.get(f'{pos}_adj')
+    if pos_adj is None:
+        return False
+    if pos == 'DH':
+        return True  # everyone can DH
+    best = p.get('best_adj')
+    if best is None:
+        return True  # missing best_adj — fall back to the rating-floor gate
+    return (best - pos_adj) <= FIELD_VIABILITY_GAP
+
+
 def fill_starters_split(pool, level, vs, standard_starters=None):
     """Pick 9 starters using platoon-adjusted position scores. Same Hungarian
     over the same pool as `fill_starters`, but the score swaps in the
@@ -248,6 +275,12 @@ def fill_starters_split(pool, level, vs, standard_starters=None):
         # play their standard slot or sit on the bench.
         pinned_pos = pinned.get(p['name'])
         if pinned_pos is not None and pinned_pos != pos:
+            return None
+        # Starter viability gate (R-34): only consider positions within
+        # FIELD_VIABILITY_GAP of best_adj. Excludes e.g. a 1B/DH-only
+        # bat being slotted at SS just because the platoon bat boost
+        # compounded with SS's positional adjustment.
+        if not is_starter_eligible(p, pos):
             return None
         pwar = pos_adj_split(p, pos, vs)
         if pwar is None: return None
@@ -330,6 +363,10 @@ def fill_starters(pool, level):
         if (pos in NON_POSITIONAL
                 and is_high_potential(p)
                 and p.get('pos_adj') not in NON_POSITIONAL):
+            return None
+        # Starter viability gate (R-34): only consider positions within
+        # FIELD_VIABILITY_GAP of best_adj.
+        if not is_starter_eligible(p, pos):
             return None
         # Every level optimises for runs/game using the 72.5/27.5 RHP/LHP
         # split. HPs no longer get a projection-based score override — if a
