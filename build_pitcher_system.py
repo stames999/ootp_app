@@ -67,7 +67,7 @@ PITCHERS_JSON = 'outputs/pitchers.json'
 PITCHER_ROSTER_SIZE = {lvl: SP_PER_LEVEL[lvl] + RP_PER_LEVEL[lvl] for lvl in LEVELS}
 
 
-def load_team_pitchers(org=None):
+def load_team_pitchers(org: str | None = None) -> list[dict]:
     """Load pitchers for a single org. Defaults to config.team_managed."""
     if org is None:
         from config import team_managed
@@ -76,7 +76,7 @@ def load_team_pitchers(org=None):
     return [r for r in d['rows'] if r['org'] == org]
 
 
-def pitcher_priority(p, level=None):
+def pitcher_priority(p: dict, level: str | None = None) -> float:
     """Cascade-ordering key for pitchers. Lower = better (matches the
     pwOBA convention). Mirrors the hitter `priority` blend:
       - MLB: pure current pwOBA. Projection upside doesn't help an active-
@@ -108,7 +108,7 @@ def pitcher_priority(p, level=None):
     return blend
 
 
-def pwoba_top_level(p):
+def pwoba_top_level(p: dict) -> int:
     """Highest level (smallest LEVELS index) the pitcher's CURRENT pwOBA
     qualifies for. Threshold is a hard ceiling on placement — a prospect
     with great projection but currently-poor stuff can't be promoted past
@@ -769,7 +769,14 @@ def _per_org_slot_capacities(org):
     return sp_slots, rp_slots, n_dsl
 
 
-def main(org=None):
+def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """Build the pitcher staff for one org. Returns
+    (rosters_by_level, overflow, flagged_players) where:
+      - rosters_by_level: {lvl: {'starters': [...], 'bullpen': [...], 'all',
+                                 'sp_target', 'rp_target', 'sign_lhp'}}
+      - overflow: list of pitcher dicts that didn't place anywhere
+      - flagged_players: injury-list arms held out of placement
+    """
     laa = load_team_pitchers(org)
     for p in laa:
         p.pop('_role', None)

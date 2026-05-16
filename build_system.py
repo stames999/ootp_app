@@ -59,7 +59,7 @@ def best_non_c_war(p):
 
 HITTERS_JSON = 'outputs/hitters.json'
 
-def load_team(org=None):
+def load_team(org: str | None = None) -> list[dict]:
     """Load hitters for a single org. Defaults to config.team_managed."""
     if org is None:
         from config import team_managed
@@ -102,7 +102,7 @@ def catcher_alloc_score(p):
     age = min(p.get('age') or 0, AGE_CAP)
     return woba + C_FLD_WEIGHT * cfld + AGE_WEIGHT * age
 
-def priority(p, level=None):
+def priority(p: dict, level: str | None = None) -> float:
     """Cascade/trim ordering blend. At MLB the only thing that matters is
     *current* performance — projection upside doesn't help an aging vet
     on the active roster lose his slot to a prospect, and a young arm
@@ -132,7 +132,7 @@ def priority(p, level=None):
         blend -= BLOCKER_MLB_WOBA - wobap
     return blend
 
-def woba_max_level(p):
+def woba_max_level(p: dict) -> int:
     # Ceiling is current wOBA only. We tried blending wOBAP for young players
     # to lift high-projection bats, but it over-promoted prospects into levels
     # their current bats couldn't handle and forced cascade to displace proven
@@ -569,7 +569,15 @@ def _compute_eligibility_window(pool):
     return valid, overflow
 
 
-def main(org=None):
+def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """Build the hitter roster for one org. Returns
+    (rosters_by_level, overflow, flagged_players) where:
+      - rosters_by_level: {lvl: {'starters': {pos: player}, 'bench_roles':
+                                 [(role, player)], 'all': [...], 'target',
+                                 ...platoon variants...}}
+      - overflow: list of hitter dicts that didn't place anywhere
+      - flagged_players: injury-list bats held out of placement
+    """
     laa = load_team(org)
     # Step 0: filter international complex (minor=0 + age<20) and the
     # injured pool. Injured-list players don't compete for active roster

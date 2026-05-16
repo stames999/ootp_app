@@ -21,7 +21,7 @@ from reader import (
 )
 
 
-def compute_df():
+def compute_df() -> 'pd.DataFrame':
     """Run the full metrics pipeline and return the player DataFrame.
     Stops short of any export so callers can reuse the df for different
     downstream artifacts (e.g. an org-report for an arbitrary team)

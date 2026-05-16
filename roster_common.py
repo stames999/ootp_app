@@ -54,7 +54,11 @@ SERVICE_LIMITS = {
 }
 
 
-def cascade(pool, slots_for, priority_fn):
+def cascade(
+    pool: list[dict],
+    slots_for: dict[str, int],
+    priority_fn,
+) -> tuple[dict[str, list[dict]], list[dict]]:
     """Generic cascade-down: place each player at LEVELS[p['_top']], then
     walk top-down and pop the WORST-priority player whenever a level is
     over-target. Popped players cascade to the next level if their `_bot`
@@ -89,8 +93,13 @@ def cascade(pool, slots_for, priority_fn):
     return by_level, overflow
 
 
-def overflow_rebalance(by_level, slots_for, priority_fn, overflow,
-                       poppable_filter=None):
+def overflow_rebalance(
+    by_level: dict[str, list[dict]],
+    slots_for: dict[str, int],
+    priority_fn,
+    overflow: list[dict],
+    poppable_filter=None,
+) -> None:
     """Generic over-cap rebalance: walk top-down, while a level is over
     its target, pop the worst-priority player. Cascaded if `_bot` allows,
     overflow otherwise. Mirrors the inline rebalance loops in both
@@ -129,7 +138,10 @@ def overflow_rebalance(by_level, slots_for, priority_fn, overflow,
                 overflow.append(worst)
 
 
-def assert_bot_invariant(by_level, role_label=''):
+def assert_bot_invariant(
+    by_level: dict[str, list[dict]],
+    role_label: str = '',
+) -> None:
     """Post-condition: every placed player satisfies `LEVELS.index(lvl) <= _bot`.
     `_bot` is OOTP's eligibility floor (age + service + DSL); placing a
     player below it would violate roster rules. The cascade, pull-up,
