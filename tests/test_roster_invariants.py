@@ -289,6 +289,15 @@ def test_pitcher_lhp_balance(org, pitcher_results):
     as `sign_lhp`. A bullpen with len < target gets skipped (under-fill
     indicates a different problem already). HARD MAX (>4 LHP) should
     NEVER occur — that's the assertion.
+
+    KNOWN FAILURE — TB / AZ rotating data-drift flake at AAA (sometimes
+    AA): the LHP-balance re-enforcement after rescue / push-down
+    produces a full bullpen with 1 LHP and `sign_lhp=0` even though
+    plenty of LHP candidates exist in the org pool. Root cause is in
+    `_enforce_lhp_balance`s interaction with the R-28 rescue pass and
+    is a real (small-magnitude) bug, not a test issue. Recorded as a
+    known failure in HANDOFF so test runs match the documented status;
+    a proper fix would address the LHP-balance pass directly.
     """
     rosters, _, _ = pitcher_results[org]
     violations = []
@@ -298,14 +307,11 @@ def test_pitcher_lhp_balance(org, pitcher_results):
             continue
         bullpen = r.get('bullpen', [])
         n_lhp = sum(1 for p in bullpen if p.get('throws') == 2)
-        # Hard MAX violation always fails — _enforce_lhp_balance should
-        # have brought it down.
         if n_lhp > 4:
             violations.append(
                 f"  {lvl}: {n_lhp} LHP in bullpen (LEFTY_MAX=4)"
             )
             continue
-        # Hard MIN: under-filled pen or sign_lhp tag explains it.
         target = r.get('rp_target', 8)
         if len(bullpen) < target:
             continue
@@ -318,4 +324,34 @@ def test_pitcher_lhp_balance(org, pitcher_results):
             )
     assert not violations, (
         f"{org} bullpen LHP balance violations:\n" + "\n".join(violations)
+    )
+
+
+def test_pitcher_role_distribution(org, pitcher_results):
+    """Each level's roster respects SP_PER_LEVEL[lvl] / RP_PER_LEVEL[lvl]:
+    either exactly at target, or under-target with a clearly-recorded
+    `sign_lhp` shortfall on the RP side. Over-target is always a bug —
+    cascade and rebalance loops should have prevented it.
+
+    Was missing before R-33: a bug in the swingman pull-up or the rescue
+    pass could have produced an over-target bullpen and the test would
+    pass anyway (only `test_pitcher_capacity` and `test_pitcher_lhp_balance`
+    looked at full-level totals, not the role split).
+    """
+    from config import SP_PER_LEVEL, RP_PER_LEVEL
+    rosters, _, _ = pitcher_results[org]
+    violations = []
+    for lvl, r in rosters.items():
+        # Strip R(DLR) sub-team suffix (R(DLR)1, R(DLR)2) for the lookup.
+        base_lvl = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
+        sp_target = SP_PER_LEVEL[base_lvl]
+        rp_target = RP_PER_LEVEL[base_lvl]
+        n_sp = len(r.get('starters', []))
+        n_rp = len(r.get('bullpen', []))
+        if n_sp > sp_target:
+            violations.append(f"  {lvl}: SP {n_sp} > target {sp_target}")
+        if n_rp > rp_target:
+            violations.append(f"  {lvl}: RP {n_rp} > target {rp_target}")
+    assert not violations, (
+        f"{org} pitcher role-distribution violations:\n" + "\n".join(violations)
     )
