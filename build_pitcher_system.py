@@ -464,90 +464,99 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
     call-up to fill that AAA rotation slot. Acceptable because the
     point of the call-up is the MLB upgrade.
 
+    R-34 generalisation: this now runs for every level's bullpen
+    (MLB / AAA / AA / A+ / A — R / R(DLR) are developmental tiers
+    and excluded). The original MLB-only behaviour was a special
+    case; the same logic applies anywhere a cascaded-down SP would
+    beat the worst RP at a higher level. Catches cases like
+    Jonathan Cannon (CWS, pwOBA .352, _top=AAA) cascading from
+    AAA SP -> AA SP -> A+ SP because each rotation was full with
+    marginally-better arms, when his priority trivially beats the
+    worst RP at AAA / AA / A+.
+
     Mutates sp_by, rp_by, overflow in place. No-op when toggle is OFF."""
     if not PITCHER_SWINGMAN_PULLUP_ENABLED:
         return
-    if 'MLB' not in rp_by or not rp_by['MLB']:
-        return
 
-    for _iter in range(20):  # Bound to prevent any pathological infinite loop
-        changed = False
-        mlb_pen = rp_by['MLB']
-        if not mlb_pen:
-            break
-        # R-34: gate on pitcher_priority at MLB (= pure current pwOBA per
-        # the priority function's MLB branch) to match the R-31 single-
-        # rule invariant. Pre-R-34 used `rp_warP` projection, which
-        # under-credited older SPs whose current stuff was MLB-bullpen-
-        # grade but projection was muted.
-        worst_rp = max(mlb_pen, key=lambda p: pitcher_priority(p, 'MLB'))
-        worst_pri = pitcher_priority(worst_rp, 'MLB')
+    target_levels = ['MLB', 'AAA', 'AA', 'A+', 'A']
+    for target_lvl in target_levels:
+        if target_lvl not in rp_by or not rp_by[target_lvl]:
+            continue
+        target_idx = LEVELS.index(target_lvl)
 
-        # Best non-MLB SP-viable non-HP candidate by MLB pitcher_priority,
-        # ascending (lowest = best stuff = best swap candidate).
-        cands = []
-        for lvl, lst in sp_by.items():
-            if lvl == 'MLB':
-                continue
-            for p in lst:
-                if is_high_potential_pitcher(p):
+        for _iter in range(20):  # bound per-level iterations
+            changed = False
+            target_pen = rp_by[target_lvl]
+            if not target_pen:
+                break
+            worst_rp = max(target_pen, key=lambda p: pitcher_priority(p, target_lvl))
+            worst_pri = pitcher_priority(worst_rp, target_lvl)
+
+            # Best SP-viable non-HP candidate from BELOW target_lvl, sorted
+            # ASC by pitcher_priority at the target level (lowest = best stuff).
+            cands = []
+            for lvl, lst in sp_by.items():
+                lvl_canonical = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
+                lvl_idx = LEVELS.index(lvl_canonical)
+                if lvl_idx <= target_idx:
                     continue
-                if p.get('pwOBA') is None:
-                    continue
-                cands.append((p, lvl))
-        if not cands:
-            break
-        cands.sort(key=lambda c: pitcher_priority(c[0], 'MLB'))
+                for p in lst:
+                    if is_high_potential_pitcher(p):
+                        continue
+                    if p.get('pwOBA') is None:
+                        continue
+                    cands.append((p, lvl))
+            if not cands:
+                break
+            cands.sort(key=lambda c: pitcher_priority(c[0], target_lvl))
 
-        # Try candidates in order; first valid swap wins this iteration.
-        for cand, cand_lvl in cands:
-            cand_pri = pitcher_priority(cand, 'MLB')
-            if cand_pri >= worst_pri:
-                break  # Sorted ASC — no further candidate beats worst RP
+            for cand, cand_lvl in cands:
+                cand_pri = pitcher_priority(cand, target_lvl)
+                if cand_pri >= worst_pri:
+                    break  # Sorted ASC — no further candidate beats worst RP
 
-            # Validate LHP balance post-swap.
-            cand_is_lhp = (cand.get('throws') == 2)
-            inc_is_lhp = (worst_rp.get('throws') == 2)
-            cur_lhp = sum(1 for p in mlb_pen if p.get('throws') == 2)
-            new_lhp = cur_lhp - (1 if inc_is_lhp else 0) + (1 if cand_is_lhp else 0)
-            if not (LEFTY_MIN <= new_lhp <= LEFTY_MAX):
-                continue  # Would break balance; try next candidate
+                # Validate LHP balance post-swap — only at LHP_LEVELS.
+                if target_lvl in LHP_LEVELS:
+                    cand_is_lhp = (cand.get('throws') == 2)
+                    inc_is_lhp = (worst_rp.get('throws') == 2)
+                    cur_lhp = sum(1 for p in target_pen if p.get('throws') == 2)
+                    new_lhp = cur_lhp - (1 if inc_is_lhp else 0) + (1 if cand_is_lhp else 0)
+                    if not (LEFTY_MIN <= new_lhp <= LEFTY_MAX):
+                        continue  # Would break balance; try next candidate
 
-            # Execute swap.
-            sp_by[cand_lvl].remove(cand)
-            mlb_pen.remove(worst_rp)
-            mlb_pen.append(cand)
+                # Execute swap.
+                sp_by[cand_lvl].remove(cand)
+                target_pen.remove(worst_rp)
+                target_pen.append(cand)
 
-            # Demoted RP cascades to AAA bullpen if their _bot allows;
-            # otherwise walk further down; otherwise overflow.
-            target_idx = LEVELS.index('AAA')
-            bot = worst_rp.get('_bot', len(LEVELS) - 1)
-            if target_idx > bot:
-                # AAA below their floor — find first eligible deeper level.
-                target_idx = None
-                for k in range(LEVELS.index('AAA') + 1, len(LEVELS)):
-                    if k <= bot:
-                        target_idx = k
-                        break
-            if target_idx is None:
-                overflow.append(worst_rp)
-            else:
-                target_lvl = LEVELS[target_idx]
-                if target_lvl in rp_by:
-                    rp_by[target_lvl].append(worst_rp)
-                else:
+                # Demoted RP cascades to next level below target if _bot allows;
+                # otherwise walk further down; otherwise overflow.
+                demote_idx = target_idx + 1
+                bot = worst_rp.get('_bot', len(LEVELS) - 1)
+                if demote_idx > bot:
+                    demote_idx = None
+                    for k in range(target_idx + 1, len(LEVELS)):
+                        if k <= bot:
+                            demote_idx = k
+                            break
+                if demote_idx is None:
                     overflow.append(worst_rp)
+                else:
+                    demote_lvl = LEVELS[demote_idx]
+                    if demote_lvl in rp_by:
+                        rp_by[demote_lvl].append(worst_rp)
+                    else:
+                        overflow.append(worst_rp)
 
-            # Rebalance: cascade any over-cap level (the demoted RP just
-            # joined AAA / lower, possibly pushing it over). Shared helper
-            # mirrors the Step-4c rebalance pass in main().
-            _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
+                # Rebalance: cascade any over-cap level (the demoted RP just
+                # joined the level below target, possibly pushing it over).
+                _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
-            changed = True
-            break  # Re-evaluate worst RP and candidate pool from scratch
+                changed = True
+                break  # break candidate-for-loop; re-evaluate iter from scratch
 
-        if not changed:
-            break
+            if not changed:
+                break  # break iter-for-loop; no more swaps possible at this level
 
 
 def _rescue_overflow_sps(sp_by, rp_by, rp_slots, overflow):
