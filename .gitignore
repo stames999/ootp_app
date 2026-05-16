@@ -9,3 +9,20 @@ __pycache__
 
 # Generated diagnostic output (regenerated ad-hoc, not part of the pipeline)
 outputs/pitch_mix_frequencies.txt
+
+# Regenerated pipeline artifacts. Committing these caused 700K-line diffs
+# per behaviour change and ~80M of repo bloat. The pipeline regenerates
+# them in seconds (`python app.py refresh` for HTML/JSON, "Build xlsx"
+# button in streamlit for the per-org xlsx). Calibration outputs
+# (calibration_gap_report.md, fg_2025_pos_ceilings.json,
+# fielding_calibration_proposal.json, PIPELINE_REVIEW.md) and the
+# pipeline diagram (PIPELINE_REVIEW.md) ARE kept under git — they're
+# either documentation or run-on-demand calibration artifacts.
+outputs/hitters.html
+outputs/hitters.json
+outputs/hit_prospects.html
+outputs/hit_prospects.json
+outputs/pitchers.html
+outputs/pitchers.json
+outputs/*_roster_system.xlsx
+outputs/*_hitter_system.xlsx
