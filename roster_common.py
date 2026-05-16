@@ -54,6 +54,81 @@ SERVICE_LIMITS = {
 }
 
 
+def cascade(pool, slots_for, priority_fn):
+    """Generic cascade-down: place each player at LEVELS[p['_top']], then
+    walk top-down and pop the WORST-priority player whenever a level is
+    over-target. Popped players cascade to the next level if their `_bot`
+    allows, otherwise overflow. Returns `(by_level, overflow)`.
+
+    `priority_fn(player, level_name) -> float` MUST be lower-is-better
+    (matches the pitcher pwOBA convention). Hitter callers wrap their
+    wOBA-where-higher-is-better priority by negating: `lambda p, lvl:
+    -priority(p, lvl)`. Shared sort orientation keeps the pop semantics
+    identical across both pools.
+
+    Shared cascade replaces the parallel implementations that previously
+    lived in build_pitcher_system.py:`_cascade` and the inline cascade
+    block in build_system.py:main(). R-33 consolidation."""
+    by_level = {lvl: [] for lvl in LEVELS}
+    for p in pool:
+        by_level[LEVELS[p['_top']]].append(p)
+    overflow = []
+    for lvl in LEVELS:
+        by_level[lvl].sort(key=lambda p: priority_fn(p, lvl))
+    for i, lvl in enumerate(LEVELS):
+        target = slots_for[lvl]
+        while len(by_level[lvl]) > target:
+            cascaded = by_level[lvl].pop()  # last = worst priority
+            next_idx = i + 1
+            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
+                nxt = LEVELS[next_idx]
+                by_level[nxt].append(cascaded)
+                by_level[nxt].sort(key=lambda p: priority_fn(p, nxt))
+            else:
+                overflow.append(cascaded)
+    return by_level, overflow
+
+
+def overflow_rebalance(by_level, slots_for, priority_fn, overflow,
+                       poppable_filter=None):
+    """Generic over-cap rebalance: walk top-down, while a level is over
+    its target, pop the worst-priority player. Cascaded if `_bot` allows,
+    overflow otherwise. Mirrors the inline rebalance loops in both
+    builders.
+
+    `poppable_filter(p, lvl_name) -> bool` is an optional gate: only
+    players for which it returns True are eligible to be popped. Used
+    by the hitter side to protect HPs and `_force_start` players from
+    cascade during the Step-5 rebalance. Default: all players poppable.
+
+    Mutates `by_level` and `overflow` in place. R-33 consolidation."""
+    iterable_levels = list(by_level.keys())
+    for i_pos, lvl in enumerate(iterable_levels):
+        canonical = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
+        i = LEVELS.index(canonical)
+        target = slots_for.get(lvl, slots_for.get(canonical))
+        if target is None:
+            continue
+        while len(by_level[lvl]) > target:
+            if poppable_filter is not None:
+                poppable = [p for p in by_level[lvl]
+                            if poppable_filter(p, lvl)]
+                if not poppable:
+                    break
+                worst = max(poppable, key=lambda p: priority_fn(p, lvl))
+            else:
+                worst = max(by_level[lvl], key=lambda p: priority_fn(p, lvl))
+            by_level[lvl].remove(worst)
+            next_idx = i + 1
+            bot = worst.get('_bot', len(LEVELS) - 1)
+            if (next_idx < len(LEVELS)
+                    and next_idx <= bot
+                    and LEVELS[next_idx] in by_level):
+                by_level[LEVELS[next_idx]].append(worst)
+            else:
+                overflow.append(worst)
+
+
 def assert_bot_invariant(by_level, role_label=''):
     """Post-condition: every placed player satisfies `LEVELS.index(lvl) <= _bot`.
     `_bot` is OOTP's eligibility floor (age + service + DSL); placing a

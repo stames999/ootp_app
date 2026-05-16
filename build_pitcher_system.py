@@ -41,6 +41,8 @@ from roster_common import (
     LEVELS, MAX_AGE,
     age_lowest_level, service_lowest_level, dsl_eligible_lowest_level,
     _load_injured_names, _count_dsl_teams, is_player_injured,
+    cascade as _shared_cascade,
+    overflow_rebalance as _shared_overflow_rebalance,
 )
 # Tunable thresholds — see config.py "Pitcher cascade tunables" section
 # for full provenance / rationale comments. Re-exported below where other
@@ -150,56 +152,16 @@ def is_high_potential_pitcher(p):
 
 
 def _cascade(pool, slots_for, war_key=None):
-    """Initial placement at each pitcher's `_top`, then cascade-down: while a
-    level holds more than `slots_for[lvl]`, pop the worst-priority pitcher
-    and push to the next level (or to leftovers if `_bot` blocks).
-    `slots_for` is a {level: int} dict so per-level capacities (R(DLR)
-    × DSL count) can vary.
+    """Thin wrapper around `roster_common.cascade()` (R-33 consolidation).
+    Kept as a module-local name so existing callers in this file stay
+    readable. `war_key` is preserved for backwards-compat signature but
+    unused since R-27.
 
-    `war_key` is kept for backwards-compat signature but unused since
-    R-27 (was used by the now-removed MLB tenure quality gate).
-
-    Sort key: `pitcher_priority` alone (R-28). The cascade pops the
-    worst-priority pitcher at each level regardless of cascadability.
-    If the popped pitcher CAN cascade (next level index <= `_bot`),
-    they go down. If they can't (they're at their service-time or
-    age floor), they go to leftovers — and the downstream
-    _rescue_overflow_sps() pass gives any overflowing SP one shot to
-    win a bullpen slot at a feasible level.
-
-    History note: the previous R-11 sort key `(cascadable, priority)`
-    protected service-pinned vets at the front of the list, popping
-    cascadable arms first even when the vet had worse priority. That
-    pinned the worst arms at AA/A+ while pushing better-priority HP
-    prospects down. R-28 replaces that with pure priority + the
-    rescue safety net — a strictly more honest competition that
-    surfaces real misfits to overflow rather than slot-blocking."""
-    by_level = {lvl: [] for lvl in LEVELS}
-    leftovers = []
-    for p in pool:
-        by_level[LEVELS[p['_top']]].append(p)
-
-    def _sort_key_factory(lvl_name):
-        # R-28: meritocratic cascade — sort by priority only.
-        # Cascadability is enforced at pop time via the `_bot` check,
-        # not by sort-order protection.
-        def _key(p):
-            return pitcher_priority(p, lvl_name)
-        return _key
-
-    for lvl in LEVELS:
-        by_level[lvl].sort(key=_sort_key_factory(lvl))
-    for i, lvl in enumerate(LEVELS):
-        while len(by_level[lvl]) > slots_for[lvl]:
-            cascaded = by_level[lvl].pop()  # last = worst priority
-            next_idx = i + 1
-            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                nxt = LEVELS[next_idx]
-                by_level[nxt].append(cascaded)
-                by_level[nxt].sort(key=_sort_key_factory(nxt))
-            else:
-                leftovers.append(cascaded)
-    return by_level, leftovers
+    Cascade uses pitcher_priority (lower = better, matches the pwOBA
+    convention) so no priority-inversion is needed. See the shared
+    helper's docstring for the full algorithm + history."""
+    del war_key  # legacy param, see docstring
+    return _shared_cascade(pool, slots_for, pitcher_priority)
 
 
 def is_lhp(p):
@@ -561,22 +523,9 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
                     overflow.append(worst_rp)
 
             # Rebalance: cascade any over-cap level (the demoted RP just
-            # joined AAA / lower, possibly pushing it over). Mirrors the
-            # Step-4c rebalance pass in main(). Walk top-down popping
-            # the worst-priority RP to the next level (or overflow).
-            for i, lvl in enumerate(LEVELS):
-                if lvl not in rp_by:
-                    continue
-                while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
-                    worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
-                    rp_by[lvl].remove(worst)
-                    next_idx = i + 1
-                    if (next_idx < len(LEVELS)
-                            and next_idx <= worst.get('_bot', len(LEVELS) - 1)
-                            and LEVELS[next_idx] in rp_by):
-                        rp_by[LEVELS[next_idx]].append(worst)
-                    else:
-                        overflow.append(worst)
+            # joined AAA / lower, possibly pushing it over). Shared helper
+            # mirrors the Step-4c rebalance pass in main().
+            _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
             changed = True
             break  # Re-evaluate worst RP and candidate pool from scratch
@@ -685,21 +634,8 @@ def _rescue_overflow_sps(sp_by, rp_by, rp_slots, overflow):
         # they truly weren't competitive even as a swingman.
 
     # Over-cap ripple: a displaced RP that cascades to a level already at
-    # capacity needs to keep cascading. Same shape as the Step-4c rebalance
-    # loop in main().
-    for i, lvl in enumerate(LEVELS):
-        if lvl not in rp_by:
-            continue
-        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
-            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
-            rp_by[lvl].remove(worst)
-            next_idx = i + 1
-            if (next_idx < len(LEVELS)
-                    and next_idx <= worst.get('_bot', len(LEVELS) - 1)
-                    and LEVELS[next_idx] in rp_by):
-                rp_by[LEVELS[next_idx]].append(worst)
-            else:
-                overflow.append(worst)
+    # capacity needs to keep cascading. Shared helper.
+    _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
 
 def _block_hps_at_mlb(by_level):
@@ -867,19 +803,8 @@ def main(org=None):
     # Step 4c: rebalance any level the LHP shortfall pushed over capacity.
     # When MLB or AAA drops a RHP to make room for "Sign LHP" placeholders,
     # the demoted RHP cascades to the next level — which can then run over
-    # its rp_target. Trim from the top down by popping the worst-priority
-    # RP to the next level (or overflow if their _bot doesn't allow).
-    for i, lvl in enumerate(LEVELS):
-        if lvl not in rp_by:
-            continue
-        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
-            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
-            rp_by[lvl].remove(worst)
-            next_idx = i + 1
-            if next_idx < len(LEVELS) and next_idx <= worst['_bot']:
-                rp_by[LEVELS[next_idx]].append(worst)
-            else:
-                overflow.append(worst)
+    # its rp_target. Shared helper trims top-down.
+    _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
     rp_assigned = {p['name'] for lvl in LEVELS for p in rp_by[lvl]}
 
@@ -929,17 +854,7 @@ def main(org=None):
     # slots that genuinely have no LHP filler available end up tagged
     # `sign_lhp` again rather than silently filled by a RHP.
     lhp_shortfalls = _enforce_lhp_balance(rp_by, overflow, rp_slots)
-    for i, lvl in enumerate(LEVELS):
-        if lvl not in rp_by:
-            continue
-        while len(rp_by[lvl]) > rp_slots.get(lvl, RP_PER_LEVEL.get(lvl, 8)):
-            worst = max(rp_by[lvl], key=lambda p: pitcher_priority(p, lvl))
-            rp_by[lvl].remove(worst)
-            next_idx = i + 1
-            if next_idx < len(LEVELS) and next_idx <= worst['_bot']:
-                rp_by[LEVELS[next_idx]].append(worst)
-            else:
-                overflow.append(worst)
+    _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
     # NOTE: Step 5a.3 (two-way pin) was retired in R-10. Two-way pitchers
     # are now treated as pure pitchers in the cascade — their position=1

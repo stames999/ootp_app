@@ -27,6 +27,8 @@ from roster_common import (  # noqa: F401  (re-exports)
     dsl_eligible_lowest_level, _count_dsl_teams, _load_injured_names,
     is_player_injured,
     INJURED_FILE,
+    cascade as _shared_cascade,
+    overflow_rebalance as _shared_overflow_rebalance,
 )
 from config import HP_MIN_LEVEL_INDEX
 from config import (
@@ -680,35 +682,15 @@ def main(org=None):
     # prospects down. R-28 replaces that with pure priority + reliance
     # on PASS 3 for the bench rescue — strictly more honest competition
     # that surfaces real misfits to overflow rather than slot-blocking.
-    nc_by = {lvl: [] for lvl in LEVELS}
-    for p in noncatchers:
-        nc_by[LEVELS[p['_top']]].append(p)
-
-    def _cascade_sort_key_factory(lvl_idx, lvl_name):
-        # R-28: meritocratic cascade — sort by priority only.
-        # Cascadability is enforced at pop time via the `_bot` check.
-        del lvl_idx  # was used by the R-11 cascadability flag
-        def _key(p):
-            return -priority(p, lvl_name)
-        return _key
-
-    for lvl in LEVELS:
-        nc_by[lvl].sort(key=_cascade_sort_key_factory(LEVELS.index(lvl), lvl))
-
+    # Cascade non-catchers via shared `roster_common.cascade()` (R-33).
+    # Hitter priority is wOBA-where-higher-is-better, but the shared
+    # helper expects lower-is-better — negate for the sort orientation.
     nc_slots = {lvl: roster_sizes[lvl] - len(cby[lvl]) for lvl in LEVELS}
-
-    # Cascade down
-    for i, lvl in enumerate(LEVELS):
-        target = nc_slots[lvl]
-        while len(nc_by[lvl]) > target:
-            cascaded = nc_by[lvl].pop()
-            next_idx = i + 1
-            if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                nxt = LEVELS[next_idx]
-                nc_by[nxt].append(cascaded)
-                nc_by[nxt].sort(key=_cascade_sort_key_factory(next_idx, nxt))
-            else:
-                overflow.append(cascaded)
+    nc_by, nc_overflow = _shared_cascade(
+        noncatchers, nc_slots,
+        lambda p, lvl: -priority(p, lvl),
+    )
+    overflow.extend(nc_overflow)
 
     # Pull up
     for i, lvl in enumerate(LEVELS):
@@ -882,21 +864,16 @@ def main(org=None):
         # Demote-without-swap from HP enforcement can leave a level over
         # ROSTER_SIZES; pop the lowest-priority non-HP non-force-start to
         # the next level (or overflow if their _bot doesn't allow).
-        for i, lvl in enumerate(LEVELS):
-            while len(by_level[lvl]) > roster_sizes[lvl]:
-                poppable = [p for p in by_level[lvl]
-                            if not is_high_potential(p)
-                            and p.get('_force_start') != lvl]
-                if not poppable:
-                    break
-                poppable.sort(key=lambda p: priority(p, lvl))
-                cascaded = poppable[0]
-                by_level[lvl].remove(cascaded)
-                next_idx = i + 1
-                if next_idx <= cascaded['_bot'] and next_idx < len(LEVELS):
-                    by_level[LEVELS[next_idx]].append(cascaded)
-                else:
-                    overflow.append(cascaded)
+        # Shared helper (R-33) with a poppable filter that protects HPs
+        # and players whose `_force_start` pins them at this level.
+        def _poppable(p, lvl):
+            return not is_high_potential(p) and p.get('_force_start') != lvl
+        _shared_overflow_rebalance(
+            by_level, roster_sizes,
+            lambda p, lvl: -priority(p, lvl),
+            overflow,
+            poppable_filter=_poppable,
+        )
 
     _enforce_hp_starters()
 
