@@ -621,7 +621,17 @@ PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA = 0.5  # legacy / unused since R-34 prior
 # orgs). A 10-wOBA-point margin filters those marginal swaps while
 # preserving the legitimate big-gap cases (Cannon at .366 vs worst AAA
 # RP .392 — gap .026, easily clears).
-PITCHER_SWINGMAN_PRIORITY_MARGIN = 0.020
+PITCHER_SWINGMAN_PRIORITY_MARGIN = 0.010
+# Developmental gate (R-34): swingman won't pull arms whose pwOBAP is
+# MLB-tier (<= BLOCKER_MLB_PWOBA = .345) AND who still have development
+# runway (age <= this cap). The age component is essential — an older
+# arm (e.g. Fedde at 33 with pwOBAP .344) has theoretical projection
+# but no real runway left; treating him as "developmental" strands
+# him at AAA SP when his current stuff plays as a fine MLB bullpen
+# arm. 27 chosen as the typical "either developed or not" line — by
+# 27, OOTP's potential ratings are largely artifact for non-realized
+# prospects.
+DEVELOPMENTAL_MAX_AGE = 27
 # R-34: switched the pull-up gate from `rp_warP` delta to a strict
 # `pitcher_priority` comparison (the same R-31 single-rule invariant
 # used everywhere else). At MLB pitcher_priority is pure current pwOBA,

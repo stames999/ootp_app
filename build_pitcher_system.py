@@ -53,7 +53,7 @@ from config import (  # noqa: F401  (re-exports)
     LHP_LEVELS, LEFTY_MIN, LEFTY_TARGET, LEFTY_MAX, LEFTY_TARGET_MAX_COST,
     HP_PITCHER_MAX_AGE, HP_PITCHER_MAX_PWOBAP,
     PITCHER_SWINGMAN_PULLUP_ENABLED, PITCHER_SWINGMAN_PULLUP_MIN_WARP_DELTA,
-    PITCHER_SWINGMAN_PRIORITY_MARGIN,
+    PITCHER_SWINGMAN_PRIORITY_MARGIN, DEVELOPMENTAL_MAX_AGE,
     HP_MIN_LEVEL_INDEX,
     PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
     BLOCKER_CEILING_DELTA, BLOCKER_MLB_PWOBA,
@@ -498,13 +498,14 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
             # (lowest = best stuff).
             #
             # "Developmental" gate (R-34): exclude arms whose pwOBAP is
-            # MLB-tier (<= BLOCKER_MLB_PWOBA = .345). These are real
-            # prospects even if they aged out of HP status — e.g. David
-            # Sandlin (CWS, age 25, pwOBA .367 / pwOBAP .327, sp_warP 2.0)
-            # has better projection than the HP gate (.335) but is one
-            # year too old. Pulling him from AA SP to AAA RP for a
-            # current-stuff upgrade undermines his development as a
-            # starter. The HP exclusion alone wasn't catching this case.
+            # MLB-tier (<= BLOCKER_MLB_PWOBA = .345) AND who still have
+            # development runway (age <= DEVELOPMENTAL_MAX_AGE = 27).
+            # Both conditions must hold — an older arm (e.g. Fedde at
+            # 33 with pwOBAP .344) has theoretical projection but no
+            # real runway and shouldn't be stranded as an AAA SP.
+            # Same shape as HP gate but with looser thresholds:
+            #   HP:  minor=1, age<=24, pwOBAP<=.335 — true prospects
+            #   Dev: any minor status, age<=27, pwOBAP<=.345 — almost-prospects
             cands = []
             for lvl, lst in sp_by.items():
                 lvl_canonical = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
@@ -516,9 +517,12 @@ def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
                         continue
                     if p.get('pwOBA') is None:
                         continue
-                    if (p.get('pwOBAP') is not None
-                            and p['pwOBAP'] <= BLOCKER_MLB_PWOBA):
-                        continue  # MLB-tier projection = real prospect
+                    pwobap = p.get('pwOBAP')
+                    age = p.get('age', 99)
+                    if (pwobap is not None
+                            and pwobap <= BLOCKER_MLB_PWOBA
+                            and age <= DEVELOPMENTAL_MAX_AGE):
+                        continue  # MLB-tier projection + runway = real prospect
                     cands.append((p, lvl))
             if not cands:
                 break
