@@ -54,6 +54,33 @@ SERVICE_LIMITS = {
 }
 
 
+def assert_bot_invariant(by_level, role_label=''):
+    """Post-condition: every placed player satisfies `LEVELS.index(lvl) <= _bot`.
+    `_bot` is OOTP's eligibility floor (age + service + DSL); placing a
+    player below it would violate roster rules. The cascade, pull-up,
+    push-down, swingman pull-up, and rescue all check `_bot` at their
+    placement sites — this helper is defence-in-depth so a future
+    placement path that forgets the check fails loudly instead of
+    silently producing an illegal roster.
+
+    R(DLR) sub-team keys (R(DLR)1, R(DLR)2) collapse to R(DLR)'s index
+    for the comparison. Pass `role_label` (e.g. 'SP', 'RP') for clearer
+    error messages.
+    """
+    for lvl, players in by_level.items():
+        canonical = 'R(DLR)' if str(lvl).startswith('R(DLR)') else lvl
+        lvl_idx = LEVELS.index(canonical)
+        for p in players:
+            bot = p.get('_bot')
+            if bot is None:
+                continue
+            assert lvl_idx <= bot, (
+                f'_bot invariant violated{f" ({role_label})" if role_label else ""}: '
+                f'{p.get("name", "?")} (org={p.get("org", "?")}) placed at '
+                f'{lvl} (idx {lvl_idx}) but _bot={LEVELS[bot]} (idx {bot})'
+            )
+
+
 def total_service_years(p):
     """Cumulative pro service years. Uses `years_pro` (career span, max
     appearance year minus min appearance year plus 1) when available —

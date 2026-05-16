@@ -1368,6 +1368,12 @@ def main(org=None):
     # marginally cleared the MLB cap, displacing competitively-better
     # MLB non-HP arms (e.g. BOS's Tolle pinned to MLB SP over Bello).
 
+    # Defence-in-depth: assert no player ended up below their `_bot`.
+    # Every placement site already checks, but a future placement path
+    # could forget; this catches it loudly.
+    from roster_common import assert_bot_invariant
+    assert_bot_invariant(by_level, role_label='hitter')
+
     # Final Hungarian (overall + platoon variants on the same roster).
     # Platoon variants pin standard starters to their standard position, so
     # an everyday 3B doesn't get shuffled to CF in vs-LHP just because his

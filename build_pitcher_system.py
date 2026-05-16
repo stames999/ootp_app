@@ -1000,6 +1000,13 @@ def main(org=None):
             'sign_lhp': lhp_shortfalls.get(lvl, 0),
         }
 
+    # Defence-in-depth: assert no player ended up below their `_bot`.
+    # Every placement site already checks, but a future placement path
+    # could forget; this catches it loudly.
+    from roster_common import assert_bot_invariant
+    assert_bot_invariant(sp_by, role_label='SP')
+    assert_bot_invariant(rp_by, role_label='RP')
+
     return rosters, overflow, flagged_players
 
 
