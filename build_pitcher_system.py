@@ -725,25 +725,28 @@ def _enforce_hp_pitchers(by_level, slots_for, pool_names, overflow):
                 break
 
 
-def main(org=None):
-    laa = load_team_pitchers(org)
-    for p in laa:
-        p.pop('_role', None)
+def _filter_complex_and_injured(laa):
+    """Step 0: drop international-complex (minor=0 + age<20) and the
+    injured pool. Returns (valid_for_placement, flagged_injured).
 
-    # Step 0: filter international complex + injured-list (see injured.txt)
+    Extracted from main() for testability (R-33 decomposition)."""
     laa = [p for p in laa if not (p.get('minor') == 0 and p['age'] < 20)]
     injured = _load_injured_names()
     flagged_players = [p for p in laa if is_player_injured(p, injured)]
-    laa = [p for p in laa if not is_player_injured(p, injured)]
+    valid = [p for p in laa if not is_player_injured(p, injured)]
+    return valid, flagged_players
 
-    # Step 1: eligibility window. `_top` = current pwOBA ceiling only;
-    # there's no age-based extra cap (see PITCHER_AGE_TOP removal note).
-    # `_bot` combines age and service-time floors — the more restrictive
-    # wins, so a vet who's burned through A+ service time can't be sent
-    # down there even if young enough.
+
+def _compute_eligibility_window(pool):
+    """Step 1: set `_top` (pwOBA-derived best level) and `_bot`
+    (age + service + DSL floor) on every player. Returns
+    (valid, immediate_overflow) — players with `_top > _bot` have no
+    placement window and go straight to overflow.
+
+    Extracted from main() for testability (R-33 decomposition)."""
     overflow = []
     valid = []
-    for p in laa:
+    for p in pool:
         p['_top'] = pwoba_top_level(p)
         p['_bot'] = min(age_lowest_level(p), service_lowest_level(p),
                         dsl_eligible_lowest_level(p))
@@ -751,16 +754,37 @@ def main(org=None):
             overflow.append(p)
         else:
             valid.append(p)
+    return valid, overflow
 
-    # Per-org pitcher capacities. R(DLR) scales by DSL team count (each
-    # DSL team has its own staff = SP_PER_LEVEL[R(DLR)] + RP_PER_LEVEL[R(DLR)]
-    # slots). SP_PER_LEVEL / RP_PER_LEVEL are now per-level dicts, so each
-    # level reads its own SP/RP capacity directly.
+
+def _per_org_slot_capacities(org):
+    """Build per-level SP/RP slot dicts, scaling R(DLR) by the org's
+    actual DSL team count. Extracted from main() for testability
+    (R-33 decomposition)."""
     sp_slots = {lvl: SP_PER_LEVEL[lvl] for lvl in LEVELS}
     rp_slots = {lvl: RP_PER_LEVEL[lvl] for lvl in LEVELS}
     n_dsl = max(1, _count_dsl_teams(org))
     sp_slots['R(DLR)'] = SP_PER_LEVEL['R(DLR)'] * n_dsl
     rp_slots['R(DLR)'] = RP_PER_LEVEL['R(DLR)'] * n_dsl
+    return sp_slots, rp_slots, n_dsl
+
+
+def main(org=None):
+    laa = load_team_pitchers(org)
+    for p in laa:
+        p.pop('_role', None)
+
+    # Step 0: filter international complex (minor=0 + age<20) and the
+    # injured pool (OOTP injury flag + manual injured.txt).
+    laa, flagged_players = _filter_complex_and_injured(laa)
+
+    # Step 1: eligibility window. `_top` = current pwOBA ceiling only;
+    # `_bot` = min(age, service-time, DSL-eligibility) floor. Players
+    # with `_top > _bot` have no feasible placement and overflow now.
+    valid, overflow = _compute_eligibility_window(laa)
+
+    # Per-org pitcher capacities. R(DLR) scales by DSL team count.
+    sp_slots, rp_slots, n_dsl = _per_org_slot_capacities(org)
 
     # Step 2-3: SP cascade + pull-up
     sp_pool = [p for p in valid if is_sp_viable(p)]

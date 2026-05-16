@@ -535,23 +535,48 @@ def is_high_potential(p):
     wobap = p.get('wOBAP') or 0
     return bestP_adj >= HP_BESTP_ADJ_THRESHOLD or wobap >= HP_WOBA_THRESHOLD
 
-def main(org=None):
-    laa = load_team(org)
-    # Strip transient flags from any prior run on cached dicts (load_team
-    # currently re-reads from disk, but this guards against future callers
-    # that hand us already-processed players).
+def _filter_complex_and_injured(laa):
+    """Step 0: drop international-complex (minor=0 + age<20) and the
+    injured pool. Returns (valid, complex, flagged_injured). Extracted
+    from main() for testability (R-33 decomposition)."""
     for p in laa:
         p.pop('_force_start', None)
-    # Exclude international complex: minor=0 + age <20 (not in active minor system this year)
     complex_players = [p for p in laa if p.get('minor') == 0 and p['age'] < 20]
     laa = [p for p in laa if not (p.get('minor') == 0 and p['age'] < 20)]
-    # Pull out players listed in injured.txt — they don't compete for active
-    # roster spots. Rerun the system once they're cleared. Separate from the
-    # `flag` column (which is a display marker for the HTML reports — see
-    # reader.is_flagged / flagged.txt — and intentionally NOT used here).
     injured = _load_injured_names()
     flagged_players = [p for p in laa if is_player_injured(p, injured)]
     laa = [p for p in laa if not is_player_injured(p, injured)]
+    return laa, complex_players, flagged_players
+
+
+def _compute_eligibility_window(pool):
+    """Step 1: set `_top` (wOBA-derived best level) and `_bot`
+    (age + service + DSL floor) on every player. Returns
+    (valid, immediate_overflow) — players with `_top > _bot` overflow
+    immediately. Extracted from main() for testability."""
+    overflow = []
+    valid = []
+    for p in pool:
+        top = woba_max_level(p)
+        bot = min(age_lowest_level(p), service_lowest_level(p),
+                  dsl_eligible_lowest_level(p))
+        p['_top'] = top
+        p['_bot'] = bot
+        if top > bot:
+            overflow.append(p)
+            continue
+        valid.append(p)
+    return valid, overflow
+
+
+def main(org=None):
+    laa = load_team(org)
+    # Step 0: filter international complex (minor=0 + age<20) and the
+    # injured pool. Injured-list players don't compete for active roster
+    # spots; rerun the system once they're cleared. Separate from the
+    # `flag` column (display marker for HTML reports, not used here).
+    laa, complex_players, flagged_players = _filter_complex_and_injured(laa)
+
     overflow = []
     by_level = {lvl: [] for lvl in LEVELS}
 
@@ -564,25 +589,11 @@ def main(org=None):
     for p in laa:
         apply_hp_premium_fit_override(p)
 
-    # Compute eligible range. _bot combines age and service-time floors —
-    # the more restrictive (smaller index = higher level) wins. A player
-    # whose service has burned through R/A/A+ can't be sent down there,
-    # even if they're young enough.
-    valid_players = []
-    for p in laa:
-        top = woba_max_level(p)
-        bot = min(age_lowest_level(p), service_lowest_level(p),
-                  dsl_eligible_lowest_level(p))
-        # Set _top / _bot on every player (including those who go straight
-        # to overflow). The bench-refinement overflow lookup needs _top to
-        # check upper-level eligibility; before this the keys were only set
-        # on valid_players and overflow lookups crashed on stranded bats.
-        p['_top'] = top
-        p['_bot'] = bot
-        if top > bot:
-            overflow.append(p)
-            continue
-        valid_players.append(p)
+    # Step 1: eligibility window. `_top` = wOBA-derived best level;
+    # `_bot` = min(age, service-time, DSL-eligibility). Players with
+    # `_top > _bot` have no feasible placement and overflow immediately.
+    valid_players, immediate_overflow = _compute_eligibility_window(laa)
+    overflow.extend(immediate_overflow)
 
     # Per-org roster sizes — R(DLR) scales by DSL team count (1 or 2)
     roster_sizes = compute_roster_sizes(org)
