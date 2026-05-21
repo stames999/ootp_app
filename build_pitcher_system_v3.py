@@ -29,6 +29,7 @@ Same priority function, same HP detection, same R(DLR) sub-team split,
 same two-way / injured handling. The only thing eliminated is the
 pwOBA-based level ceiling.
 """
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
 
 import json
 

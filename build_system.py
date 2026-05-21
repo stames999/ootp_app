@@ -1,4 +1,5 @@
 """LAA hitter assignment v3 - wOBA-driven with overflow cascade."""
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
 import json
 
 from config import RUNS_PER_GAME_HITTING_COEFF as _COEFF, RUNS_PER_WIN_HITTING as _RPW_H

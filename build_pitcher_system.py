@@ -35,6 +35,8 @@ Notes / limitations:
   available and could power that later.
 - No bullpen role tagging (closer / setup / LOOGY).
 """
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
+
 import json
 
 from roster_common import (

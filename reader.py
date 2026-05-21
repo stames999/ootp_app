@@ -1,3 +1,5 @@
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
+
 import numpy as np
 import pandas as pd
 

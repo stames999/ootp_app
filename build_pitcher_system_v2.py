@@ -31,6 +31,7 @@ Differences from v1:
     better priority than the worst starter (the slot would have gone to
     them otherwise).
 """
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
 
 import json
 

@@ -14,6 +14,8 @@ Talks to the same functions as the CLI (`app.py`):
 - build_pitcher_system.main(org)     — pitcher rosters from cached JSON
 - build_excel.main_build(org)        — write the team xlsx
 """
+from __future__ import annotations  # PEP 604 unions (`str | None`) — Python 3.9 (Streamlit Cloud) compat
+
 import json
 import os
 import tempfile
