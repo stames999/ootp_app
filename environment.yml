@@ -6,6 +6,8 @@ dependencies:
   - python=3.9
   - numpy
   - pandas
+  - scipy
+  - openpyxl
   - jinja2
   - jupyter
   - nbstripout
