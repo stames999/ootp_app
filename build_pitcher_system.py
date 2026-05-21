@@ -56,7 +56,7 @@ from config import (  # noqa: F401  (re-exports)
     PITCHER_SWINGMAN_PRIORITY_MARGIN, DEVELOPMENTAL_MAX_AGE,
     HP_MIN_LEVEL_INDEX,
     PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
-    BLOCKER_CEILING_DELTA, BLOCKER_MLB_PWOBA,
+    BLOCKER_CEILING_DELTA, BLOCKER_MLB_PWOBA, BLOCKER_PENALTY_SCALE,
 )
 
 PITCHERS_JSON = 'outputs/pitchers.json'
@@ -92,10 +92,15 @@ def pitcher_priority(p: dict, level: str | None = None) -> float:
     R-32 blocker penalty: a non-HP arm at his ceiling (pwOBA ≈ pwOBAP)
     whose ceiling is sub-MLB (pwOBAP > .345) blocks HPs at development
     levels while only contributing org-depth value. His priority gets
-    penalised by `pwOBAP − .345` (his distance from MLB-tier), pushing
-    him behind HPs with real projection upside. Keeps the single-rule
-    invariant from R-31 — the penalty is part of the priority blend,
-    not a separate ranking rule."""
+    penalised by `BLOCKER_PENALTY_SCALE * (pwOBAP − .345)` — distance
+    from MLB-tier, scaled (default 0.5×). The scale preserves the
+    "worse ceiling = harsher penalty" gradient while keeping the
+    magnitude bounded so the penalty can't overwhelm natural priority
+    gaps between fringe arms (the unscaled penalty grew to ~.030 for
+    arms at pwOBAP .376-.380, large enough to release players whose
+    raw pwOBA was actually better than the slot's worst held arm).
+    Keeps the single-rule invariant from R-31 — the penalty is part of
+    the priority blend, not a separate ranking rule."""
     pwoba = p.get('pwOBA') if p.get('pwOBA') is not None else 1.0
     if level == 'MLB':
         return pwoba
@@ -105,7 +110,7 @@ def pitcher_priority(p: dict, level: str | None = None) -> float:
     if (not is_high_potential_pitcher(p)
             and (pwoba - pwobap) < BLOCKER_CEILING_DELTA
             and pwobap > BLOCKER_MLB_PWOBA):
-        blend += pwobap - BLOCKER_MLB_PWOBA
+        blend += BLOCKER_PENALTY_SCALE * (pwobap - BLOCKER_MLB_PWOBA)
     return blend
 
 
@@ -435,6 +440,44 @@ def _push_down_from_overflow(by_level, slots_for, overflow, role):
             overflow.remove(best)
             by_level[lvl].append(best)
             by_level[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
+
+
+def _promote_natural_sps_from_rp(sp_by, rp_by, sp_slots):
+    """Fill any under-target SP slot at level `lvl` with the best
+    sp_viable arm currently in `rp_by[lvl]` whose `_top <= lvl_idx`
+    (strict eligibility). Mutates `sp_by` and `rp_by` in place.
+
+    Why this exists: SP cascade compression can dump natural-_top arms
+    into the RP pool. Concrete case (CWS Dynasty, mid-2026): cascade
+    fills R SP with A+/A arms that cascaded down (priority .380-.395),
+    pushing the R-natural arms (Wynk / Banks / Darden, priority
+    .397-.400) out to overflow. Those arms enter RP cascade and land
+    at R bullpen. Then swingman pull-up moves the cascaded-in A+/A
+    arms OUT of R SP into higher-level bullpens — leaving R SP empty.
+    Without this pass, the re-run SP pull-up fills the vacated R SP
+    slots via +1 stretch from R(DLR) (Suarez / Marte / Rodriguez at
+    priority .416-.435), even though *better-priority* natural-_top
+    arms are sitting one level over in `rp_by[R]`.
+
+    Runs between `_swingman_pullup` and the re-run `_pull_up` so the
+    natural arms get first claim on vacated slots; stretches only
+    apply after natural fits are exhausted. Keeps the single-rule
+    invariant (R-31) within each level.
+    """
+    for i, lvl in enumerate(LEVELS):
+        target = sp_slots.get(lvl, 0)
+        while len(sp_by.get(lvl, [])) < target:
+            candidates = [
+                p for p in rp_by.get(lvl, [])
+                if is_sp_viable(p)
+                and p.get('_top', i + 1) <= i
+            ]
+            if not candidates:
+                break
+            best = min(candidates, key=lambda p: pitcher_priority(p, lvl))
+            rp_by[lvl].remove(best)
+            sp_by.setdefault(lvl, []).append(best)
+            sp_by[lvl].sort(key=lambda p: pitcher_priority(p, lvl))
 
 
 def _swingman_pullup(sp_by, rp_by, rp_slots, overflow):
@@ -868,6 +911,17 @@ def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
     # repaired by the LHP balance pass at the next step.
     _swingman_pullup(sp_by, rp_by, rp_slots, overflow)
 
+    # Step 4a.0a: promote natural-_top sp_viable arms from rp_by into
+    # vacant sp_by slots at the same level, BEFORE the re-run pull-up
+    # falls back on +1 stretches. Fixes cascade-compression inversion
+    # where R-natural arms get pushed to R bullpen by A+/A arms
+    # cascading down, then the cascaded-in arms get pulled away to
+    # higher bullpens by swingman, leaving R SP to be filled via
+    # stretch from R(DLR) — even though better-priority R-natural
+    # arms are sitting right there in rp_by[R]. See helper docstring
+    # for the full Banks/Darden/Wynk trace.
+    _promote_natural_sps_from_rp(sp_by, rp_by, sp_slots)
+
     # Step 4a.1 (R-34): re-run SP pull-up to refill any AAA / lower SP
     # slots the swingman pull-up vacated. Without this the empty slots
     # would later be filled by `_push_down_from_overflow`, which used
@@ -893,6 +947,14 @@ def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
     # its rp_target. Shared helper trims top-down.
     _shared_overflow_rebalance(rp_by, rp_slots, pitcher_priority, overflow)
 
+    # Recompute sp_assigned: the original set above was built right after
+    # the first SP pull-up, but `_swingman_pullup` moves SP arms into
+    # bullpens and `_promote_natural_sps_from_rp` moves RP arms into
+    # rotation. Using the stale set in Step 5 would re-add promoted arms
+    # to overflow (they weren't in the original `sp_assigned`) and the
+    # downstream push-down would then put them back into a bullpen slot,
+    # creating duplicates between sp_by and rp_by.
+    sp_assigned = {p['name'] for lvl in LEVELS for p in sp_by[lvl]}
     rp_assigned = {p['name'] for lvl in LEVELS for p in rp_by[lvl]}
 
     # Step 5: overflow — collect anyone not placed by SP or RP cascade.

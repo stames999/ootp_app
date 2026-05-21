@@ -1,5 +1,116 @@
 # Pistachio — Handover
 
+## Session 2026-05-21 — pitcher v3 placement + regression-calibrated metrics
+
+Two big shifts in this session:
+
+1. **Pitcher placement rewritten as v3** (`build_pitcher_system_v3.py`,
+   active). Single-pass per-level greedy assignment replaces v1's
+   cascade → pull-up → push-down → swingman → rescue → HP-enforce
+   stack. Closed-form HP `_bot` priority bonus (−0.015 at the HP's
+   floor level) guarantees SP-viable HPs crack rotation. Blocker
+   penalty restored to scale=1.0 but now SP-only. R age cap restored
+   to 22 (was raised to 25 mid-session as a v1-era workaround that
+   v3's thresholdless model no longer needs).
+2. **Pitcher metrics replaced with regression-derived v2**
+   (`metrics_pitching_v2.py`, active). Closed-form quadratic formulas
+   fit on a 95-pitcher OOTP-projection sample. Beats v1's hand-tuned
+   tables on every reference metric: pwOBA-against mean \|err\| .009
+   vs .016, BABIP-against .001 vs .020 (14× tighter). Hitter v2 was
+   prototyped but lost the equivalent A/B (v1 .007 vs v2 .010 mean
+   \|wOBA err\| on the 10-elite reference) — hitter v1 stays active.
+
+### Active vs reference modules
+
+| Side | Active | A/B reference | Notes |
+|---|---|---|---|
+| Pitcher placement | v3 (`build_pitcher_system_v3.py`) | v1, v2 on disk | A/B via `compare_pitcher_placement.py` |
+| Hitter metrics | v1 (`metrics_hitting.py`) | v2 on disk | A/B via `exports/hitter_v1_vs_v2.py` |
+| Pitcher metrics | v2 (`metrics_pitching_v2.py`) | v1 on disk | A/B via `exports/pitcher_v1_vs_v2.py` |
+
+### Key constants in this session (config.py)
+
+| Constant | Value | Notes |
+|---|---|---|
+| `PRIORITY_BLEND_CURRENT_WEIGHT` / `PROJECTED_WEIGHT` | 90/10 | v3 settled here after 85/15 → 75/25 → pwOBA-only → 90/10 sweep |
+| `BLOCKER_PENALTY_SCALE` | 1.0 | Restored to full strength once SP-only (was 0.5) |
+| `HP_BOT_PRIORITY_BONUS` (in build_pitcher_system_v3.py) | 0.015 | HP "developmental home advantage" at their floor level |
+| `PWOBA_MAX` recalibrated | tighter | MLB .345 unchanged; AAA → .360, AA → .370, A+ → .380, A → .395, R → open (1.0), R(DLR) open |
+| `MAX_AGE['R']` | 22 | Restored from 25 to OOTP standard |
+| `SERVICE_LIMITS` | 5/4/3/3 with `>` | Reverted to original after sim-date-aware `years_pro` fix in reader.add_years_at_level |
+
+### v3 pitcher placement summary
+
+```
+For each level top-down (MLB → R(DLR)):
+  eligible = arms with _top ≤ level ≤ _bot, plus HP MLB block
+  Phase 1 (SP): take top SP_PER_LEVEL by priority
+  Phase 2 (RP): take top RP_PER_LEVEL with LHP balance reservation
+priority = pwoba_blend(0.9, 0.1) + blocker_penalty(SP-only) − HP_bot_bonus
+```
+
+Replaces ~700 lines of cascade/pull-up/push-down/swingman/rescue logic
+with ~150 lines of greedy assignment. CWS Dynasty validation: all 11
+SP-viable HPs developing as starters, every slot filled.
+
+### Pitcher metrics v2 formulas
+
+From a 95-pitcher OOTP in-game projection sample:
+
+```
+K%             = -0.138 + 0.00934·Stuff − 0.0000479·Stuff² + 0.00425·NumPitches  (R²=0.97)
+BB%            =  0.403 − 0.01015·Control + 0.0000746·Control²                    (R²=0.94)
+HR%            =  0.166 − 0.00433·HRA + 0.0000326·HRA² − 0.0000901·BestFB         (R²=0.82)
+BABIP-against  =  0.325 − 0.000609·pBABIP                                          (R²=0.89)
+
+Then derived per side using same coefficients with vsR / vsL inputs:
+  BIP%      = 1 − K% − BB% − HBP% − HR%
+  h_nothr%  = BIP% × BABIP-against
+  pwOBA     = wOBA_weights · (HR%, BB%, h_nothr%)
+```
+
+Calibration data + script in `exports/pitcher_outcome_regressions_v2.py`.
+A/B harness at `exports/pitcher_v1_vs_v2.py`.
+
+### Hitter v2 prototype (reverted)
+
+For hitters, the equivalent regression-derived approach lost the head-
+to-head: v1's hand-tuned `BATTING_COMPONENTS_ADJUST_MAP` produces
+.007 mean \|wOBA err\| on the 10-elite reference vs v2's .010. Reason:
+v1 has ~60 free parameters per stat (one per rating value); v2 has 3
+(intercept + linear + quadratic). v1 captures OOTP's engine more
+finely at the elite tail. Hitter v2 calibrated on n=62 MLB-heavy
+sample, would benefit from broader sample before retry. Kept on disk
+as `metrics_hitting_v2.py` for future revisit.
+
+### Calibration analysis files (exports/)
+
+- `export_rating_calibration.py` — hitter pool, 1 player per (stat, rating-value) bin
+- `export_pitcher_calibration.py` — pitcher pool, 103 players covering all rating bins + archetype diversity
+- `export_hitter_archetypes.py` — hitter archetype sampler (BABIP/K-avoid split)
+- `outcome_regressions*.py` — hitter univariate + multivariate + LOO-CV scans
+- `pitcher_outcome_regressions*.py` — pitcher equivalents, including pitch-arsenal features
+- `hitter_v1_vs_v2.py` / `pitcher_v1_vs_v2.py` — A/B harnesses
+- `hitter_bias_correction.py` — three-path correction test (concluded: don't bias-correct)
+- `gap_speed_regression.py` — Gap ↔ 2B+3B and Speed ↔ triples-ratio confirmation
+
+### How to re-run the calibrations
+
+- Pitcher A/B: `python -m exports.pitcher_v1_vs_v2`
+- Hitter A/B: `python -m exports.hitter_v1_vs_v2`
+- Pitcher regression scan: `python -m exports.pitcher_outcome_regressions_v2`
+- Build new calibration pool from a different save: edit `SAVE_DIR` in
+  `exports/export_pitcher_calibration.py`, run, then look up OOTP's
+  in-game projection for each pitcher in the output to refit.
+
+### Tests / verification
+
+- Tests: 379/379 with v2 pitcher metrics + v3 placement live.
+- App refresh: clean end-to-end on Rockies Rebuild.
+- CWS Dynasty A/B verified (placement diff between v1 and v3 documented).
+
+---
+
 ## What this is
 
 OOTP Baseball roster-construction tool. Takes the user's CSV exports from any

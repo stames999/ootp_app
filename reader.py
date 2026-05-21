@@ -95,6 +95,30 @@ LEVEL_ID_TO_LEVEL = {
 }
 
 
+def _detect_as_of_year(csv_dir) -> int | None:
+    """Last season whose regular play is fully complete as of the current
+    sim date. Used by `add_years_at_level` to decide whether the
+    in-progress year counts as a completed service season.
+
+    Heuristic: read `max(acquired_date)` from players.csv as the current
+    sim-date proxy. A season is treated as complete once October hits
+    (regular season ends late September; playoffs are stat-neutral for
+    service-time purposes). Mid-Jan through Sept means the previous
+    year is the last completed one; Oct-Dec means the current year is.
+
+    Returns None if no parseable date is available (caller falls back
+    to the pre-fix `max - min + 1` formula).
+    """
+    path = csv_dir / 'players.csv'
+    if not path.exists():
+        return None
+    p = pd.read_csv(path, usecols=['acquired_date'], low_memory=False)
+    d = pd.to_datetime(p['acquired_date'], errors='coerce').max()
+    if pd.isna(d):
+        return None
+    return d.year if d.month >= 10 else d.year - 1
+
+
 def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
     """Add `yrs_<LEVEL>` columns counting how many distinct calendar SEASONS
     each player has played, credited to the HIGHEST level they reached that
@@ -151,17 +175,34 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
             counts[c] = 0
     counts = counts[cols].reset_index()
 
-    # `years_pro` = career span (max_year - min_year + 1) per player. This
-    # is what OOTP uses for service-time eligibility — a player on a roster
-    # in year N counts that year regardless of whether they actually
-    # appeared in stats. Concrete trigger case: Alejandro Hidalgo (stats in
-    # 2021/2022/2023/2025) has 4 distinct seasons in the CSV but 5 years
-    # of pro service (the missing 2024 was a rostered-but-no-pitching year,
-    # and OOTP counts it). Summing yrs_<LEVEL> under-counts these gap years
-    # and lets service-pinned vets stay eligible for levels OOTP blocks.
+    # `years_pro` = completed pro seasons. The naive formula
+    # `max_year - min_year + 1` (calendar span) overcounts mid-season,
+    # because the in-progress current year hasn't earned a service
+    # credit yet. We instead clamp `max_year` to the last fully-complete
+    # season (`as_of_year`, inferred from the sim date in players.csv):
+    # mid-2026, Schoenle (first season 2021) reads 5, not 6.
+    #
+    # Gap-year coverage is preserved: a player who appeared in
+    # 2021/2022/2023/2025 has min_year=2021. Mid-2026 → as_of_year=2025,
+    # so years_pro = 2025 − 2021 + 1 = 5 (counts the rostered-but-no-stats
+    # 2024 as a service year). This matches the original a0c4a4d intent
+    # while fixing the season-boundary overcount the calendar-span
+    # formula had.
+    #
+    # Falls back to `max_year - min_year + 1` when sim-date detection
+    # fails (no acquired_date column, missing players.csv).
+    as_of_year = _detect_as_of_year(config.filepath)
+
+    def _years_pro(years):
+        min_y = int(years.min())
+        max_y = int(years.max())
+        if as_of_year is not None:
+            max_y = min(max_y, as_of_year)
+        return max(0, max_y - min_y + 1)
+
     span = (
         combined.groupby('player_id')['year']
-        .agg(lambda y: int(y.max() - y.min() + 1))
+        .agg(_years_pro)
         .rename('years_pro')
         .reset_index()
     )

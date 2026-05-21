@@ -456,14 +456,23 @@ RP_PER_LEVEL = {
 # being a floor for hitters). Calibrated against league wOBA ≈ .320:
 # MLB pitchers cluster .280-.340; AAA fringe to .365; lower minors
 # more permissive.
+#
+# Recalibration round (post-v2 A/B): widened the gaps between the
+# upper-minors thresholds so the implied skill differences match the
+# user's gameplay intuition. Empirical sweeps had pwOBA distributions
+# bunched too tightly between AA / A+ / A under the previous values
+# (e.g., .373-.384 arms were all landing at AA when AA-ready stuff
+# really starts closer to .360). R is now open (no ceiling) — it's
+# the catch-all for US/Canadian arms whose pwOBA exceeds A's gate
+# and who can't be assigned to R(DLR) (DSL is international-only).
 PWOBA_MAX = {
     'MLB':    0.345,
-    'AAA':    0.370,
-    'AA':     0.385,
-    'A+':     0.395,
-    'A':      0.405,
-    'R':      0.420,
-    'R(DLR)': 1.000,  # no upper limit — accepts whatever's left
+    'AAA':    0.360,
+    'AA':     0.370,
+    'A+':     0.380,
+    'A':      0.395,
+    'R':      1.000,  # open — US/Canadian arms with bad pwOBA need a home
+    'R(DLR)': 1.000,  # open — accepts whatever's left for DSL-eligible arms
 }
 
 # ====================================================
@@ -544,8 +553,21 @@ SERVICE_CAP_ENABLED = True
 # Single ranking rule across the system (post-R-31): cascade ordering,
 # HP-enforcement displacement, push-down, and rescue all use these
 # priority functions — no parallel ranking pass.
-PRIORITY_BLEND_CURRENT_WEIGHT = 0.85
-PRIORITY_BLEND_PROJECTED_WEIGHT = 0.15
+# History:
+#   R-30: 85/15 (post-thresholds, biased toward current pwOBA to stop
+#     over-promotion of HPs whose current stuff wasn't competitive).
+#   v3 first cut: 75/25 to help rescue HPs from bullpens under the
+#     thresholdless model.
+#   Final: 90/10 — a small projection nudge that catches strong-
+#     projection HPs at the margin without inflating them multiple
+#     levels above their current pwOBA tier. Pure pwOBA dropped 38 HPs
+#     into bullpens league-wide; 75/25 dropped 15 but produced 76
+#     "inflated" placements (HP 2+ levels above their pwOBA _top).
+#     90/10 sits at 29 HPs in bullpens with 54 inflated, a defensible
+#     middle ground.
+# v1 and v2 still consume these constants; v3 uses them too.
+PRIORITY_BLEND_CURRENT_WEIGHT = 0.90
+PRIORITY_BLEND_PROJECTED_WEIGHT = 0.10
 # Threshold for "at-ceiling" detection — non-HPs with current
 # performance within this delta of projection are considered maxed out
 # (no real upside) and eligible for the blocker penalty. Direction-
@@ -559,6 +581,16 @@ BLOCKER_CEILING_DELTA = 0.005
 # anchor, not eligibility cap) and renaming makes intent clearer.
 BLOCKER_MLB_PWOBA = 0.345
 BLOCKER_MLB_WOBA = 0.280
+# Penalty scale. Originally halved (0.5) because at full strength the
+# penalty was pushing maxed-out sub-MLB arms to overflow — but that was
+# driven by the penalty also firing in RP allocation, where the
+# at-ceiling vets are legitimate bullpen depth. v3 now applies the
+# penalty SP-only (see build_pitcher_system_v3.pitcher_priority), and
+# at full strength (1.0) it just shuffles vets out of rotation into
+# bullpens with zero overflow cost. League-wide sweep on Rockies
+# Rebuild (30 orgs): 0.5 → 1.0 rescues 4 more SP-viable HPs into SP
+# slots, no change to SP/RP/overflow totals.
+BLOCKER_PENALTY_SCALE = 1.0
 
 # ====================================================
 # Bench classification weights (R-33, lifted to config)

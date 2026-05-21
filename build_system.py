@@ -34,7 +34,7 @@ from roster_common import (  # noqa: F401  (re-exports)
 from config import HP_MIN_LEVEL_INDEX
 from config import (
     PRIORITY_BLEND_CURRENT_WEIGHT, PRIORITY_BLEND_PROJECTED_WEIGHT,
-    BLOCKER_CEILING_DELTA, BLOCKER_MLB_WOBA,
+    BLOCKER_CEILING_DELTA, BLOCKER_MLB_WOBA, BLOCKER_PENALTY_SCALE,
     BENCH_FIELD_WEIGHT, BENCH_BAT_WEIGHT,
 )
 
@@ -117,10 +117,11 @@ def priority(p: dict, level: str | None = None) -> float:
     R-32 blocker penalty: a non-HP bat at his ceiling (wOBA ≈ wOBAP)
     whose ceiling is sub-MLB (wOBAP < .280) blocks HPs at development
     levels while contributing only org-depth value. His priority gets
-    penalised by `.280 − wOBAP` (his distance below MLB-tier), pushing
-    him behind HPs with real projection upside. Mirror of the pitcher
+    penalised by `BLOCKER_PENALTY_SCALE * (.280 − wOBAP)` — distance
+    below MLB-tier, scaled (default 0.5×). Mirror of the pitcher
     `pitcher_priority` penalty — same shape, opposite sign because
-    wOBA convention is higher = better."""
+    wOBA convention is higher = better. See `pitcher_priority` for
+    the rationale on the scale factor."""
     woba = p.get('wOBA') or 0
     if level == 'MLB':
         return woba
@@ -130,7 +131,7 @@ def priority(p: dict, level: str | None = None) -> float:
     if (not is_high_potential(p)
             and (wobap - woba) < BLOCKER_CEILING_DELTA
             and wobap < BLOCKER_MLB_WOBA):
-        blend -= BLOCKER_MLB_WOBA - wobap
+        blend -= BLOCKER_PENALTY_SCALE * (BLOCKER_MLB_WOBA - wobap)
     return blend
 
 def woba_max_level(p: dict) -> int:

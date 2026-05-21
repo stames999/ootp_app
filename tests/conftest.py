@@ -67,8 +67,13 @@ def hitter_results(all_orgs):
 
 @pytest.fixture(scope='session')
 def pitcher_results(all_orgs):
-    """`{org: (rosters, overflow, flagged)}` from build_pitcher_system.main."""
-    from build_pitcher_system import main as pitcher_main
+    """`{org: (rosters, overflow, flagged)}` from build_pitcher_system_v3.main.
+
+    v3 is the live pitcher builder as of this session — single-pass
+    waterfall, no pwOBA thresholds, HP `_bot` priority bonus. The
+    legacy v1 (`build_pitcher_system.py`) and v2 are kept on disk for
+    A/B reference via `compare_pitcher_placement.py`."""
+    from build_pitcher_system_v3 import main as pitcher_main
     return {org: pitcher_main(org=org) for org in all_orgs}
 
 

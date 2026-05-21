@@ -8,7 +8,20 @@ import pandas as pd
 from exporter import export_html_pages, export_json_pages
 from metrics_fielding import calc_fielding_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
-from metrics_pitching import calc_pitching_metrics, calc_potential_pitching_metrics
+# v2 (regression-derived closed-form) lives in metrics_hitting_v2.py
+# for A/B reference via exports/hitter_v1_vs_v2.py. It was prototyped
+# this session but lost a head-to-head accuracy comparison on the 10
+# OOTP-reference players (v1 mean |wOBA err| .007 vs v2 .010). The
+# closed-form formulas need a broader calibration sample (currently
+# only n=62, MLB-heavy) before they can compete with v1's per-rating
+# table adjustments.
+# v2 pitcher metrics: regression-derived closed-form formulas. Won the
+# A/B vs v1 on the 95-pitcher OOTP-projection reference sample (v2 mean
+# |pwOBA err| .009 vs v1 .016). Big BABIP-against improvement (.001 vs
+# .020). Quadratic terms in Stuff/Control/HRA + NumPitches/BestFB
+# arsenal features are the key wins. v1 still on disk at
+# metrics_pitching.py for A/B via exports/pitcher_v1_vs_v2.py.
+from metrics_pitching_v2 import calc_pitching_metrics, calc_potential_pitching_metrics
 from metrics_war import calc_war
 from reader import (
     add_hitting_career_stats,

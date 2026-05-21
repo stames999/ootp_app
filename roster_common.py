@@ -24,11 +24,19 @@ import config
 
 LEVELS = ['MLB', 'AAA', 'AA', 'A+', 'A', 'R', 'R(DLR)']
 
-# Maximum age allowed at each level. Only the rookie tiers have real OOTP
-# age caps: R(DLR) is teen-only (21), R is short-season (22). A and A+
-# have NO age cap — earlier values (23/24) were guesswork that double-
-# counted with SERVICE_LIMITS (service-time is the proper constraint on
-# older players at those levels). AA / AAA / MLB are unrestricted.
+# Maximum age allowed at each level. Only the rookie tiers have real
+# OOTP age caps: R(DLR) is teen-only (21), R is short-season (22 — must
+# be age ≤ 22, i.e. < 23). A and A+ have NO age cap — earlier values
+# (23/24) were guesswork that double-counted with SERVICE_LIMITS
+# (service-time is the proper constraint on older players at those
+# levels). AA / AAA / MLB are unrestricted.
+#
+# Earlier this session the R cap was temporarily relaxed to 25 to keep
+# 23yo arms like Banks placeable when v1/v2 used `_top` as a hard
+# placement gate (Banks: pwOBA .410 → _top=R, but `_bot=A` under
+# the original R=22 cap → `_top > _bot` → forced overflow). v3 drops
+# `_top` as a placement gate — eligibility is `_bot` only — so the
+# strict OOTP cap is safe to restore.
 MAX_AGE = {
     'R(DLR)': 21, 'R': 22, 'A': 99, 'A+': 99,
     'AA': 99, 'AAA': 99, 'MLB': 99,
@@ -38,13 +46,18 @@ MAX_AGE = {
 # ============================================================================
 # Service-time constraints
 # ============================================================================
-# OOTP service-time limits per level (cumulative pro service years).
-# The threshold is INCLUSIVE: a player with exactly 5 yrs total can still
-# play A+, but with 6 yrs they can no longer. Above the limit, that level
-# is no longer eligible — must be at a higher level. AA / AAA / MLB have
-# no service-time limit. yrs_<LEVEL> columns come from
-# reader.add_years_at_level (one year per calendar season, credited to
-# the highest level reached that year).
+# OOTP service-time limits per level (cumulative completed pro seasons).
+# The comparison is strict: an arm with `years_pro > LIMIT` is no longer
+# eligible at the level and must play higher. AA / AAA / MLB have no
+# service-time limit.
+#
+# These thresholds count COMPLETED seasons only — reader.add_years_at_level
+# decides whether the current sim year counts based on the sim date
+# (treated as complete only after October 1). A player whose first season
+# was 2021, viewed mid-May 2026, has `years_pro = 5` (2021-2025 complete,
+# 2026 still in progress). The same player viewed in Oct 2026 has
+# `years_pro = 6`. This avoids the season-boundary bug where eligibility
+# flipped a year too late.
 
 SERVICE_LIMITS = {
     'A+':     5,
@@ -183,10 +196,14 @@ def total_service_years(p):
 
 def service_lowest_level(p):
     """Highest LEVELS index (= lowest level) the player is still eligible
-    for given their cumulative service. > 5 yrs blocks A+ and below; > 4
-    blocks A and below; > 3 blocks R / R(DLR). Returns the deepest index
-    they can still play; combine with age_lowest_level via min() for the
-    final `_bot`.
+    for given their cumulative completed service. > 5 yrs blocks A+ and
+    below; > 4 blocks A and below; > 3 blocks R / R(DLR). Returns the
+    deepest index they can still play; combine with age_lowest_level via
+    min() for the final `_bot`.
+
+    `years_pro` is "completed seasons" per reader.add_years_at_level —
+    the in-progress current year is excluded mid-season so eligibility
+    flips at season-end rather than season-start.
 
     When `config.SERVICE_CAP_ENABLED` is False (default since R-28), this
     constraint is fully relaxed — returns the deepest level index so the
