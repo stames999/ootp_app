@@ -1,4 +1,4 @@
 pandas
 scipy
-openpyxl
+openpyxl>=3.1
 streamlit
