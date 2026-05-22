@@ -45,6 +45,36 @@ def hand_label(throws):
     return ''
 
 
+# wOBA-style columns that should always render with 3 decimal places
+# (e.g. .300, not 0.3). Python's `round(0.3, 3)` strips trailing zeros
+# and Streamlit's default number rendering inherits that. Format at the
+# column-config level to keep underlying values numeric (sortable) while
+# fixing the display. The "wOBA / pwOBA" entry is the merged column used
+# in the release-pool table where the same cell holds either side.
+_WOBA_FORMAT_COLS = {
+    'wOBA', 'wOBAR', 'wOBAL', 'wOBAP',
+    'pwOBA', 'pwOBAR', 'pwOBAL', 'pwOBAP',
+    'wOBA / pwOBA',
+}
+
+
+# Capture the original st.dataframe so the helper below can replace every
+# _show_df(...) call site without recursing.
+_native_st_dataframe = st.dataframe
+
+
+def _show_df(df, **kwargs):
+    """st.dataframe wrapper that forces 3-decimal display on wOBA-like
+    columns. Pass-through for everything else. Caller-provided
+    `column_config` overrides the defaults."""
+    woba_cols = [c for c in df.columns if c in _WOBA_FORMAT_COLS]
+    if woba_cols:
+        defaults = {c: st.column_config.NumberColumn(format='%.3f') for c in woba_cols}
+        # Caller config wins on collision.
+        kwargs['column_config'] = {**defaults, **kwargs.get('column_config', {})}
+    return _native_st_dataframe(df, **kwargs)
+
+
 # MLB-ready HP markers. R-20 hard-blocks HPs from the MLB roster, so
 # any HP whose CURRENT performance already clears an MLB-regular bar
 # is "knocking on the door" — they could be promoted whenever the
@@ -421,7 +451,7 @@ with tab_overview:
                     'fld': round(p.get(f'{pos}_fld') or 0, 2),
                     'WAR': round(p.get(f'{pos}_adj') or 0, 2),
                 })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
+        _show_df(pd.DataFrame(rows), hide_index=True, width='stretch')
 
         st.markdown('**Bench (named roles)**')
         # `Best` = best_adj (full scarcity-adjusted WAR at the player's best
@@ -442,7 +472,7 @@ with tab_overview:
             else:
                 brows.append({'Role': role, 'Player': '(Sign FA)', 'Age': None,
                               'Pos': '', 'wOBA': None, 'bat': None, 'Best': None})
-        st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
+        _show_df(pd.DataFrame(brows), hide_index=True, width='stretch')
 
         # Platoon batting orders + R/G — the migrated org-report bits.
         # Stacked vertically so each table has the full left-column width
@@ -469,7 +499,7 @@ with tab_overview:
                 })
             df = pd.DataFrame(order_rows).sort_values('Slot')
             st.markdown(f'**{label}** — R/G **{rpg:.2f}**')
-            st.dataframe(df, hide_index=True, width='stretch')
+            _show_df(df, hide_index=True, width='stretch')
 
     with col_arms:
         st.subheader('MLB pitching staff')
@@ -497,7 +527,7 @@ with tab_overview:
                 rrows.append({'Slot': f'SP{i+1}', 'Player': '(Sign FA)', 'Age': None,
                               'Hand': '', 'pwOBA': None, 'Split': None, 'Tag': '',
                               'pwOBAP': None})
-        st.dataframe(pd.DataFrame(rrows), hide_index=True, width='stretch')
+        _show_df(pd.DataFrame(rrows), hide_index=True, width='stretch')
 
         bullpen = rp['MLB']['bullpen']
         sign_lhp = rp['MLB'].get('sign_lhp', 0)
@@ -531,7 +561,7 @@ with tab_overview:
                 prows.append({'Slot': f'RP{i+1}', 'Player': placeholder, 'Age': None,
                               'Hand': '', 'pwOBA': None, 'Split': None, 'Tag': '',
                               'pwOBAP': None})
-        st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
+        _show_df(pd.DataFrame(prows), hide_index=True, width='stretch')
 
     # Row 2: development pipeline — HP hitters | HP pitchers
     col_hph, col_hpp = st.columns(2)
@@ -564,7 +594,7 @@ with tab_overview:
             st.caption('✦ = current `best_adj` ≥ 1.5 WAR — MLB-ready '
                        'prospect (bat + defense + scarcity already at '
                        'above-replacement-regular level).')
-            st.dataframe(hp_df, hide_index=True, width='stretch', height=400)
+            _show_df(hp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential hitters in {team}.')
 
@@ -595,7 +625,7 @@ with tab_overview:
             st.caption('✦ = current pwOBA ≤ .335 — MLB-ready arm '
                        '(stuff already plays to MLB hitters; tighter '
                        'than the MLB cap of .345).')
-            st.dataframe(hpp_df, hide_index=True, width='stretch', height=400)
+            _show_df(hpp_df, hide_index=True, width='stretch', height=400)
         else:
             st.info(f'No high-potential pitchers in {team}.')
 
@@ -623,7 +653,7 @@ with tab_overview:
         })
     if inj_rows:
         inj_df = pd.DataFrame(inj_rows).sort_values(['Type', 'Player'])
-        st.dataframe(inj_df, hide_index=True, width='stretch')
+        _show_df(inj_df, hide_index=True, width='stretch')
     else:
         st.success(f'No flagged players in {team}.')
 
@@ -662,7 +692,7 @@ with tab_rosters:
                             'fld': round(p.get(f'{pos}_fld') or 0, 2),
                             'WAR': round(p.get(f'{pos}_adj') or 0, 2),
                         })
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
+                _show_df(pd.DataFrame(rows), hide_index=True, width='stretch')
 
                 st.markdown('**Bench**')
                 brows = []
@@ -683,7 +713,7 @@ with tab_rosters:
                         brows.append({'MLB?': '', 'Role': role, 'Player': '(none)',
                                       'Age': None, 'Pos': '', 'wOBA': None,
                                       'bat': None, 'Best': None})
-                st.dataframe(pd.DataFrame(brows), hide_index=True, width='stretch')
+                _show_df(pd.DataFrame(brows), hide_index=True, width='stretch')
 
             with col_p:
                 st.markdown('**Pitchers**')
@@ -705,7 +735,7 @@ with tab_rosters:
                         'pwOBAP': round(p.get('pwOBAP') or 0, 3) if p.get('pwOBAP') is not None else None,
                     })
                 prows.sort(key=lambda r: (r['Role'] != 'SP', r.get('pwOBA') or 9))
-                st.dataframe(pd.DataFrame(prows), hide_index=True, width='stretch')
+                _show_df(pd.DataFrame(prows), hide_index=True, width='stretch')
 
             # Per-level platoon batting orders + R/G — same logic as the
             # Overview tab's MLB block. Stacked vertically so each lineup
@@ -734,7 +764,7 @@ with tab_rosters:
                     df_order = pd.DataFrame(order_rows).sort_values('Slot')
                     rpg_str = f'{rpg:.2f}' if not (isinstance(rpg, float) and rpg != rpg) else 'n/a'
                     st.markdown(f'**{label}** — R/G **{rpg_str}**')
-                    st.dataframe(df_order, hide_index=True, width='stretch')
+                    _show_df(df_order, hide_index=True, width='stretch')
 
 
 # ---------- Release pool tab ----------
@@ -763,7 +793,7 @@ with tab_release:
                     'BestP': round(p.get('bestP_adj') or 0, 2),
                 })
             h_df = pd.DataFrame(h_rows).sort_values('BestP', ascending=False)
-            st.dataframe(h_df, hide_index=True, width='stretch', height=600)
+            _show_df(h_df, hide_index=True, width='stretch', height=600)
         else:
             st.success('No hitter overflow.')
 
@@ -783,7 +813,7 @@ with tab_release:
                     'rp_warP': round(p.get('rp_warP') or 0, 2) if p.get('rp_warP') is not None else None,
                 })
             p_df = pd.DataFrame(p_rows).sort_values('rp_warP', ascending=False, na_position='last')
-            st.dataframe(p_df, hide_index=True, width='stretch', height=600)
+            _show_df(p_df, hide_index=True, width='stretch', height=600)
         else:
             st.success('No pitcher overflow.')
 
@@ -848,7 +878,7 @@ with tab_scout_h:
         ] if c in filtered_h.columns
     ]
     st.caption(f'{len(filtered_h)} of {len(df_h_all)} hitters match.')
-    st.dataframe(
+    _show_df(
         filtered_h[h_display_cols].sort_values('bestP_adj', ascending=False, na_position='last'),
         hide_index=True,
         width='stretch',
@@ -926,7 +956,7 @@ with tab_scout_p:
         ] if c in filtered_p.columns
     ]
     st.caption(f'{len(filtered_p)} of {len(df_p_all)} pitchers match.')
-    st.dataframe(
+    _show_df(
         filtered_p[p_display_cols].sort_values('rp_warP', ascending=False, na_position='last'),
         hide_index=True,
         width='stretch',
