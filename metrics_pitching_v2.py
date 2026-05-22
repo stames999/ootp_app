@@ -219,11 +219,34 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df["sp_war"] = base_war
     df["rp_war"] = (base_war * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
 
-    # Sub-floor gate (same as v1)
-    existing_skill_cols = [c for c in PITCHER_SKILL_COLS_CURRENT if c in df.columns]
-    if existing_skill_cols:
-        sub_floor = (df[existing_skill_cols].fillna(0) < PITCHER_RATING_FLOOR).any(axis=1)
-        df.loc[sub_floor, ["sp_war", "rp_war"]] = pd.NA
+    # Non-pitcher gate (replaces v1's PITCHER_RATING_FLOOR=35 rating gate).
+    # v1 used the floor to prevent its multiplicative rate model from
+    # producing "impossible pwOBA" at chained sub-30 inputs. v2's
+    # polynomial formulas are well-behaved across [20,100] (safe() clamps
+    # inputs, max(0,...) clamps outputs), so we no longer need a quality
+    # floor — even rating-20 pitchers get coherent (bad) projections.
+    #
+    # We DO still need to exclude position players. They have non-NaN
+    # default ratings in OOTP (ctrlR/stuffR/etc. parked at ~20 with std 2)
+    # so notna() doesn't catch them, and `pitches > 0` is too permissive
+    # (5,771 emergency-pitcher catchers have 1 rated pitch type).
+    #
+    # The empirical bimodal cut on the canonical save:
+    #   pos==1 pitchers:    stuffP mean 40.9, std 8.7
+    #   pos!=1 non-pitchers: stuffP mean 20.4, std 2.8 (parked at default)
+    # `stuffP >= 50` is well above both overlap zones — it picks up Ohtani
+    # (stuffP=65) and ~15 other genuinely-rated two-way MiLB prospects,
+    # but excludes every emergency-catcher / utility-pitcher position
+    # player. main._flag_two_way_players's downstream pwOBA <= PWOBA_MAX
+    # AND wOBA >= WOBA_MIN check then further filters to the true two-way
+    # (Ohtani-class) within that ~16-player candidate pool.
+    stuffP_col = df["stuffP"].fillna(0) if "stuffP" in df.columns else 0
+    is_pitcher = (df["position"] == 1) | (stuffP_col >= 50)
+    non_pitcher = ~is_pitcher
+    df.loc[non_pitcher, [
+        "sp_war", "rp_war",
+        "pwOBA", "pwOBAR", "pwOBAL",
+    ]] = pd.NA
 
     if "stamina" in df.columns:
         too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
@@ -363,9 +386,13 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[sp_mask_p, "war_pitchingP"] = df.loc[sp_mask_p, "sp_warP"]
     df.loc[rp_mask_p, "war_pitchingP"] = df.loc[rp_mask_p, "rp_warP"]
 
-    # NaN sp_warP/rp_warP for non-pitchers (position players, etc.) so
-    # they don't appear viable for pitcher pools. Mirrors v1 line 359-360.
-    non_pitcher = ~df["sprpP"].isin(["sp", "rp"])
-    df.loc[non_pitcher, ["sp_warP", "rp_warP"]] = pd.NA
+    # NaN sp_warP/rp_warP/pwOBAP for non-pitchers (position players, etc.)
+    # so they don't appear viable for pitcher pools. Same gate as the
+    # current side: position == 1 OR stuffP >= 50 (catches Ohtani-class
+    # two-way arms; excludes emergency-catcher position players with
+    # default ~20 stuffP ratings).
+    stuffP_col_p = df["stuffP"].fillna(0) if "stuffP" in df.columns else 0
+    is_pitcher_p = (df["position"] == 1) | (stuffP_col_p >= 50)
+    df.loc[~is_pitcher_p, ["sp_warP", "rp_warP", "pwOBAP"]] = pd.NA
 
     return df
