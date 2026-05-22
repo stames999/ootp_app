@@ -233,16 +233,48 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
         too_few = df["pitches"].fillna(0) < MIN_PITCHES_FOR_SP
         df.loc[too_few, "sp_war"] = pd.NA
 
+    # Primary-role WAR mirror: war_pitching = sp_war for SP-classified,
+    # rp_war for RP-classified. Same shape as v1 (see metrics_pitching.py
+    # line 217-225). Used by org_report.build_pitching_staff and other
+    # downstream consumers for rotation/bullpen ordering.
     df["is_sp"] = (df["sprp"] == "sp").astype(int)
+    df["is_rp"] = (df["sprp"] == "rp").astype(int)
+    df["war_pitching"] = pd.NA
+    sp_mask = df["sprp"] == "sp"
+    rp_mask = df["sprp"] == "rp"
+    df.loc[sp_mask, "war_pitching"] = df.loc[sp_mask, "sp_war"]
+    df.loc[rp_mask, "war_pitching"] = df.loc[rp_mask, "rp_war"]
     return df
 
 
 def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """v2 potential pitching metrics. Uses potential (P) ratings; same
-    output column contract as v1."""
+    output column contract as v1.
+
+    Critical: like v1, we do NOT apply PITCHER_RATING_FLOOR to the
+    potential side. Potential WAR is meant to show development upside,
+    so even currently-sub-floor pitchers get a meaningful potential
+    projection. Build_pitcher_system_v3.is_sp_viable checks sp_warP, so
+    NaN-ing it here would mass-release prospects who have one weak
+    potential rating (R-35 regression: this is exactly what an earlier
+    v2 version did)."""
     pitch_cols = _resolve_pitch_cols(df)
     fb_types = [pitch_cols[k] for k in ("Fastball","Sinker","Cutter") if k in pitch_cols]
     all_pitch_cols = list(pitch_cols.values())
+
+    # Role tag on the potential side (same gate as current, but uses
+    # `pitchesP` so a 2-pitch current arm with 3+ projected pitches can
+    # qualify as potential-SP). Used by is_spP / is_rpP / war_pitchingP
+    # below; mirrors v1's metrics_pitching.calc_potential_pitching_metrics.
+    def identify_role_potential(row):
+        if pd.isna(row.get("stamina")):
+            return ""
+        if (row["stamina"] >= MINIMUM_STARTER_STAMINA and
+                (row.get("pitchesP") or 0) >= MIN_PITCHES_FOR_SP):
+            return "sp"
+        return "rp"
+
+    df["sprpP"] = df.apply(identify_role_potential, axis=1)
 
     def safe(v, default=50.0):
         try:
@@ -303,18 +335,37 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df["sp_warP"] = base_warP
     df["rp_warP"] = (base_warP * RELIEVER_VS_STARTER_AVERAGE_IP).round(1)
 
-    # Same gates as v1
-    existing = [c for c in PITCHER_SKILL_COLS_POTENTIAL if c in df.columns]
-    if existing:
-        sub_floor = (df[existing].fillna(0) < PITCHER_RATING_FLOOR).any(axis=1)
-        df.loc[sub_floor, ["sp_warP", "rp_warP"]] = pd.NA
+    # NOTE: NO PITCHER_RATING_FLOOR gate on the potential side (matching v1).
+    # Potential is meant to show development upside, so even currently-sub-
+    # floor pitchers get a meaningful projection. Adding a floor here would
+    # NaN sp_warP/rp_warP for any prospect with one weak potential rating,
+    # and v3's is_sp_viable / is_rp_viable would then mass-release them.
 
     if "stamina" in df.columns:
         too_short = df["stamina"].fillna(0) < SP_WAR_MIN_STAMINA
         df.loc[too_short, "sp_warP"] = pd.NA
 
-    if "pitches" in df.columns:
-        too_few = df["pitches"].fillna(0) < MIN_PITCHES_FOR_SP
+    # SP_WAR_P gates on `pitchesP` (projected), NOT `pitches` (current) —
+    # critical so a 2-pitch current arm with 3+ projected pitches can still
+    # qualify as a potential SP. Mirrors v1's metrics_pitching.py line 341.
+    if "pitchesP" in df.columns:
+        too_few = df["pitchesP"].fillna(0) < MIN_PITCHES_FOR_SP
         df.loc[too_few, "sp_warP"] = pd.NA
+
+    df["is_spP"] = (df["sprpP"] == "sp").astype(int)
+    df["is_rpP"] = (df["sprpP"] == "rp").astype(int)
+
+    # Primary-role potential WAR mirror — same shape as current-side
+    # war_pitching. Gates on sprpP so non-pitcher rows stay NaN.
+    df["war_pitchingP"] = pd.NA
+    sp_mask_p = df["sprpP"] == "sp"
+    rp_mask_p = df["sprpP"] == "rp"
+    df.loc[sp_mask_p, "war_pitchingP"] = df.loc[sp_mask_p, "sp_warP"]
+    df.loc[rp_mask_p, "war_pitchingP"] = df.loc[rp_mask_p, "rp_warP"]
+
+    # NaN sp_warP/rp_warP for non-pitchers (position players, etc.) so
+    # they don't appear viable for pitcher pools. Mirrors v1 line 359-360.
+    non_pitcher = ~df["sprpP"].isin(["sp", "rp"])
+    df.loc[non_pitcher, ["sp_warP", "rp_warP"]] = pd.NA
 
     return df
