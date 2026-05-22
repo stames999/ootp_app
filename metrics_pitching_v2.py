@@ -234,14 +234,22 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # The empirical bimodal cut on the canonical save:
     #   pos==1 pitchers:    stuffP mean 40.9, std 8.7
     #   pos!=1 non-pitchers: stuffP mean 20.4, std 2.8 (parked at default)
-    # `stuffP >= 50` is well above both overlap zones — it picks up Ohtani
-    # (stuffP=65) and ~15 other genuinely-rated two-way MiLB prospects,
-    # but excludes every emergency-catcher / utility-pitcher position
-    # player. main._flag_two_way_players's downstream pwOBA <= PWOBA_MAX
-    # AND wOBA >= WOBA_MIN check then further filters to the true two-way
-    # (Ohtani-class) within that ~16-player candidate pool.
+    # `any of {stuffP, hraP, ctrlP} >= 50` is well above the position-
+    # player overlap zone. Three-dimensional check catches two-way arms
+    # whose primary tool is HR-suppression or control rather than raw
+    # stuff (a finesse two-way prospect wouldn't show up with stuffP-only).
+    # main._flag_two_way_players's downstream pwOBA <= PWOBA_MAX AND
+    # wOBA >= WOBA_MIN check then further filters this candidate pool to
+    # the true two-way (Ohtani-class).
     stuffP_col = df["stuffP"].fillna(0) if "stuffP" in df.columns else 0
-    is_pitcher = (df["position"] == 1) | (stuffP_col >= 50)
+    hraP_col   = df["hraP"].fillna(0)   if "hraP"   in df.columns else 0
+    ctrlP_col  = df["ctrlP"].fillna(0)  if "ctrlP"  in df.columns else 0
+    is_pitcher = (
+        (df["position"] == 1)
+        | (stuffP_col >= 50)
+        | (hraP_col   >= 50)
+        | (ctrlP_col  >= 50)
+    )
     non_pitcher = ~is_pitcher
     df.loc[non_pitcher, [
         "sp_war", "rp_war",
@@ -388,11 +396,20 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     # NaN sp_warP/rp_warP/pwOBAP for non-pitchers (position players, etc.)
     # so they don't appear viable for pitcher pools. Same gate as the
-    # current side: position == 1 OR stuffP >= 50 (catches Ohtani-class
-    # two-way arms; excludes emergency-catcher position players with
-    # default ~20 stuffP ratings).
+    # current side: position == 1 OR any of {stuffP, hraP, ctrlP} >= 50
+    # (catches Ohtani-class two-way arms via stuff, plus finesse two-way
+    # prospects whose primary skill is movement / HR-suppression / command;
+    # excludes emergency-catcher position players whose potential ratings
+    # are parked at default ~20).
     stuffP_col_p = df["stuffP"].fillna(0) if "stuffP" in df.columns else 0
-    is_pitcher_p = (df["position"] == 1) | (stuffP_col_p >= 50)
+    hraP_col_p   = df["hraP"].fillna(0)   if "hraP"   in df.columns else 0
+    ctrlP_col_p  = df["ctrlP"].fillna(0)  if "ctrlP"  in df.columns else 0
+    is_pitcher_p = (
+        (df["position"] == 1)
+        | (stuffP_col_p >= 50)
+        | (hraP_col_p   >= 50)
+        | (ctrlP_col_p  >= 50)
+    )
     df.loc[~is_pitcher_p, ["sp_warP", "rp_warP", "pwOBAP"]] = pd.NA
 
     return df
