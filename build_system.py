@@ -104,6 +104,33 @@ def catcher_alloc_score(p):
     age = min(p.get('age') or 0, AGE_CAP)
     return woba + C_FLD_WEIGHT * cfld + AGE_WEIGHT * age
 
+
+def bat_priority(p: dict, level: str | None = None) -> float:
+    """Bat-only ordering used by the bench's "Best bat" and "Depth" roles.
+
+    The cascade-level `priority()` switched to overall scarcity-adjusted
+    WAR (R-??) to fix glove-first prospects getting under-ranked. The
+    bench, by contrast, has explicit role-specific scoring: utility IF /
+    OF roles look at the glove sum and backup C uses catcher_alloc_score.
+    The "Best bat" and "Depth" roles really do want pure bat — a guy
+    coming off the bench to pinch-hit is judged on what his bat will
+    actually do at that PA, not on his overall positional value.
+
+    MLB: raw current wOBA. Below MLB: 85/15 wOBA/wOBAP blend (the
+    original cascade ordering pre-R-?? rewrite). Blocker penalty kept."""
+    woba = p.get('wOBA') or 0
+    if level == 'MLB':
+        return woba
+    wobap = p.get('wOBAP') or 0
+    blend = (PRIORITY_BLEND_CURRENT_WEIGHT * woba
+             + PRIORITY_BLEND_PROJECTED_WEIGHT * wobap)
+    if (not is_high_potential(p)
+            and (wobap - woba) < BLOCKER_CEILING_DELTA
+            and wobap < BLOCKER_MLB_WOBA):
+        blend -= BLOCKER_PENALTY_SCALE * (BLOCKER_MLB_WOBA - wobap)
+    return blend
+
+
 def priority(p: dict, level: str | None = None) -> float:
     """Cascade/trim ordering = overall scarcity-adjusted WAR (R-?? rewrite).
     Replaces an earlier bat-only (wOBA / wOBAP) blend that systematically
@@ -434,26 +461,26 @@ PREMIUM_POS = {'C', '2B', '3B', 'SS', 'CF'}
 def classify_bench(bench, level=None):
     """Order the bench into role-defined slots, then depth.
 
-    Returns a list of (role_label, player) tuples. The first four labels
-    follow the user's bench design:
-      1. Backup C  - best non-starting catcher by catcher_alloc_score
-                      (current wOBA + glove + small older-player tiebreak)
-      2. Utility IF - glove-first non-starter: max IF positions among
-                      {2B, 3B, SS} they can play, tiebreak by sum of
-                      fielding-only WAR across those positions, then
-                      wOBA. Picks the best leather among viable bats —
-                      not the best bat among viable leather.
-      3. Utility OF - same shape over {LF, CF, RF}, with a +1 position-
-                      count bump for CF eligibility (range as speed proxy).
-      4. Best bat  - highest priority(p, level) among whoever's left.
-    Subsequent slots are labelled 'Depth' in priority order. If no player
+    Returns a list of (role_label, player) tuples. The four named roles:
+      1. Backup C   - best non-starting catcher by catcher_alloc_score
+                      (current wOBA + glove + small older-player tiebreak).
+      2. Utility IF - sum of `<pos>_adj` (scarcity-adjusted WAR) at
+                      {2B, 3B, SS} for the positions they can actually play.
+                      Each `_adj` bakes in bat + glove + scarcity, so the
+                      sum measures total value across the infield rotation.
+                      Multi-position guys naturally win because their sum
+                      has more non-zero terms.
+      3. Utility OF - same shape over {LF, CF, RF}.
+      4. Best bat   - literally the best bat: raw current wOBA among
+                      whoever's left. A pinch-hit role is judged on what
+                      the bat will do at the PA, nothing else.
+    Subsequent slots are labelled 'Depth' in bat_priority order (the same
+    85/15 wOBA blend that drove cascade pre-R-?? rewrite). If no player
     fits a role (e.g. no catcher on the bench), that slot's player is None
     and the role is still included so callers can render an empty slot.
 
-    `level`: when 'MLB', priority becomes pure current wOBA (no projection
-    weight) — an MLB bench bat is judged on what they'll deliver this
-    season, not on upside. At every other level the flat 70/30 default
-    keeps a small upside boost for prospects.
+    `level`: only passed through to bat_priority for Depth ordering — when
+    'MLB' it collapses to pure current wOBA.
     """
     pool = list(bench)
     ordered = []
@@ -475,47 +502,40 @@ def classify_bench(bench, level=None):
     bc = take(lambda p: catcher_alloc_score(p) if is_catcher(p) else None)
     ordered.append(('Backup C', bc))
 
-    # 2. Utility IF — glove-first but bat matters. Score tuple:
-    #      (positions_playable, 0.6*fld_sum + 0.4*bat_war)
-    #    Multi-position is still a hard prerequisite of utility (more
-    #    positions wins outright), but within a tied position count the
-    #    weighted glove+bat score lets a slightly-worse-glove player with
-    #    a meaningfully better bat overtake a glove-only specialist.
-    #    Both terms are in WAR units so the 60/40 split is on like-for-like.
+    # 2. Utility IF — sum of scarcity-adjusted WAR at 2B / 3B / SS for the
+    #    positions the player can actually play. Each `_adj` already bakes
+    #    in bat + glove + positional scarcity, so summing across the IF
+    #    spots gives a "total value the team gets from this player rotating
+    #    around the infield" number. Multi-position guys naturally win
+    #    because their sum has more non-zero contributions. None values
+    #    (positions the player can't play) drop out.
     def if_score(p):
-        fld_vals = [p.get(f'{pos}_fld') for pos in IF_POSITIONS]
-        valid = [v for v in fld_vals if v is not None]
+        adj_vals = [p.get(f'{pos}_adj') for pos in IF_POSITIONS]
+        valid = [v for v in adj_vals if v is not None]
         if not valid:
             return None
-        fld_sum = sum(valid)
-        bat_war = p.get('war_hitting') or 0
-        return (len(valid),
-                BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war)
+        return sum(valid)
     ordered.append(('Utility IF', take(if_score)))
 
-    # 3. Utility OF — same shape. CF eligibility still adds +1 to the
-    #    position count (speed/range proxy as well as a position, so a
-    #    CF-capable OF beats a same-fielding LF/RF-only). Score is
-    #    weighted glove+bat in WAR units.
+    # 3. Utility OF — same shape over LF / CF / RF.
     def of_score(p):
-        fld_vals = {pos: p.get(f'{pos}_fld') for pos in OF_POSITIONS}
-        valid_pos = [pos for pos, v in fld_vals.items() if v is not None]
-        if not valid_pos:
+        adj_vals = [p.get(f'{pos}_adj') for pos in OF_POSITIONS]
+        valid = [v for v in adj_vals if v is not None]
+        if not valid:
             return None
-        cf_bonus = 1 if 'CF' in valid_pos else 0
-        fld_sum = sum(fld_vals[pos] for pos in valid_pos)
-        bat_war = p.get('war_hitting') or 0
-        return (
-            len(valid_pos) + cf_bonus,
-            BENCH_FIELD_WEIGHT * fld_sum + BENCH_BAT_WEIGHT * bat_war,
-        )
+        return sum(valid)
     ordered.append(('Utility OF', take(of_score)))
 
-    # 4. Best bat — level-aware priority so MLB picks pure current bat.
-    ordered.append(('Best bat', take(lambda p: priority(p, level))))
+    # 4. Best bat — literally the best bat. Raw current wOBA, no projection
+    #    or scarcity adjustment. A pinch-hit bench role is judged on what
+    #    the player's bat will deliver in the PA, nothing else.
+    ordered.append(('Best bat', take(lambda p: p.get('wOBA') or 0)))
 
-    # Depth: whoever is left, by priority (same level-aware blend).
-    pool.sort(key=lambda p: priority(p, level), reverse=True)
+    # Depth: whoever is left, by bat-only priority (the same 85/15 blend
+    # that drove cascade pre-R-??). Bench depth still wants bat-first
+    # ordering — the utility / catcher / best-bat roles already handle
+    # the specific-skill cases.
+    pool.sort(key=lambda p: bat_priority(p, level), reverse=True)
     for p in pool:
         ordered.append(('Depth', p))
     return ordered
