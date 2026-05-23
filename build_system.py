@@ -105,35 +105,49 @@ def catcher_alloc_score(p):
     return woba + C_FLD_WEIGHT * cfld + AGE_WEIGHT * age
 
 def priority(p: dict, level: str | None = None) -> float:
-    """Cascade/trim ordering blend. At MLB the only thing that matters is
-    *current* performance — projection upside doesn't help an aging vet
-    on the active roster lose his slot to a prospect, and a young arm
-    whose ceiling is real should still earn the spot on his current bat.
-    At every other level we use an 85/15 current/projected blend (R-30,
-    was 70/30): projection still nudges close-priority HPs up, but the
-    weight is small enough that an arm with clearly-better current bat
-    keeps his slot — the 70/30 mix was demoting solid org-depth players
-    behind HPs whose current pwOBA wasn't competitive yet.
+    """Cascade/trim ordering = overall scarcity-adjusted WAR (R-?? rewrite).
+    Replaces an earlier bat-only (wOBA / wOBAP) blend that systematically
+    under-ranked glove-first up-the-middle prospects: a real plus-glove SS
+    with .252 wOBA would lose his slot to a 3B-forced-to-SS with .256 wOBA
+    because the cascade never saw the fielding gap, and the prospect would
+    cascade out of his service-time window into release. Now uses scarcity-
+    adjusted WAR at the player's best position, so bat + glove + position
+    scarcity all feed into placement.
+
+    Metric per level (same 85/15 weighting as before, just on overall WAR
+    instead of bare wOBA):
+      MLB:        best_adj   — current scarcity-adjusted WAR. "Who plays
+                               today to maximize the team's actual value."
+      below MLB:  85 % best_adj + 15 % bestP_adj — current value dominates
+                               so a proven org-depth player keeps his slot
+                               against a higher-ceiling-but-not-yet prospect
+                               (mirrors R-30: 70/30 was over-promoting HPs
+                               whose current value wasn't competitive yet).
+                               HPs still get a thumb on the scale via the
+                               existing HP-specific routing in main(), and
+                               the bestP_adj component nudges close cases
+                               in the prospect's favor.
 
     R-32 blocker penalty: a non-HP bat at his ceiling (wOBA ≈ wOBAP)
     whose ceiling is sub-MLB (wOBAP < .280) blocks HPs at development
-    levels while contributing only org-depth value. His priority gets
-    penalised by `BLOCKER_PENALTY_SCALE * (.280 − wOBAP)` — distance
-    below MLB-tier, scaled (default 0.5×). Mirror of the pitcher
-    `pitcher_priority` penalty — same shape, opposite sign because
-    wOBA convention is higher = better. See `pitcher_priority` for
-    the rationale on the scale factor."""
-    woba = p.get('wOBA') or 0
+    levels while contributing only org-depth value. Kept as-is because
+    the at-ceiling-and-sub-MLB pattern is a bat-only thing — a glove-
+    first SS with the same wOBA isn't really "at his ceiling" because
+    his value lives in the field, not the bat. Penalty is now in WAR
+    units (× WAR_PER_WOBA_POINT) to live on the same scale as base."""
+    best = p.get('best_adj') or 0
     if level == 'MLB':
-        return woba
+        return best
+    bestp = p.get('bestP_adj') or 0
+    base = (PRIORITY_BLEND_CURRENT_WEIGHT * best
+            + PRIORITY_BLEND_PROJECTED_WEIGHT * bestp)
+    woba = p.get('wOBA') or 0
     wobap = p.get('wOBAP') or 0
-    blend = (PRIORITY_BLEND_CURRENT_WEIGHT * woba
-             + PRIORITY_BLEND_PROJECTED_WEIGHT * wobap)
     if (not is_high_potential(p)
             and (wobap - woba) < BLOCKER_CEILING_DELTA
             and wobap < BLOCKER_MLB_WOBA):
-        blend -= BLOCKER_PENALTY_SCALE * (BLOCKER_MLB_WOBA - wobap)
-    return blend
+        base -= BLOCKER_PENALTY_SCALE * (BLOCKER_MLB_WOBA - wobap) * WAR_PER_WOBA_POINT
+    return base
 
 def woba_max_level(p: dict) -> int:
     # Ceiling is current wOBA only. We tried blending wOBAP for young players
