@@ -1,6 +1,6 @@
 """Build Excel output and markdown summary."""
 import pandas as pd
-from build_system import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential, woba_max_level
+from build_system_v2 import main, LEVELS, POSITIONS, ROSTER_SIZES, is_catcher, projected_pos_adj, is_high_potential, woba_max_level
 from build_pitcher_system_v3 import main as pitcher_main, SP_PER_LEVEL, RP_PER_LEVEL, PITCHER_ROSTER_SIZE, pwoba_top_level
 from org_report import build_batting_order, estimate_runs_per_game
 from openpyxl import Workbook

@@ -58,10 +58,17 @@ def all_orgs():
 
 @pytest.fixture(scope='session')
 def hitter_results(all_orgs):
-    """`{org: (rosters, overflow, flagged)}` from build_system.main(org=org).
+    """`{org: (rosters, overflow, flagged)}` from build_system_v2.main(org=org).
+
+    v2 is the live hitter builder as of this session — per-level role-by-role
+    construction (Hungarian starters + Backup C / Util IF / Util OF / Best bat
+    / Depth) replacing v1's cascade + 8 repair passes. The legacy v1
+    (`build_system.py`) is kept on disk for A/B reference via
+    `compare_hitter_placement.py`, mirroring the pitcher v1/v2/v3 pattern.
+
     Built once per pytest session — main() takes ~1s per org so this is
     the dominant cost of running the suite (~30s for 30 orgs)."""
-    from build_system import main as hitter_main
+    from build_system_v2 import main as hitter_main
     return {org: hitter_main(org=org) for org in all_orgs}
 
 

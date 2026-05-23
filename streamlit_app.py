@@ -26,7 +26,7 @@ import pandas as pd
 import streamlit as st
 
 import config
-from build_system import main as build_hitters, LEVELS, is_high_potential
+from build_system_v2 import main as build_hitters, LEVELS, is_high_potential
 from build_pitcher_system_v3 import main as build_pitchers, is_high_potential_pitcher, SP_PER_LEVEL, RP_PER_LEVEL
 from build_excel import main_build, _platoon_lineup_extras, _hitter_top_level, _pitcher_top_level
 

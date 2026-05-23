@@ -24,7 +24,7 @@ automatically if the JSONs are missing.
 """
 import json
 
-from build_system import (
+from build_system_v2 import (
     LEVELS as H_LEVELS,
     is_high_potential,
     total_service_years,

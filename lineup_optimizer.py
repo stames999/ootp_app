@@ -49,7 +49,7 @@ HITTERS_JSON = _ROOT / "outputs" / "hitters.json"
 def load_starters(org: str) -> list[dict]:
     """Return the 9 starters for an org's MLB roster using build_system.
     Each entry has the player's row from hitters.json + assigned position."""
-    import build_system
+    import build_system_v2 as build_system
     levels, _, _ = build_system.main(org)
     mlb = levels.get("MLB", {})
     if not isinstance(mlb, dict):
@@ -66,7 +66,7 @@ def starter_pool(org: str, side: str) -> list[dict]:
     {position: player_dict}, so each player carries an `assigned_pos`
     key for display (the fielding position they were Hungarian-assigned
     to, which may differ from their pos_adj)."""
-    import build_system
+    import build_system_v2 as build_system
     levels, _, _ = build_system.main(org)
     mlb = levels.get("MLB", {})
     if not isinstance(mlb, dict):
