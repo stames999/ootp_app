@@ -1,5 +1,14 @@
 # Pistachio — Handover
 
+## Open architectural work
+
+- **Hitter build-system rewrite (top-down construction):** see
+  `BUILD_SYSTEM_REWRITE.md` in repo root. Design note for replacing
+  the cascade-first architecture with per-level construction from the
+  whole remaining org pool. Solves the McCabe/Tavarez class of
+  placement bugs that the current cascade keeps generating repair
+  passes for. Not yet implemented.
+
 ## Session 2026-05-21 — pitcher v3 placement + regression-calibrated metrics
 
 Two big shifts in this session:
