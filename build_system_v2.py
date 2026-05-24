@@ -91,6 +91,29 @@ from config import (  # noqa: F401  (re-exports)
 # slot. -1.0 = "clearly-below-replacement defender". Tuned empirically.
 BEST_BAT_BEST_ADJ_FLOOR = -1.0
 
+# HP _bot priority boost — applied to all `<pos>_adj` fields of an HP
+# when constructing at their `_bot` level. Mirrors pitcher v3's
+# `HP_BOT_PRIORITY_BONUS = 0.015` adapted to hitter WAR scale.
+#
+# Why: HPs whose CURRENT bat doesn't yet beat established non-HPs in
+# Hungarian would otherwise cascade through every level and land in
+# overflow / release — even though they have real developmental upside.
+# v1's solution was a separate HP-enforcement pass that displaced
+# non-HPs. v2's simpler equivalent: bias the Hungarian at the HP's
+# developmental floor so they win the marginal slot competition that
+# decides whether they're starting at, e.g., A vs. on the AA bench.
+#
+# Boost only fires AT the HP's _bot level. Above _bot, HPs cascade
+# without help (this is the rewrite's central premise — HPs above _bot
+# never end up on bench because they aren't considered for bench roles
+# at all; see `_construct_level` filter).
+#
+# Magnitude sweep TBD. 3.0 WAR is a defensible starting point: large
+# enough to swing typical marginal Hungarian decisions at lower levels
+# (where most _adj scores are below 1 WAR) without overpowering true
+# elite non-HP starters (whose _adj > 2 WAR would still win on raw).
+HP_BOT_ADJ_BOOST = 3.0
+
 
 # ---------------------------------------------------------------------------
 # Per-level role score functions — Backup C / Utility IF / Utility OF.
@@ -157,21 +180,75 @@ def _eligible_for_level(available, level_idx):
     return out
 
 
-def _construct_level(pool, level, roster_size):
+def _apply_hp_bot_boost(pool, level_idx):
+    """Temporarily add HP_BOT_ADJ_BOOST to every `<pos>_adj` field of HPs
+    whose `_bot` equals this level. Returns a list of (player_dict, {pos:
+    original_value}) so the boost can be reverted after Hungarian runs.
+
+    Boost is applied per-position (not just to `pos_adj`) because
+    Hungarian considers every player at every position. Their natural
+    spot will still typically win because that's where _adj was already
+    highest pre-boost.
+    """
+    saved = []
+    for p in pool:
+        if not is_high_potential(p):
+            continue
+        if p.get('_bot') != level_idx:
+            continue
+        per_pos = {}
+        for pos in POSITIONS:
+            v = p.get(f'{pos}_adj')
+            if v is not None:
+                per_pos[pos] = v
+                p[f'{pos}_adj'] = v + HP_BOT_ADJ_BOOST
+        saved.append((p, per_pos))
+    return saved
+
+
+def _restore_hp_bot_boost(saved):
+    """Undo the mutation from _apply_hp_bot_boost. Call in a `finally`
+    so player dicts return to their original state even if Hungarian
+    raises."""
+    for p, per_pos in saved:
+        for pos, v in per_pos.items():
+            p[f'{pos}_adj'] = v
+
+
+def _construct_level(pool, level, level_idx, roster_size):
     """Build one level's roster: 9 starters + 4 named bench roles +
     `(roster_size - 13)` Depth slots.
 
+    HP cascade-vs-anchor logic:
+      - HPs at their `_bot` (level_idx == p['_bot']) get an
+        HP_BOT_ADJ_BOOST during Hungarian so they typically win the
+        marginal starter slot at their developmental floor.
+      - HPs above their `_bot` (level_idx < p['_bot']) who don't win
+        starter via Hungarian are EXCLUDED from bench/Depth selection —
+        they cascade to the next level for another shot. Prevents
+        v1-style "HP stuck as AAA bench Utility IF" placements when
+        their `_bot` is much deeper.
+
     Returns (starters_dict, bench_roles_list, placed_ids_set).
-      - starters_dict: {pos: player or None} from Hungarian
-      - bench_roles_list: [(role_label, player_or_None), ...] in order
-        Backup C / Utility IF / Utility OF / Best bat / Depth*
-      - placed_ids_set: ids of all players placed at this level
     """
-    # 1. Starters via Hungarian on `_adj`. fill_starters returns the
-    #    starter dict + the "everyone else in the pool" bench list.
-    starters, _bench_remainder = fill_starters(pool, level)
+    # 1. Starters via Hungarian on `_adj`, with HP `_bot` boost applied.
+    hp_boost_state = _apply_hp_bot_boost(pool, level_idx)
+    try:
+        starters, _bench_remainder = fill_starters(pool, level)
+    finally:
+        _restore_hp_bot_boost(hp_boost_state)
     placed_ids = {id(p) for p in starters.values() if p}
-    remaining = [p for p in pool if id(p) not in placed_ids]
+
+    # HPs above their `_bot` who lost starter Hungarian must cascade —
+    # exclude them from this level's bench/Depth pool.
+    remaining = [
+        p for p in pool
+        if id(p) not in placed_ids
+        and not (
+            is_high_potential(p)
+            and level_idx < p.get('_bot', len(LEVELS) - 1)
+        )
+    ]
 
     # 2. Backup C
     backup_c, remaining = _greedy_take(
@@ -235,7 +312,7 @@ def _construct_all_levels(valid, roster_sizes):
     for i, lvl in enumerate(LEVELS):
         eligible = _eligible_for_level(available, i)
         starters, bench_roles, placed_ids = _construct_level(
-            eligible, lvl, roster_sizes[lvl],
+            eligible, lvl, i, roster_sizes[lvl],
         )
         placed_players = [p for p in eligible if id(p) in placed_ids]
         by_level[lvl] = {
@@ -315,7 +392,11 @@ def main(org: str | None = None) -> tuple[dict, list[dict], list[dict]]:
             chunk = ranked[k * chunk_size:(k + 1) * chunk_size]
             # Re-run the per-level construction on each chunk so each DSL
             # sub-team independently picks starters + bench roles.
-            starters, bench_roles, _ = _construct_level(chunk, 'R(DLR)', chunk_size)
+            # R(DLR) sub-team: use LEVELS index of R(DLR) for HP `_bot`
+            # boost matching (sub-team keys like 'R(DLR)1' aren't in LEVELS).
+            starters, bench_roles, _ = _construct_level(
+                chunk, 'R(DLR)', LEVELS.index('R(DLR)'), chunk_size,
+            )
             placed_ids = {id(p) for p in starters.values() if p}
             for _role, p in bench_roles:
                 if p is not None:
