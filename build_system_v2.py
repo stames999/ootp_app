@@ -91,6 +91,36 @@ from config import (  # noqa: F401  (re-exports)
 # slot. -1.0 = "clearly-below-replacement defender". Tuned empirically.
 BEST_BAT_BEST_ADJ_FLOOR = -1.0
 
+# Per-level wOBA floor — empirically derived from v2 all-placed p10s
+# across 30 orgs (Future Sim, ~3,700 placed bats). A player whose wOBA
+# is below the floor for level X cascades to level X+1 — same semantic
+# as v1's `WOBA_MIN_HITTER` but calibrated to the actual observed
+# distribution at each level rather than hand-tuned safety margins.
+#
+# Replaces v2's earlier "drop _top entirely" stance per session feedback
+# (Marquart-class outliers: .173 wOBA winning A+ SS starter on glove
+# alone). The floor restores the "your bat plays at this level" gate
+# that v1 had via WOBA_MIN_HITTER, but at tighter empirical values.
+#
+# HPs at their `_bot` are EXEMPT — they have to be placed somewhere, so
+# the floor doesn't apply at their developmental floor level. Above
+# `_bot`, HPs obey the floor like everyone else (cascading down until
+# they reach a level whose floor they clear OR their `_bot`).
+WOBA_LEVEL_FLOOR = {
+    # MLB kept at v1's hand-tuned .280 (NOT empirical p10 .298). The
+    # tighter empirical floor cuts marginal MLB bench bats (e.g. HOU
+    # Marchan .294 / Alexander .297) that orgs realistically still
+    # need to fill the 13-man roster — better to keep them at MLB
+    # than under-fill. Below MLB, empirical p10s apply.
+    'MLB':    0.280,
+    'AAA':    0.267,
+    'AA':     0.241,
+    'A+':     0.225,
+    'A':      0.205,
+    'R':      0.160,
+    'R(DLR)': 0.112,
+}
+
 # HP _bot priority boost — applied to all `<pos>_adj` fields of an HP
 # when constructing at their `_bot` level. Mirrors pitcher v3's
 # `HP_BOT_PRIORITY_BONUS = 0.015` adapted to hitter WAR scale.
@@ -167,8 +197,14 @@ def _eligible_for_level(available, level_idx):
       - `_bot` covers this level (level_idx <= _bot)
       - HP MLB hard-block: HPs not placed above HP_MIN_LEVEL_INDEX unless
         their `_bot` is also above (pathological).
+      - wOBA >= WOBA_LEVEL_FLOOR[level]. HPs at their `_bot` are exempt
+        (they must be placed somewhere, even if their current bat is
+        below the level's empirical floor — projection / developmental
+        runway justifies the slot).
     """
     out = []
+    lvl_name = LEVELS[level_idx]
+    floor = WOBA_LEVEL_FLOOR[lvl_name]
     for p in available:
         if level_idx > p.get('_bot', len(LEVELS) - 1):
             continue
@@ -176,6 +212,13 @@ def _eligible_for_level(available, level_idx):
                 and is_high_potential(p)
                 and p.get('_bot', 0) >= HP_MIN_LEVEL_INDEX):
             continue
+        # wOBA floor — exempt HPs at their `_bot` level.
+        woba = p.get('wOBA') or 0
+        if woba < floor:
+            hp_at_bot = (is_high_potential(p)
+                         and p.get('_bot') == level_idx)
+            if not hp_at_bot:
+                continue
         out.append(p)
     return out
 
