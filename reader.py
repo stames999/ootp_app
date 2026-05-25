@@ -136,7 +136,16 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
     levels = list(LEVEL_ID_TO_LEVEL.values())
     cols = [f'yrs_{lvl}' for lvl in levels]
 
-    pieces = []
+    # Two separate aggregations: per-level counts use MiLB-only rows
+    # (the LEVEL_ID_TO_LEVEL filter), but `years_pro` pulls min/max year
+    # from the UNFILTERED stats. Foreign-league rows (Italian, NPB, etc.
+    # — typically level_id 8+) don't slot into the MiLB system but
+    # DO count as pro service for roster-eligibility purposes.
+    # Pre-fix: Sam Aldegheri (Italian, 2019-2026 career) read 5 years
+    # because the 2019/2020 Italian-league rows were filtered out before
+    # the calendar-span calculation.
+    pieces_all = []        # unfiltered — for years_pro
+    pieces_milb = []       # MiLB-only — for per-level counts
     for fn in ('players_career_batting_stats.csv',
                'players_career_pitching_stats.csv'):
         path = config.filepath / fn
@@ -147,16 +156,17 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
             usecols=['player_id', 'year', 'level_id'],
             low_memory=False,
         )
-        sub = sub[sub['level_id'].isin(LEVEL_ID_TO_LEVEL.keys())]
-        pieces.append(sub)
+        pieces_all.append(sub)
+        pieces_milb.append(sub[sub['level_id'].isin(LEVEL_ID_TO_LEVEL.keys())])
 
-    if not pieces:
+    if not pieces_all:
         for c in cols:
             df[c] = 0
         df['years_pro'] = 0
         return df
 
-    combined = pd.concat(pieces, ignore_index=True)
+    combined = pd.concat(pieces_milb, ignore_index=True)
+    combined_all = pd.concat(pieces_all, ignore_index=True)
     # Collapse to one row per (player_id, year) at the HIGHEST level
     # reached. LEVEL_ID_TO_LEVEL is keyed by OOTP level_id where 1=MLB
     # (the top), so the smallest level_id per (player_id, year) wins.
@@ -202,8 +212,10 @@ def add_years_at_level(df: pd.DataFrame) -> pd.DataFrame:
             max_y = min(max_y, as_of_year)
         return max(0, max_y - min_y + 1)
 
+    # years_pro from UNFILTERED stats so foreign-league rows (Italian
+    # baseball, NPB, KBO, etc.) count toward calendar career span.
     span = (
-        combined.groupby('player_id')['year']
+        combined_all.groupby('player_id')['year']
         .agg(_years_pro)
         .rename('years_pro')
         .reset_index()
