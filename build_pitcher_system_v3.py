@@ -249,18 +249,21 @@ def _eligible_for_level(pool, level_idx, role_check):
     """Filter a pool to arms eligible for placement at `level_idx`:
       - `_bot` covers this level (level_idx <= _bot).
       - role-check (sp_viable / rp_viable) passes.
-      - HP MLB block: HPs not placed at levels above HP_MIN_LEVEL_INDEX
-        unless `_bot` is also above (pathological case).
+
+    NOTE: HP→MLB hard-block was removed to mirror the hitter v2 change.
+    HPs now compete at MLB on raw priority + their _bot bonus where
+    applicable. The companion "HPs above _bot can't be RP" cascade rule
+    in `_phase_two_rp` enforces the developmental intent: HP pitchers
+    end up either as SP (somewhere they can develop in rotation) or as
+    RP at their _bot (deepest legal level) — never sitting in an
+    above-_bot bullpen taking development reps away from their proper
+    SP destination.
     """
     eligible = []
     for p in pool:
         if level_idx > p.get('_bot', len(LEVELS) - 1):
             continue
         if not role_check(p):
-            continue
-        if (level_idx < HP_MIN_LEVEL_INDEX
-                and is_high_potential_pitcher(p)
-                and p.get('_bot', 0) >= HP_MIN_LEVEL_INDEX):
             continue
         eligible.append(p)
     return eligible
@@ -314,6 +317,19 @@ def _phase_two_rp(valid, sp_by, remaining_sp, rp_slots):
 
     for i, lvl in enumerate(LEVELS):
         eligible = _eligible_for_level(rp_pool, i, is_rp_viable)
+        # HPs above their `_bot` can't be RP — they must cascade for
+        # another SP shot at the next level (or be RP at their _bot,
+        # which the level_idx <= _bot filter inside `_eligible_for_level`
+        # already permits). Mirror of hitter v2's "HPs above _bot can't
+        # be on bench" rule. Without this, an HP who didn't win MLB SP
+        # in Phase 1 (but was eligible there) would land in the MLB
+        # bullpen, taking development reps away from their proper SP
+        # destination.
+        eligible = [
+            p for p in eligible
+            if not (is_high_potential_pitcher(p)
+                    and i < p.get('_bot', 0))
+        ]
         bullpen, shortfall = _select_bullpen_with_lhp(
             eligible, rp_slots[lvl], lvl,
         )
