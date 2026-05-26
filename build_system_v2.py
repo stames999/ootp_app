@@ -107,18 +107,20 @@ BEST_BAT_BEST_ADJ_FLOOR = -1.0
 # `_bot`, HPs obey the floor like everyone else (cascading down until
 # they reach a level whose floor they clear OR their `_bot`).
 WOBA_LEVEL_FLOOR = {
-    # MLB kept at v1's hand-tuned .280 (NOT empirical p10 .298). The
-    # tighter empirical floor cuts marginal MLB bench bats (e.g. HOU
-    # Marchan .294 / Alexander .297) that orgs realistically still
-    # need to fill the 13-man roster — better to keep them at MLB
-    # than under-fill. Below MLB, empirical p10s apply.
-    'MLB':    0.280,
-    'AAA':    0.267,
-    'AA':     0.241,
-    'A+':     0.225,
-    'A':      0.205,
-    'R':      0.160,
-    'R(DLR)': 0.112,
+    # Initial floors (empirical p10s) were 1f4166d landing point:
+    #   MLB .280, AAA .267, AA .241, A+ .225, A .205, R .160, R(DLR) .112.
+    # All floors lowered by .010 per session feedback — the tight
+    # empirical p10s were rejecting glove-first profiles (e.g. Nasim
+    # Nuñez .277 with sum-of-IF-_adj +2.67 was blocked from WSH MLB
+    # Util IF). The .010 cushion lets elite-glove sub-floor bats in
+    # without dropping the floor's structural role.
+    'MLB':    0.270,
+    'AAA':    0.257,
+    'AA':     0.231,
+    'A+':     0.215,
+    'A':      0.195,
+    'R':      0.150,
+    'R(DLR)': 0.102,
 }
 
 # HP _bot priority boost — applied to all `<pos>_adj` fields of an HP
