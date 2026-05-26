@@ -57,10 +57,13 @@ from build_system import (  # noqa: F401  (re-exports for downstream consumers)
     bat_priority,
     is_catcher,
     catcher_alloc_score,
-    is_high_potential,
     apply_hp_premium_fit_override,
     projected_pos_adj,
     woba_max_level,
+    # NOTE: is_high_potential is NOT imported from v1 here — v2 uses its
+    # own definition (below) that drops the `minor=1` requirement so a
+    # young MLB-rostered player with high bestP_adj can still get the
+    # HP cascade-vs-anchor + boost treatment.
     # Per-level Hungarian primitives
     fill_starters,
     fill_starters_split,
@@ -82,7 +85,30 @@ from config import (  # noqa: F401  (re-exports)
     HP_MIN_LEVEL_INDEX,
     IF_POSITIONS,
     OF_POSITIONS,
+    HP_MAX_AGE,
+    HP_BESTP_ADJ_THRESHOLD,
+    HP_WOBA_THRESHOLD,
 )
+
+
+# v2-local HP detection. Drops the `minor=1` requirement that v1's
+# `is_high_potential` enforces — per session feedback, a young MLB-
+# rostered player (minor=0, on 40-man / out of options) with high
+# bestP_adj should still get the HP cascade-vs-anchor + _bot boost
+# treatment. Age + projection are the substantive criteria; roster
+# status is incidental.
+#
+# Same threshold logic as v1: age <= HP_MAX_AGE (24) AND EITHER
+# bestP_adj >= HP_BESTP_ADJ_THRESHOLD (2.0, league-average regular)
+# OR wOBAP >= HP_WOBA_THRESHOLD (.340, elite bat projection).
+def is_high_potential(p: dict) -> bool:
+    """v2 HP detection — age + projection, NOT roster status."""
+    if p['age'] > HP_MAX_AGE:
+        return False
+    bestP_adj = p.get('bestP_adj') or float('-inf')
+    wobap = p.get('wOBAP') or 0
+    return (bestP_adj >= HP_BESTP_ADJ_THRESHOLD
+            or wobap >= HP_WOBA_THRESHOLD)
 
 
 # Disaster-floor for the Best-bat bench seat. A bat with overall
