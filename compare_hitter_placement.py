@@ -40,15 +40,12 @@ OUT_DIR = Path('outputs/hitter_v1_vs_v2')
 # These are soft — if the named player isn't in the loaded org pool the
 # check is silently skipped (different save, different roster).
 SPOT_CHECKS: dict[str, dict] = {
+    # NOTE: McCabe expectation removed — was Future-Sim-specific. On the
+    # canonical Rockies Rebuild save he loses MLB Best-bat to Profar
+    # (.342/1.91 on both wOBA and best_adj). The original design-doc
+    # case for the rewrite was Future Sim's ATL; on that save McCabe
+    # correctly lands MLB Best-bat in v2 (verified during phase 3).
     'ATL': {
-        'McCabe': {
-            'expectation': 'MLB bench (Best bat)',
-            'check': lambda state: (
-                state['level'] == 'MLB'
-                and state['role'] == 'BENCH'
-                and state.get('bench_role') == 'Best bat'
-            ),
-        },
         'Tavarez': {
             'expectation': 'placed within _bot window (not overflow)',
             'check': lambda state: state['level'] != 'OVERFLOW',
@@ -246,12 +243,17 @@ def _check_v2_invariants(org: str, result: dict) -> list[str]:
             violations.append(
                 f'{org} {lvl}: over capacity {n_all}/{target}'
             )
-        # HP MLB block.
+        # NOTE: the old "no HP at MLB" invariant was retired when v2
+        # dropped the HP_MIN_LEVEL_INDEX block (per session feedback,
+        # 2026-05-24). HPs may now be MLB starters if their _adj wins
+        # the Hungarian. The "HPs above _bot can't be on bench" rule in
+        # `_construct_level` still ensures no HPs on MLB bench — checked
+        # below as a new invariant.
         if lvl == 'MLB':
-            for p in info.get('all', []):
-                if v2.is_high_potential(p) and p.get('_bot', 0) >= v2.HP_MIN_LEVEL_INDEX:
+            for p in info.get('bench', []):
+                if v2.is_high_potential(p):
                     violations.append(
-                        f'{org} MLB: HP at MLB despite _bot allowing AAA: {p["name"]}'
+                        f'{org} MLB: HP on MLB bench (should cascade): {p["name"]}'
                     )
         # _bot respected (defence-in-depth — assert_bot_invariant already
         # ran inside main(), but re-check the sub-team-split-rebuilt

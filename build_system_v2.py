@@ -195,22 +195,25 @@ def _greedy_take(pool, score_fn):
 def _eligible_for_level(available, level_idx):
     """Filter `available` to bats eligible for placement at `level_idx`:
       - `_bot` covers this level (level_idx <= _bot)
-      - HP MLB hard-block: HPs not placed above HP_MIN_LEVEL_INDEX unless
-        their `_bot` is also above (pathological).
       - wOBA >= WOBA_LEVEL_FLOOR[level]. HPs at their `_bot` are exempt
         (they must be placed somewhere, even if their current bat is
         below the level's empirical floor — projection / developmental
         runway justifies the slot).
+
+    NOTE: HP→MLB hard-block from R-20 (HP_MIN_LEVEL_INDEX) was removed
+    per session feedback. HPs now compete at MLB on raw _adj like
+    everyone else. An HP whose current stuff is MLB-competitive can win
+    starter via Hungarian; one whose isn't loses and CASCADES (per the
+    "HPs above _bot can't be on bench" rule in `_construct_level`). Net
+    effect: HPs at MLB only as starters, never bench — the v2 "must
+    start" invariant naturally enforces R-20's developmental intent
+    without an explicit block.
     """
     out = []
     lvl_name = LEVELS[level_idx]
     floor = WOBA_LEVEL_FLOOR[lvl_name]
     for p in available:
         if level_idx > p.get('_bot', len(LEVELS) - 1):
-            continue
-        if (level_idx < HP_MIN_LEVEL_INDEX
-                and is_high_potential(p)
-                and p.get('_bot', 0) >= HP_MIN_LEVEL_INDEX):
             continue
         # wOBA floor — exempt HPs at their `_bot` level.
         woba = p.get('wOBA') or 0
