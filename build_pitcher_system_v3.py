@@ -156,8 +156,15 @@ def pwoba_top_level(p: dict) -> int:
 
 
 def is_high_potential_pitcher(p):
-    if p.get('minor') != 1:
-        return False
+    """v3 HP detection — age + projection, NOT roster status.
+
+    Dropped the `minor=1` short-circuit per session direction
+    (matches the hitter-side change in build_system_v2): a young
+    MLB-rostered pitcher (minor=0, 40-man or out of options) with
+    elite projected pwOBA is still developmental — same _bot priority
+    bonus + cascade semantics apply. Age cap (HP_PITCHER_MAX_AGE=24)
+    and projection threshold (HP_PITCHER_MAX_PWOBAP) unchanged.
+    """
     if p['age'] > HP_PITCHER_MAX_AGE:
         return False
     pwobap = p.get('pwOBAP')

@@ -29,7 +29,7 @@ from build_system_v2 import (
     is_high_potential,
     total_service_years,
 )
-from build_pitcher_system import is_high_potential_pitcher, is_sp_viable
+from build_pitcher_system_v3 import is_high_potential_pitcher, is_sp_viable
 
 
 def _level_index(lvl_name):
