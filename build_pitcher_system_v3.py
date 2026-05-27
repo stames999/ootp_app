@@ -317,17 +317,23 @@ def _phase_two_rp(valid, sp_by, remaining_sp, rp_slots):
 
     for i, lvl in enumerate(LEVELS):
         eligible = _eligible_for_level(rp_pool, i, is_rp_viable)
-        # HPs above their `_bot` can't be RP — they must cascade for
-        # another SP shot at the next level (or be RP at their _bot,
-        # which the level_idx <= _bot filter inside `_eligible_for_level`
-        # already permits). Mirror of hitter v2's "HPs above _bot can't
-        # be on bench" rule. Without this, an HP who didn't win MLB SP
-        # in Phase 1 (but was eligible there) would land in the MLB
-        # bullpen, taking development reps away from their proper SP
-        # destination.
+        # SP-viable HPs above their `_bot` can't be RP — they must
+        # cascade for another SP shot at the next level. Mirror of
+        # hitter v2's "HPs above _bot can't be on bench" rule. Without
+        # it, a rotation-track HP who didn't win MLB SP in Phase 1
+        # would land in the MLB bullpen, taking development reps away
+        # from their proper SP destination.
+        #
+        # RP-only HPs (e.g. hard-throwing closer prospects whose
+        # stamina or arsenal don't support starting) are EXEMPT — they
+        # belong in a bullpen, so an above-_bot MLB pen seat is the
+        # correct development destination. They get the standard
+        # bullpen Hungarian on raw priority (their HP _bot bonus only
+        # fires at their floor level, so they compete fairly above it).
         eligible = [
             p for p in eligible
             if not (is_high_potential_pitcher(p)
+                    and is_sp_viable(p)
                     and i < p.get('_bot', 0))
         ]
         bullpen, shortfall = _select_bullpen_with_lhp(
