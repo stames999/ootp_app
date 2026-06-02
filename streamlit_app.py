@@ -167,9 +167,15 @@ REQUIRED_CSVS = {
 # columns and the years-at-level service-time data. teams.csv drives the
 # R(DLR) DSL-team count — without it, every org defaults to 1 DSL team and
 # the R(DLR) best/rest split for 2-DSL orgs won't trigger.
+# players_roster_status.csv supplies OOTP's authoritative pro_service_years
+# (overrides the calendar-span calc — recovers IFA pre-stats years like
+# Curet signed-2019 / first-stats-2021 = OOTP knows 7 years, calc reads 5).
+# players_contract.csv reserved for future use (Rule 5 / option-year rules).
 OPTIONAL_CSVS = {
     'players_career_pitching_stats.csv',
     'players_career_batting_stats.csv',
+    'players_roster_status.csv',
+    'players_contract.csv',
     'teams.csv',
 }
 ACCEPTED_CSVS = REQUIRED_CSVS | OPTIONAL_CSVS
