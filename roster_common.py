@@ -196,14 +196,19 @@ def total_service_years(p):
 
 def service_lowest_level(p):
     """Highest LEVELS index (= lowest level) the player is still eligible
-    for given their cumulative completed service. > 5 yrs blocks A+ and
-    below; > 4 blocks A and below; > 3 blocks R / R(DLR). Returns the
+    for given their cumulative completed service. Reads SERVICE_LIMITS as
+    "this many years EXHAUSTS the level" — so 5 years pro blocks A+ and
+    below (kicks to AA), 4 blocks A, 3 blocks R/R(DLR). Returns the
     deepest index they can still play; combine with age_lowest_level via
     min() for the final `_bot`.
 
     `years_pro` is "completed seasons" per reader.add_years_at_level —
     the in-progress current year is excluded mid-season so eligibility
     flips at season-end rather than season-start.
+
+    Comparison was `>` historically (Curet at exactly 5 years was kept
+    A+-eligible because `5 > 5` is False), flipped to `>=` to match
+    OOTP's actual exhaustion semantics per session feedback.
 
     When `config.SERVICE_CAP_ENABLED` is False (default since R-28), this
     constraint is fully relaxed — returns the deepest level index so the
@@ -214,11 +219,11 @@ def service_lowest_level(p):
     if not config.SERVICE_CAP_ENABLED:
         return len(LEVELS) - 1
     s = total_service_years(p)
-    if s > SERVICE_LIMITS['A+']:
+    if s >= SERVICE_LIMITS['A+']:
         return LEVELS.index('AA')      # 2 — A+ exhausted, AA-or-above only
-    if s > SERVICE_LIMITS['A']:
+    if s >= SERVICE_LIMITS['A']:
         return LEVELS.index('A+')      # 3 — A exhausted
-    if s > SERVICE_LIMITS['R']:
+    if s >= SERVICE_LIMITS['R']:
         return LEVELS.index('A')       # 4 — R/DSL exhausted
     return len(LEVELS) - 1             # 6 — no service constraint
 
