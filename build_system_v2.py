@@ -146,7 +146,12 @@ WOBA_LEVEL_FLOOR = {
     'A+':     0.215,
     'A':      0.195,
     'R':      0.150,
-    'R(DLR)': 0.102,
+    # R(DLR) has NO floor — it's the deepest tier of pro ball, so a
+    # sub-floor bat has nowhere lower to cascade to. The empirical p10
+    # (.112) was survivor-biased (measured the already-placed pool),
+    # not the actual unfiltered DSL signing class. v1's original
+    # WOBA_MIN_HITTER['R(DLR)'] = -1.0 had the same semantic.
+    'R(DLR)': -1.0,
 }
 
 # HP _bot priority boost — applied to all `<pos>_adj` fields of an HP
