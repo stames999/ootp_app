@@ -277,13 +277,19 @@ def write_summary(ws, rosters, overflow, org='LAA'):
     for lvl in rosters.keys():
         all_p = rosters[lvl]['all']
         cs = [p for p in all_p if is_catcher(p)]
-        top = max(all_p, key=lambda p: p['bestP'] or -99)
+        # Guard against empty levels (v2 thin-org sub-teams can have 0
+        # placed players, e.g. an R(DLR)2 where the DSL pool didn't
+        # split into two viable chunks).
+        top = max(all_p, key=lambda p: p['bestP'] or -99) if all_p else None
         avg_best = sum(p['best'] or 0 for p in all_p) / len(all_p) if all_p else 0
         avg_pot = sum(p['bestP'] or 0 for p in all_p) / len(all_p) if all_p else 0
         ws.cell(row=row, column=1, value=lvl).font = Font(name='Arial', bold=True, color=_level_color(lvl))
         ws.cell(row=row, column=2, value=len(all_p))
         ws.cell(row=row, column=3, value=len(cs))
-        ws.cell(row=row, column=4, value=f"{top['name']} ({top['age']}, {top['bestP']:.1f})")
+        if top is not None:
+            ws.cell(row=row, column=4, value=f"{top['name']} ({top['age']}, {top['bestP']:.1f})")
+        else:
+            ws.cell(row=row, column=4, value='—')
         ws.cell(row=row, column=5, value=round(avg_best, 2))
         ws.cell(row=row, column=6, value=round(avg_pot, 2))
         for col in range(1, 7):
