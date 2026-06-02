@@ -253,6 +253,77 @@ def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_roster_status(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge OOTP's authoritative service-time + roster columns from
+    `players_roster_status.csv`. Overrides the calendar-span `years_pro`
+    that `add_years_at_level` computed when OOTP has an explicit
+    `pro_service_years` value (which it does for every rostered player —
+    including IFA pre-stats years that calendar-span misses entirely).
+
+    Per session investigation:
+      - Yoniel Curet (IFA signed 2019, first MiLB stats 2021): the
+        calendar-span calc reads 5 yrs (2021-2025 inclusive of 2026
+        mid-season clamp); OOTP's authoritative pro_service_years = 7.
+        Without this override Curet stays A+-eligible when he shouldn't.
+      - Sam Aldegheri: calendar-span = 7, OOTP = 8 (the mid-season
+        as_of_year clamp also under-counts by 1 in some cases).
+
+    Columns pulled (all optional — NaN if file missing or player not
+    on a roster, in which case `years_pro` falls back to the
+    calendar-span calc):
+      - pro_service_years   → overrides `years_pro`
+      - mlb_service_years   → kept as-is for future arb/40-man rules
+      - options_used        → ditto, Rule 5 / option awareness
+      - years_protected_from_rule_5
+      - is_on_dl / is_on_dl60  → defence-in-depth on the injury flag
+      - just_signed         → recent acquisition marker
+
+    The CSV is OPTIONAL — saves that don't export it get no override,
+    and the existing calendar-span `years_pro` keeps the system running.
+    """
+    file = config.filepath / "players_roster_status.csv"
+    if not file.exists():
+        # Populate empty columns so downstream code can rely on them.
+        for c in ('pro_service_years', 'mlb_service_years', 'options_used',
+                  'years_protected_from_rule_5', 'is_on_dl', 'is_on_dl60',
+                  'just_signed'):
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df
+
+    usecols = ['player_id', 'pro_service_years', 'mlb_service_years',
+               'options_used', 'years_protected_from_rule_5',
+               'is_on_dl', 'is_on_dl60', 'just_signed']
+    try:
+        rs = pd.read_csv(file, usecols=usecols, low_memory=False)
+    except (ValueError, KeyError):
+        # CSV exists but is missing some columns — skip with same
+        # NaN-population as the file-missing branch.
+        for c in usecols[1:]:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df
+
+    # A player can appear in roster_status more than once if they were
+    # rostered by multiple teams in-season (e.g. claimed off waivers).
+    # Take the row with the highest pro_service_years per player — that's
+    # the most recent / authoritative service time.
+    rs = (rs.sort_values('pro_service_years', ascending=False)
+            .drop_duplicates('player_id', keep='first'))
+
+    df = pd.merge(df, rs, on='player_id', how='left')
+
+    # Override years_pro with OOTP's authoritative pro_service_years
+    # where present; keep calendar-span fallback otherwise. Coerce via
+    # nullable Int to handle the merge's NaN cleanly.
+    if 'pro_service_years' in df.columns:
+        psy = pd.to_numeric(df['pro_service_years'], errors='coerce')
+        # Where psy is NaN (no roster_status row), keep existing years_pro.
+        df['years_pro'] = psy.fillna(df['years_pro']).astype(int)
+
+    return df
+
+
 def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     file = config.filepath / "players_scouted_ratings.csv"
     all_rating_columns = (

@@ -109,14 +109,19 @@ def test_hitter_hp_no_double_count(org, hitter_results):
     HP enforcement does swaps (HP up, non-HP down) and demote-without-swap
     paths — both are sites where a faulty add-without-remove could leave
     an HP duplicated across two levels. Catches that class of bug.
+
+    Key by `player_id`, not `name` — distinct players can share a name
+    (KC NG2 has two Ramon Ramirezes at different ages / different levels;
+    that's not a duplicate placement, it's two different prospects).
     """
     rosters, _, _ = hitter_results[org]
     seen = {}
     for lvl_name, r in rosters.items():
         for p in r['all']:
             if is_high_potential(p):
-                seen.setdefault(p['name'], []).append(lvl_name)
-    duplicates = {n: lvls for n, lvls in seen.items() if len(lvls) > 1}
+                key = p.get('player_id') or p['name']
+                seen.setdefault(key, []).append(lvl_name)
+    duplicates = {k: lvls for k, lvls in seen.items() if len(lvls) > 1}
     assert not duplicates, f"{org} HP hitters on multiple levels: {duplicates}"
 
 
@@ -247,14 +252,19 @@ def test_pitcher_hp_no_double_count(org, pitcher_results):
 
     Mirror of the hitter HP test. Pitcher HP enforcement (`_enforce_hp_pitchers`)
     does displacement swaps; this catches add-without-remove regressions.
+
+    Key by `player_id`, not `name` — distinct players can share a name
+    (CIN NG2 has two Franyer Mendezes at different ages; that's not a
+    duplicate placement).
     """
     rosters, _, _ = pitcher_results[org]
     seen = {}
     for lvl_name, r in rosters.items():
         for p in r.get('all', []):
             if is_high_potential_pitcher(p):
-                seen.setdefault(p['name'], []).append(lvl_name)
-    duplicates = {n: lvls for n, lvls in seen.items() if len(lvls) > 1}
+                key = p.get('player_id') or p['name']
+                seen.setdefault(key, []).append(lvl_name)
+    duplicates = {k: lvls for k, lvls in seen.items() if len(lvls) > 1}
     assert not duplicates, f"{org} HP pitchers on multiple levels: {duplicates}"
 
 

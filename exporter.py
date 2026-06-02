@@ -244,10 +244,22 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
-            # `years_pro` = career span (max-min year + 1) — matches OOTP's
-            # service-time semantics where rostered-but-didn't-play years
-            # still count. Used by roster_common.total_service_years.
+            # `years_pro` = OOTP's authoritative pro_service_years from
+            # players_roster_status.csv when available (overrides the
+            # calendar-span calc); falls back to max-min stats year span
+            # for players not in roster_status (free agents, retired).
+            # Used by roster_common.total_service_years.
             "years_pro",
+            # Ancillary roster_status fields (NaN when CSV missing or
+            # player isn't on a roster). Surfaced for future use:
+            # mlb_service_years drives arb/40-man rules, options_used
+            # drives Rule 5 awareness, is_on_dl60 backs the injury flag.
+            "mlb_service_years",
+            "options_used",
+            "years_protected_from_rule_5",
+            "is_on_dl",
+            "is_on_dl60",
+            "just_signed",
             # Nationality — used by build_system to block US (206) / Canadian (36)
             # players from R(DLR) per OOTP DSL eligibility rules.
             "nation_id",
@@ -308,10 +320,22 @@ EXPORT_PAGES = [
             "yrs_A",
             "yrs_R",
             "yrs_R(DLR)",
-            # `years_pro` = career span (max-min year + 1) — matches OOTP's
-            # service-time semantics where rostered-but-didn't-play years
-            # still count. Used by roster_common.total_service_years.
+            # `years_pro` = OOTP's authoritative pro_service_years from
+            # players_roster_status.csv when available (overrides the
+            # calendar-span calc); falls back to max-min stats year span
+            # for players not in roster_status (free agents, retired).
+            # Used by roster_common.total_service_years.
             "years_pro",
+            # Ancillary roster_status fields (NaN when CSV missing or
+            # player isn't on a roster). Surfaced for future use:
+            # mlb_service_years drives arb/40-man rules, options_used
+            # drives Rule 5 awareness, is_on_dl60 backs the injury flag.
+            "mlb_service_years",
+            "options_used",
+            "years_protected_from_rule_5",
+            "is_on_dl",
+            "is_on_dl60",
+            "just_signed",
             # Nationality — see hitters.html columns above for rationale.
             "nation_id",
             "flag",

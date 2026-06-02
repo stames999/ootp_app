@@ -26,6 +26,7 @@ from metrics_war import calc_war
 from reader import (
     add_hitting_career_stats,
     add_pitching_career_stats,
+    add_roster_status,
     add_scouted_ratings,
     add_years_at_level,
     count_pitches,
@@ -46,6 +47,11 @@ def compute_df() -> 'pd.DataFrame':
     # surfaces yrs_MLB / yrs_AAA / ... / yrs_R(DLR) columns. Optional —
     # zero-fills if the career CSVs aren't uploaded.
     df = add_years_at_level(df)
+    # Override years_pro with OOTP's authoritative pro_service_years
+    # from players_roster_status.csv (when available — falls back to
+    # the calendar-span calc above for free agents / retired players).
+    # Also pulls mlb_service_years, options_used, etc. for future use.
+    df = add_roster_status(df)
     df = add_scouted_ratings(df)
     df = count_pitches(df)
     df = is_flagged(df)
